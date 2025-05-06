@@ -17,6 +17,7 @@ mp_face_mesh = mp.solutions.face_mesh
 # Mouth landmark indices from MediaPipe FaceMesh
 MOUTH_LANDMARKS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
 
+
 def enhance_image_for_hand_detection(
         image: np.ndarray,
         visualize: bool = False
@@ -43,6 +44,7 @@ def enhance_image_for_hand_detection(
 
     # Step 3: Convert back to color
     enhanced_gray_color = cv2.cvtColor(enhanced_gray, cv2.COLOR_GRAY2BGR)
+    #TODO: the conversion doesn't work for now?
 
     # Step 4: Blend with original for better color preservation
     enhanced_image = cv2.addWeighted(image, 0.7, enhanced_gray_color, 0.3, 0)
@@ -97,6 +99,7 @@ def enhance_image_for_hand_detection(
             print(f"Visualization error: {e}")
 
     return enhanced_image
+
 
 def process_image(
         file_path: str,
@@ -263,10 +266,11 @@ def process_image(
 
     return image_data, annotated_image
 
+
 def process_video(
         input_path: str,
         output_dir: str = './output_data/video',
-        skip_frames: int = 2,
+        skip_frames: int = 0,
         extract_face: bool = True,
         extract_pose: bool = True,
         is_image_sequence: bool = False,
@@ -336,35 +340,20 @@ def process_video(
     # Set up output video writer
     output_video_path = output_dir / "annotated_video.mp4"
 
-    # Use H264 codec if available, fallback to mp4v
-    try:
-        fourcc = cv2.VideoWriter_fourcc(*'H264')
-        video_writer = cv2.VideoWriter(
-            str(output_video_path),
-            fourcc,
-            fps / skip_frames,  # Adjust FPS based on frame skipping
-            (frame_width, frame_height)
-        )
 
-        # Test if the video writer was initialized correctly
-        if not video_writer.isOpened():
-            raise Exception("H264 codec not available")
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video_writer = cv2.VideoWriter(
+        str(output_video_path),
+        fourcc,
+        fps / skip_frames,
+        (frame_width, frame_height)
+    )
 
-    except Exception:
-        # Fallback to mp4v codec
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        video_writer = cv2.VideoWriter(
-            str(output_video_path),
-            fourcc,
-            fps / skip_frames,
-            (frame_width, frame_height)
-        )
-
-        if not video_writer.isOpened():
-            print("Error: Could not initialize video writer")
-            if not is_image_sequence:
-                cap.release()
-            return None
+    if not video_writer.isOpened():
+        print("Error: Could not initialize video writer")
+        if not is_image_sequence:
+            cap.release()
+        return None
 
     frame_count = 0
     all_frames_data = {}
@@ -402,8 +391,13 @@ def process_video(
                     print(f"Could not read image: {img_path}")
                     continue
 
+                enhanced_frame = enhance_image_for_hand_detection(
+                    frame,
+                    visualize=False
+                )
+
                 process_frame(
-                    frame, frame_count, fps, hands, face_mesh, pose,
+                    enhanced_frame, frame_count, fps, hands, face_mesh, pose,
                     extract_face, extract_pose, all_frames_data,
                     annotated_frame_path=output_dir / f"frame_{frame_count:04d}.png",
                     video_writer=video_writer,
@@ -413,9 +407,9 @@ def process_video(
 
                 frame_count += 1
 
-                # Print progress every 100 frames
-                if frame_count % 100 == 0:
-                    progress_percent = (frame_count / total_frames) * 100 if total_frames > 0 else 0
+                # Print progress every 10 frames
+                if frame_count % 10 == 0:
+                    progress_percent = (frame_count / total_frames) * 10 if total_frames > 0 else 0
                     print(f"Processed {frame_count} frames ({progress_percent:.1f}%)")
         else:
             # Process video file
@@ -437,9 +431,9 @@ def process_video(
 
                 frame_count += 1
 
-                # Print progress every 100 frames
-                if frame_count % 100 == 0:
-                    progress_percent = (frame_count / total_frames) * 100 if total_frames > 0 else 0
+                # Print progress every 10 frames
+                if frame_count % 10 == 0:
+                    progress_percent = (frame_count / total_frames) * 10 if total_frames > 0 else 0
                     print(f"Processed {frame_count} frames ({progress_percent:.1f}%)")
 
             # Clean up video capture
@@ -482,7 +476,7 @@ def process_frame_og(
         frame, frame_count, fps, hands, face_mesh, pose,
         extract_face, extract_pose, all_frames_data,
         annotated_frame_path=None, video_writer=None,
-        total_frames=0, skip_frames=2
+        total_frames=0, skip_frames=1
 ):
     """Helper function to process a single frame"""
     # Convert to RGB for MediaPipe
@@ -500,7 +494,7 @@ def process_frame_og(
         "pose": {}
     }
 
-    # Step 1: Process hands (priority for sign language)
+    # Step 1: Process hands
     results_hands = hands.process(rgb_frame)
 
     if results_hands.multi_hand_landmarks:
@@ -649,11 +643,12 @@ def process_frame_og(
     if video_writer:
         video_writer.write(annotated_frame)
 
+
 def process_frame(
         frame, frame_count, fps, hands, face_mesh, pose,
         extract_face, extract_pose, all_frames_data,
         annotated_frame_path=None, video_writer=None,
-        total_frames=0, skip_frames=2
+        total_frames=0, skip_frames=1
 ):
     """Helper function to process a single frame"""
     try:
@@ -819,6 +814,7 @@ def process_frame(
 
     except Exception as e:
         print(f"Error processing frame {frame_count}: {e}")
+
 
 def natural_sort_key(s):
     """
