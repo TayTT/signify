@@ -44,12 +44,15 @@ def enhance_image_for_hand_detection(
 
     # Step 3: Convert back to color
     enhanced_gray_color = cv2.cvtColor(enhanced_gray, cv2.COLOR_GRAY2BGR)
-    #TODO: the conversion doesn't work for now?
+    # TODO: the conversion doesn't work for now?
 
     # Step 4: Blend with original for better color preservation
     enhanced_image = cv2.addWeighted(image, 0.7, enhanced_gray_color, 0.3, 0)
 
     # Visualize all steps if requested
+    # TODO: smaller points on visualisation
+    # TODO: visualise full mesh
+    # TODO: are all points present in all frames ???
     if visualize:
         try:
             import matplotlib.pyplot as plt
@@ -267,6 +270,8 @@ def process_image(
     return image_data, annotated_image
 
 
+# TODO: check points in 3d
+
 def process_video(
         input_path: str,
         output_dir: str = './output_data/video',
@@ -339,7 +344,6 @@ def process_video(
 
     # Set up output video writer
     output_video_path = output_dir / "annotated_video.mp4"
-
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_writer = cv2.VideoWriter(
