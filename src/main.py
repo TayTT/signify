@@ -49,6 +49,8 @@ def parse_arguments():
                         help='Skip processing of videos')
     parser.add_argument('--skip-frames', type=int, default=2,
                         help='Process every nth frame in videos')
+    parser.add_argument('--save-all-frames', action='store_true',
+                        help='Save all annotated frames to disk')
 
     # Detection options
     parser.add_argument('--detect-faces', action='store_true',
@@ -146,7 +148,8 @@ def process_videos(
         extract_face: bool,
         extract_pose: bool,
         input_types: List[bool],
-        image_extension: str = "png"
+        image_extension: str = "png",
+        save_all_frames: bool = False  # Add the new parameter
 ) -> None:
     """
     Process multiple video files or image sequence directories and extract landmarks.
@@ -159,10 +162,16 @@ def process_videos(
         extract_pose: Whether to extract pose landmarks
         input_types: List of booleans indicating if each input is an image sequence (True) or video (False)
         image_extension: File extension to look for when processing image sequences
+        save_all_frames: Whether to save all annotated frames to disk
     """
     # Ensure output directory exists
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Output directory created/verified: {output_dir.absolute()}")
+    except Exception as e:
+        print(f"ERROR: Failed to create output directory {output_dir}: {str(e)}")
+        return
 
     if not input_paths:
         print("No input paths provided for video/image sequence processing")
@@ -176,7 +185,7 @@ def process_videos(
         print(f"Processing {input_type} [{idx + 1}/{len(input_paths)}]: {input_path}")
 
         if not input_path.exists():
-            print(f"Warning: {input_type} not found: {input_path}")
+            print(f"WARNING: {input_type} not found: {input_path}")
             continue
 
         # Create output subdirectory
@@ -185,18 +194,52 @@ def process_videos(
         else:
             output_subdir = output_dir / f"video_{input_path.stem}"
 
-        output_subdir.mkdir(parents=True, exist_ok=True)
+        try:
+            output_subdir.mkdir(parents=True, exist_ok=True)
+            print(f"Created output subdirectory: {output_subdir.absolute()}")
+        except Exception as e:
+            print(f"ERROR: Failed to create output subdirectory {output_subdir}: {str(e)}")
+            continue
 
         # Process video or image sequence
-        process_video(
-            str(input_path),
-            output_dir=str(output_subdir),
-            skip_frames=skip_frames,
-            extract_face=extract_face,
-            extract_pose=extract_pose,
-            is_image_sequence=is_image_sequence,
-            image_extension=image_extension
-        )
+        print(f"Starting processing of {input_type} to output directory: {output_subdir}")
+        try:
+            result =   process_video(
+                str(input_path),
+                output_dir=str(output_subdir),
+                skip_frames=skip_frames,
+                extract_face=extract_face,
+                extract_pose=extract_pose,
+                is_image_sequence=is_image_sequence,
+                image_extension=image_extension,
+                save_all_frames=save_all_frames
+            )
+
+            if result is None:
+                print(f"WARNING: Processing {input_type} {input_path} returned None. Check for errors.")
+            else:
+                print(f"Successfully processed {input_type} {input_path} with {len(result)} frames of data.")
+
+            # Verify output files exist
+            expected_video_file = Path(output_subdir) / "annotated_video.mp4"
+            expected_json_file = Path(output_subdir) / "video_landmarks.json"
+
+            if expected_video_file.exists():
+                print(f"Confirmed output video file exists: {expected_video_file}")
+                print(f"Video file size: {expected_video_file.stat().st_size} bytes")
+            else:
+                print(f"ERROR: Output video file not found: {expected_video_file}")
+
+            if expected_json_file.exists():
+                print(f"Confirmed output JSON file exists: {expected_json_file}")
+                print(f"JSON file size: {expected_json_file.stat().st_size} bytes")
+            else:
+                print(f"ERROR: Output JSON file not found: {expected_json_file}")
+
+        except Exception as e:
+            print(f"ERROR: Failed to process {input_type} {input_path}: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
 
 def main() -> None:
@@ -299,7 +342,8 @@ def main() -> None:
                 args.detect_faces,
                 args.detect_pose,
                 input_types=input_types,
-                image_extension=args.image_extension
+                image_extension=args.image_extension,
+                save_all_frames=args.save_all_frames
             )
         else:
             print("No videos or image sequences to process")
