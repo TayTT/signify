@@ -49,10 +49,12 @@ def enhance_image_for_hand_detection(
     # Step 4: Blend with original for better color preservation
     enhanced_image = cv2.addWeighted(image, 0.7, enhanced_gray_color, 0.3, 0)
 
+
+    # TODO: visualise full mesh TODO: not all points present in all frames:
+    #  1) count missing points frames (how?) and delete them if treshold is not exceeded
+    #  2)  detect hand disappearing from frame and exclude that from missing points
+
     # Visualize all steps if requested
-    # TODO: smaller points on visualisation
-    # TODO: visualise full mesh
-    # TODO: are all points present in all frames ???
     if visualize:
         try:
             import matplotlib.pyplot as plt
@@ -275,12 +277,14 @@ def process_image(
 def process_video(
         input_path: str,
         output_dir: str = './output_data/video',
-        skip_frames: int = 0,
+        skip_frames: int = 1,
         extract_face: bool = True,
         extract_pose: bool = True,
         is_image_sequence: bool = False,
         image_extension: str = "png",
-        save_all_frames: bool = False  # Add the new parameter
+        save_all_frames: bool = False,
+        use_full_mesh: bool = False,
+        use_enhancement: bool = False
 ) -> Optional[Dict[str, Any]]:
     """
     Process video or image sequence for sign language detection including hands, face, and pose landmarks.
@@ -288,26 +292,26 @@ def process_video(
     Args:
         input_path: Path to the video file or directory containing image frames
         output_dir: Directory to save output files
-        skip_frames: Process every nth frame for performance
+        skip_frames: Process every nth frame for performance (default: 1 = process all frames)
         extract_face: Whether to extract face landmarks
         extract_pose: Whether to extract pose landmarks
         is_image_sequence: Whether input is a directory of image frames instead of a video
         image_extension: Image file extension to look for when processing image sequences (jpg, png, etc.)
         save_all_frames: Whether to save all annotated frames to disk
+        use_full_mesh: Whether to use full face mesh or simplified key landmarks
+        use_enhancement: Whether to apply image enhancement for better hand detection
 
     Returns:
         Dictionary containing all frame data or None if processing fails
     """
     input_path = Path(input_path)
 
-    frames_dir = None
-    if save_all_frames:
-        frames_dir = Path(output_dir) / "frames"
-        frames_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Saving all annotated frames to: {frames_dir}")
+    # Always set up frames directory
+    frames_dir = Path(output_dir) / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Frames will be saved to: {frames_dir}")
 
     if is_image_sequence:
-
         if not input_path.is_dir():
             print(f"Image directory not found: {input_path}")
             return None
@@ -315,7 +319,6 @@ def process_video(
         # Get list of image files with specified extension
         image_files = sorted([f for f in input_path.glob(f"*.{image_extension}")],
                              key=lambda x: natural_sort_key(x.name))
-
 
         if not image_files:
             print(f"No {image_extension} images found in directory: {input_path}")
@@ -370,16 +373,18 @@ def process_video(
 
     try:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        # Adjust FPS for skipped frames
+        output_fps = fps / skip_frames if skip_frames > 1 else fps
         video_writer = cv2.VideoWriter(
             str(output_video_path),
             fourcc,
-            fps / skip_frames,
+            output_fps,
             (frame_width, frame_height)
         )
 
         if not video_writer.isOpened():
             print(f"ERROR: Could not initialize video writer for {output_video_path}")
-            print(f"Video properties: codec=mp4v, fps={fps / skip_frames}, size={frame_width}x{frame_height}")
+            print(f"Video properties: codec=mp4v, fps={output_fps}, size={frame_width}x{frame_height}")
 
             # Try with a different codec as fallback
             print("Trying with XVID codec as fallback...")
@@ -387,7 +392,7 @@ def process_video(
             video_writer = cv2.VideoWriter(
                 str(output_dir / "annotated_video.avi"),  # Use .avi extension for XVID
                 fourcc,
-                fps / skip_frames,
+                output_fps,
                 (frame_width, frame_height)
             )
 
@@ -400,8 +405,15 @@ def process_video(
         print(f"ERROR: Exception while initializing video writer: {str(e)}")
         return None
 
-    frame_count = 0
+    frame_count = 0  # Actual frame number (0-based from source)
+    processed_frame_count = 0  # Number of frames we've actually processed
     all_frames_data = {}
+
+    print(f"Processing settings:")
+    print(f"  - Skip frames: {skip_frames}")
+    print(f"  - Save all frames: {save_all_frames}")
+    print(f"  - Use enhancement: {use_enhancement}")
+    print(f"  - Use full mesh: {use_full_mesh}")
 
     # Initialize all MediaPipe solutions concurrently for efficiency
     with mp_hands.Hands(
@@ -426,9 +438,10 @@ def process_video(
         if is_image_sequence:
             # Process image sequence
             for img_idx, img_path in enumerate(image_files):
+                current_frame_number = img_idx  # 0-based frame number
+
                 # Process every nth frame to improve performance
-                if skip_frames > 0 & img_idx % skip_frames != 0:
-                    frame_count += 1
+                if skip_frames > 1 and img_idx % skip_frames != 0:
                     continue
 
                 frame = cv2.imread(str(img_path))
@@ -436,34 +449,40 @@ def process_video(
                     print(f"Could not read image: {img_path}")
                     continue
 
-                enhanced_frame = enhance_image_for_hand_detection(
-                    frame,
-                    visualize=False
-                )
-
-                if save_all_frames:
-                    current_frame_path = frames_dir / f"frame_{frame_count:04d}.png"
+                # Apply enhancement if requested
+                if use_enhancement:
+                    enhanced_frame = enhance_image_for_hand_detection(frame, visualize=False)
                 else:
-                    current_frame_path = None
-                    if frame_count % (skip_frames * 10) == 0:  # Save every 10th processed frame by default
-                        current_frame_path = Path(output_dir) / f"frame_{frame_count:04d}.png"
+                    enhanced_frame = frame
+
+                # Determine if we should save this frame - save every processed frame or just samples
+                if save_all_frames:
+                    # Save every processed frame
+                    current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png"
+                else:
+                    # Save every 10th processed frame as a sample
+                    current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png" if (
+                                processed_frame_count % 10 == 0) else None
 
                 process_frame(
-                    enhanced_frame, frame_count, fps, hands, face_mesh, pose,
+                    enhanced_frame, current_frame_number, fps, hands, face_mesh, pose,
                     extract_face, extract_pose, all_frames_data,
                     annotated_frame_path=current_frame_path,
                     video_writer=video_writer,
                     total_frames=total_frames,
                     skip_frames=skip_frames,
-                    save_all_frames=save_all_frames
+                    save_all_frames=save_all_frames,
+                    use_full_mesh=use_full_mesh
                 )
 
-                frame_count += 1
+                processed_frame_count += 1
 
-                # Print progress every 10 frames
-                if frame_count % 10 == 0:
-                    progress_percent = (frame_count / total_frames) * 100 if total_frames > 0 else 0
-                    print(f"Processed {frame_count} frames ({progress_percent:.1f}%)")
+                # Print progress every 10 processed frames
+                if processed_frame_count % 10 == 0:
+                    progress_percent = (current_frame_number / total_frames) * 100 if total_frames > 0 else 0
+                    print(
+                        f"Processed {processed_frame_count} frames (current frame: {current_frame_number}/{total_frames}, {progress_percent:.1f}%)")
+
         else:
             # Process video file
             while cap.isOpened():
@@ -473,21 +492,41 @@ def process_video(
 
                 # Process every nth frame to improve performance
                 if frame_count % skip_frames == 0:
+                    # Apply enhancement if requested
+                    if use_enhancement:
+                        enhanced_frame = enhance_image_for_hand_detection(frame, visualize=False)
+                    else:
+                        enhanced_frame = frame
+
+                    # Determine if we should save this frame - save every processed frame or just samples
+                    if save_all_frames:
+                        # Save every processed frame
+                        current_frame_path = frames_dir / f"frame_{frame_count:04d}.png"
+                    else:
+                        # Save every 10th processed frame as a sample
+                        current_frame_path = frames_dir / f"frame_{frame_count:04d}.png" if (
+                                    processed_frame_count % 10 == 0) else None
+
                     process_frame(
-                        frame, frame_count, fps, hands, face_mesh, pose,
+                        enhanced_frame, frame_count, fps, hands, face_mesh, pose,
                         extract_face, extract_pose, all_frames_data,
-                        annotated_frame_path=output_dir / f"frame_{frame_count:04d}.png",
+                        annotated_frame_path=current_frame_path,
                         video_writer=video_writer,
                         total_frames=total_frames,
-                        skip_frames=skip_frames
+                        skip_frames=skip_frames,
+                        save_all_frames=save_all_frames,
+                        use_full_mesh=use_full_mesh
                     )
 
-                frame_count += 1
+                    processed_frame_count += 1
 
-                # Print progress every 10 frames
-                if frame_count % 10 == 0:
-                    progress_percent = (frame_count / total_frames) * 100 if total_frames > 0 else 0
-                    print(f"Processed {frame_count} frames ({progress_percent:.1f}%)")
+                    # Print progress every 10 processed frames
+                    if processed_frame_count % 10 == 0:
+                        progress_percent = (frame_count / total_frames) * 100 if total_frames > 0 else 0
+                        print(
+                            f"Processed {processed_frame_count} frames (current frame: {frame_count}/{total_frames}, {progress_percent:.1f}%)")
+
+                frame_count += 1
 
             # Clean up video capture
             cap.release()
@@ -500,15 +539,22 @@ def process_video(
     metadata = {
         "input_source": input_name,
         "input_type": "image_sequence" if is_image_sequence else "video",
-        "total_frames": frame_count,
-        "processed_frames": len(all_frames_data),
+        "total_frames_in_source": total_frames,
+        "total_frames_scanned": frame_count if not is_image_sequence else len(image_files),
+        "processed_frames": processed_frame_count,
         "frame_skip": skip_frames,
         "fps": fps,
+        "output_fps": fps / skip_frames if skip_frames > 1 else fps,
         "resolution": f"{frame_width}x{frame_height}",
         "components_extracted": {
             "hands": True,
             "face": extract_face,
             "pose": extract_pose
+        },
+        "processing_options": {
+            "enhancement_applied": use_enhancement,
+            "full_face_mesh": use_full_mesh,
+            "save_all_frames": save_all_frames
         }
     }
 
@@ -518,18 +564,45 @@ def process_video(
         with open(json_path, "w") as f:
             json.dump({"metadata": metadata, "frames": all_frames_data}, f, indent=4)
         print(f"Processing complete. Data saved to {json_path}")
+        print(f"Total frames in source: {total_frames}")
+        print(f"Total frames processed: {processed_frame_count}")
+        print(f"Frames saved to disk: {len(list(frames_dir.glob('frame_*.png')))}")
+
+        # Verify output files exist
+        expected_video_file = output_video_path
+        if not expected_video_file.exists():
+            # Check for fallback .avi file
+            expected_video_file = output_dir / "annotated_video.avi"
+
+        if expected_video_file.exists():
+            print(f"Output video: {expected_video_file} ({expected_video_file.stat().st_size} bytes)")
+        else:
+            print(f"WARNING: No output video file found")
+
+        return all_frames_data
+
     except Exception as e:
-        print(f"Error processing frame {frame_count}: {e}")
+        print(f"Error saving results: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 def process_frame(
-        frame, frame_count, fps, hands, face_mesh, pose,
+        frame, actual_frame_number, fps, hands, face_mesh, pose,
         extract_face, extract_pose, all_frames_data,
         annotated_frame_path=None, video_writer=None,
         total_frames=0, skip_frames=1,
-        save_all_frames=False  # Add new parameter
+        save_all_frames=False,
+        use_full_mesh=False
 ):
-    """Helper function to process a single frame"""
+    """
+    Helper function to process a single frame
+
+    Args:
+        actual_frame_number: The actual frame number from the source (respects skip_frames)
+        Other parameters remain the same
+    """
     try:
         # Convert to RGB for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -537,10 +610,10 @@ def process_frame(
         # Make a copy for annotations
         annotated_frame = frame.copy()
 
-        # Initialize frame data structure
+        # Initialize frame data structure - use actual frame number
         frame_data = {
-            "frame": frame_count,
-            "timestamp": frame_count / fps,  # Add timestamp in seconds
+            "frame": actual_frame_number,  # This is now the actual frame number
+            "timestamp": actual_frame_number / fps,
             "hands": {"left_hand": [], "right_hand": []},
             "face": {"all_landmarks": [], "mouth_landmarks": []},
             "pose": {}
@@ -671,119 +744,114 @@ def process_frame(
                         }
                         face_data.append(point)
 
-                        # Extract mouth landmarks separately
                         if i in MOUTH_LANDMARKS:
                             mouth_data.append(point)
 
-                    # Store all landmarks in the frame data (for JSON)
                     frame_data["face"]["all_landmarks"] = face_data
                     frame_data["face"]["mouth_landmarks"] = mouth_data
 
-                    # Define key facial landmark indices for simplified visualization
-                    # These are the landmarks we'll actually draw on the frame
-                    KEY_FACE_LANDMARKS = {
-                        'silhouette': [
-                            10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
-                            397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
-                            172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
-                        ],
-                        'eyebrows': [
-                            70, 63, 105, 66, 107, 336, 296, 334, 293, 300
-                        ],
-                        'eyes': [
-                            # Left eye
-                            33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7,
-                            # Right eye
-                            362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382
-                        ],
-                        'nose': [
-                            168, 6, 197, 195, 5, 4, 1, 19, 94, 2
-                        ],
-                        'lips': [
-                            61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191,
-                            80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178
-                        ],
-                    }
+                    # Choose visualization based on use_full_mesh parameter
+                    if use_full_mesh:
+                        # Draw full face mesh
+                        mp_drawing.draw_landmarks(
+                            annotated_frame,
+                            face_landmarks,
+                            mp_face_mesh.FACEMESH_TESSELATION,
+                            landmark_drawing_spec=None,
+                            connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style()
+                        )
+                    else:
+                        # Draw simplified key landmarks
+                        KEY_FACE_LANDMARKS = {
+                            'silhouette': [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+                                           397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+                                           172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109],
+                            'eyebrows': [70, 63, 105, 66, 107, 336, 296, 334, 293, 300],
+                            'eyes': [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7,
+                                     362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382],
+                            'nose': [168, 6, 197, 195, 5, 4, 1, 19, 94, 2],
+                            'lips': [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191,
+                                     80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178],
+                        }
 
-                    # Draw each facial feature group with its specific color
-                    color_map = {
-                        'silhouette': (200, 200, 200),  # Gray
-                        'eyebrows': (0, 150, 255),  # Orange
-                        'eyes': (255, 0, 0),  # Blue
-                        'nose': (0, 255, 255),  # Yellow
-                        'lips': (0, 0, 255)  # Red
-                    }
+                        color_map = {
+                            'silhouette': (200, 200, 200),
+                            'eyebrows': (0, 150, 255),
+                            'eyes': (255, 0, 0),
+                            'nose': (0, 255, 255),
+                            'lips': (0, 0, 255)
+                        }
 
-                    # Draw face outline (silhouette)
-                    silhouette_points = []
-                    for idx in KEY_FACE_LANDMARKS['silhouette']:
-                        lm = face_landmarks.landmark[idx]
-                        x, y = int(lm.x * w), int(lm.y * h)
-                        silhouette_points.append((x, y))
+                        # Draw face outline (silhouette)
+                        silhouette_points = []
+                        for idx in KEY_FACE_LANDMARKS['silhouette']:
+                            lm = face_landmarks.landmark[idx]
+                            x, y = int(lm.x * w), int(lm.y * h)
+                            silhouette_points.append((x, y))
 
-                    if silhouette_points:
-                        # Draw the face contour as a polyline
-                        cv2.polylines(annotated_frame, [np.array(silhouette_points)], True,
-                                      color_map['silhouette'], 1)
+                        if silhouette_points:
+                            # Draw the face contour as a polyline
+                            cv2.polylines(annotated_frame, [np.array(silhouette_points)], True,
+                                          color_map['silhouette'], 1)
 
-                    # Draw eyebrows
-                    for idx in KEY_FACE_LANDMARKS['eyebrows']:
-                        lm = face_landmarks.landmark[idx]
-                        x, y = int(lm.x * w), int(lm.y * h)
-                        cv2.circle(annotated_frame, (x, y), 1, color_map['eyebrows'], -1)
+                        # Draw eyebrows
+                        for idx in KEY_FACE_LANDMARKS['eyebrows']:
+                            lm = face_landmarks.landmark[idx]
+                            x, y = int(lm.x * w), int(lm.y * h)
+                            cv2.circle(annotated_frame, (x, y), 1, color_map['eyebrows'], -1)
 
-                    # Draw eyes
-                    left_eye_points = []
-                    left_eye_indices = KEY_FACE_LANDMARKS['eyes'][:16]  # First 16 are left eye
-                    for idx in left_eye_indices:
-                        lm = face_landmarks.landmark[idx]
-                        x, y = int(lm.x * w), int(lm.y * h)
-                        left_eye_points.append((x, y))
+                        # Draw eyes
+                        left_eye_points = []
+                        left_eye_indices = KEY_FACE_LANDMARKS['eyes'][:16]  # First 16 are left eye
+                        for idx in left_eye_indices:
+                            lm = face_landmarks.landmark[idx]
+                            x, y = int(lm.x * w), int(lm.y * h)
+                            left_eye_points.append((x, y))
 
-                    right_eye_points = []
-                    right_eye_indices = KEY_FACE_LANDMARKS['eyes'][16:]  # Last 16 are right eye
-                    for idx in right_eye_indices:
-                        lm = face_landmarks.landmark[idx]
-                        x, y = int(lm.x * w), int(lm.y * h)
-                        right_eye_points.append((x, y))
+                        right_eye_points = []
+                        right_eye_indices = KEY_FACE_LANDMARKS['eyes'][16:]  # Last 16 are right eye
+                        for idx in right_eye_indices:
+                            lm = face_landmarks.landmark[idx]
+                            x, y = int(lm.x * w), int(lm.y * h)
+                            right_eye_points.append((x, y))
 
-                    if left_eye_points:
-                        cv2.polylines(annotated_frame, [np.array(left_eye_points)], True,
-                                      color_map['eyes'], 1)
-                    if right_eye_points:
-                        cv2.polylines(annotated_frame, [np.array(right_eye_points)], True,
-                                      color_map['eyes'], 1)
+                        if left_eye_points:
+                            cv2.polylines(annotated_frame, [np.array(left_eye_points)], True,
+                                          color_map['eyes'], 1)
+                        if right_eye_points:
+                            cv2.polylines(annotated_frame, [np.array(right_eye_points)], True,
+                                          color_map['eyes'], 1)
 
-                    # Draw nose
-                    nose_points = []
-                    for idx in KEY_FACE_LANDMARKS['nose']:
-                        lm = face_landmarks.landmark[idx]
-                        x, y = int(lm.x * w), int(lm.y * h)
-                        nose_points.append((x, y))
-                        cv2.circle(annotated_frame, (x, y), 1, color_map['nose'], -1)
+                        # Draw nose
+                        nose_points = []
+                        for idx in KEY_FACE_LANDMARKS['nose']:
+                            lm = face_landmarks.landmark[idx]
+                            x, y = int(lm.x * w), int(lm.y * h)
+                            nose_points.append((x, y))
+                            cv2.circle(annotated_frame, (x, y), 1, color_map['nose'], -1)
 
-                    # Draw lips
-                    outer_lip_points = []
-                    outer_lip_indices = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
-                    for idx in outer_lip_indices:
-                        lm = face_landmarks.landmark[idx]
-                        x, y = int(lm.x * w), int(lm.y * h)
-                        outer_lip_points.append((x, y))
+                        # Draw lips
+                        outer_lip_points = []
+                        outer_lip_indices = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
+                        for idx in outer_lip_indices:
+                            lm = face_landmarks.landmark[idx]
+                            x, y = int(lm.x * w), int(lm.y * h)
+                            outer_lip_points.append((x, y))
 
-                    if outer_lip_points:
-                        cv2.polylines(annotated_frame, [np.array(outer_lip_points)], True,
-                                      color_map['lips'], 1)
+                        if outer_lip_points:
+                            cv2.polylines(annotated_frame, [np.array(outer_lip_points)], True,
+                                          color_map['lips'], 1)
 
-                    inner_lip_points = []
-                    inner_lip_indices = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 191]
-                    for idx in inner_lip_indices:
-                        lm = face_landmarks.landmark[idx]
-                        x, y = int(lm.x * w), int(lm.y * h)
-                        inner_lip_points.append((x, y))
+                        inner_lip_points = []
+                        inner_lip_indices = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 191]
+                        for idx in inner_lip_indices:
+                            lm = face_landmarks.landmark[idx]
+                            x, y = int(lm.x * w), int(lm.y * h)
+                            inner_lip_points.append((x, y))
 
-                    if inner_lip_points:
-                        cv2.polylines(annotated_frame, [np.array(inner_lip_points)], True,
-                                      color_map['lips'], 1)
+                        if inner_lip_points:
+                            cv2.polylines(annotated_frame, [np.array(inner_lip_points)], True,
+                                          color_map['lips'], 1)
 
         # Step 3: Process pose landmarks if requested
         if extract_pose:
@@ -815,22 +883,22 @@ def process_frame(
                     connection_drawing_spec=pose_connection_spec
                 )
 
-        # Save frame data
-        all_frames_data[str(frame_count)] = frame_data
+        # Save frame data using actual frame number as key
+        all_frames_data[str(actual_frame_number)] = frame_data
 
-        # Add frame number and progress to the image (smaller font)
-        progress_percent = (frame_count / total_frames) * 100 if total_frames > 0 else 0
+        # Add frame info to image - show actual frame number
+        progress_percent = (actual_frame_number / total_frames) * 100 if total_frames > 0 else 0
         cv2.putText(
             annotated_frame,
-            f"Frame: {frame_count} | {progress_percent:.1f}%",
-            (10, 20),  # Move up for smaller text
+            f"Frame: {actual_frame_number} | {progress_percent:.1f}%",
+            (10, 20),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,  # Smaller font
+            0.5,
             (0, 255, 255),
-            1  # Thinner text
+            1
         )
 
-        # Save annotated frame image
+        # Save annotated frame image (only if path is provided)
         if annotated_frame_path:
             success = cv2.imwrite(str(annotated_frame_path), annotated_frame)
             if not success:
@@ -841,10 +909,9 @@ def process_frame(
             video_writer.write(annotated_frame)
 
     except Exception as e:
-        print(f"Error processing frame {frame_count}: {e}")
+        print(f"Error processing frame {actual_frame_number}: {e}")
         import traceback
         traceback.print_exc()
-
 def natural_sort_key(s):
     """
     Sort strings with embedded numbers in natural order.
