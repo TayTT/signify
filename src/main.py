@@ -214,20 +214,63 @@ def process_single_item(item_path: Path, output_dir: Path, args) -> None:
 
 def process_single_image_file(image_path: Path, output_dir: Path, args) -> None:
     """Process a single image file"""
-    print(f"Processing single image: {image_path}")
+    print(f"=== DEBUG: Processing single image ===")
+    print(f"Image path: {image_path}")
+    print(f"Output dir: {output_dir}")
+    print(f"Enhancement enabled: {args.enhance}")
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Created output directory: {output_dir}")
 
-        # Use the process_image function for single image processing
-        from processing import process_image
+        # Save comparisons if enhancement is enabled
+        if args.enhance:
+            print("Enhancement is enabled, creating comparisons...")
+            # Create comparisons directory alongside output directory
+            comparisons_dir = output_dir / "comparisons"
+            comparisons_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Created comparisons directory: {comparisons_dir}")
 
-        # Process the image
-        landmarks_data, annotated_image = process_image(
-            str(image_path),
-            detect_faces=True,
-            detect_pose=True
-        )
+            # Read image for comparison saving
+            image = cv2.imread(str(image_path))
+            if image is not None:
+                print(f"Successfully read image: {image.shape}")
+                # Set comparison save path (without extension)
+                comparison_save_path = str(comparisons_dir / f"image_{image_path.stem}")
+                print(f"Comparison save path: {comparison_save_path}")
+
+                # Apply enhancement with comparison saving
+                try:
+                    enhance_image_for_hand_detection(
+                        image,
+                        visualize=False,
+                        save_comparison=True,
+                        comparison_save_path=comparison_save_path
+                    )
+                    print(f"Successfully saved comparison images")
+                except Exception as e:
+                    print(f"ERROR in enhancement: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"ERROR: Could not read image: {image_path}")
+
+        # Use the updated process_image function with enhancement flag
+        print("Calling process_image...")
+        try:
+            landmarks_data, annotated_image = process_image(
+                str(image_path),
+                detect_faces=True,
+                detect_pose=True,
+                use_enhancement=args.enhance
+            )
+            print(
+                f"process_image returned: landmarks_data={'not None' if landmarks_data else 'None'}, annotated_image={'not None' if annotated_image is not None else 'None'}")
+        except Exception as e:
+            print(f"ERROR in process_image: {e}")
+            import traceback
+            traceback.print_exc()
+            return
 
         if landmarks_data is None:
             print(f"WARNING: Processing failed for {image_path}")
@@ -235,31 +278,42 @@ def process_single_image_file(image_path: Path, output_dir: Path, args) -> None:
 
         # Save the annotated image
         annotated_path = output_dir / f"annotated_{image_path.name}"
+        print(f"Saving annotated image to: {annotated_path}")
         if annotated_image is not None:
-            cv2.imwrite(str(annotated_path), annotated_image)
-            print(f"Saved annotated image: {annotated_path}")
+            success = cv2.imwrite(str(annotated_path), annotated_image)
+            if success:
+                print(f"Successfully saved annotated image: {annotated_path}")
+            else:
+                print(f"ERROR: Failed to save annotated image")
+        else:
+            print("ERROR: annotated_image is None")
 
         # Save landmarks data
         json_path = output_dir / f"landmarks_{image_path.stem}.json"
-        with open(json_path, 'w') as f:
-            json.dump({
-                "metadata": {
-                    "input_source": image_path.name,
-                    "input_type": "single_image",
-                    "processing_options": {
-                        "enhancement_applied": args.enhance,
-                        "full_face_mesh": args.full_mesh
-                    }
-                },
-                "landmarks": landmarks_data
-            }, f, indent=4)
+        print(f"Saving landmarks to: {json_path}")
+        try:
+            with open(json_path, 'w') as f:
+                json.dump({
+                    "metadata": {
+                        "input_source": image_path.name,
+                        "input_type": "single_image",
+                        "processing_options": {
+                            "enhancement_applied": args.enhance,
+                            "full_face_mesh": args.full_mesh
+                        }
+                    },
+                    "landmarks": landmarks_data
+                }, f, indent=4)
+            print(f"Successfully saved landmarks JSON")
+        except Exception as e:
+            print(f"ERROR saving JSON: {e}")
 
-        print(f"Successfully processed single image: {image_path}")
-        print(f"Results saved to: {output_dir}")
+        print(f"=== DEBUG: Successfully processed single image: {image_path} ===")
 
     except Exception as e:
         print(f"ERROR: Failed to process single image {image_path}: {str(e)}")
-
+        import traceback
+        traceback.print_exc()
 
 def find_processable_items(input_dir: Path) -> tuple[List[str], List[bool]]:
     """
@@ -313,41 +367,91 @@ def find_processable_items(input_dir: Path) -> tuple[List[str], List[bool]]:
 
 def process_batch(input_dir: Path, output_dir: Path, args) -> None:
     """Process all items found in the input directory"""
-    print(f"\n=== Batch Processing ===")
+    print(f"\n=== DEBUG: Batch Processing ===")
     print(f"Input directory: {input_dir}")
     print(f"Output directory: {output_dir}")
+    print(f"Enhancement enabled: {args.enhance}")
+    print(f"Skip frames: {args.skip_frames}")
+    print(f"Save all frames: {args.save_all_frames}")
 
-    # Find all processable items
-    input_paths, input_types = find_processable_items(input_dir)
-
-    if not input_paths:
-        print("No items to process.")
+    if not input_dir.exists():
+        print(f"ERROR: Input directory not found: {input_dir}")
         return
 
-    # Process each item
-    for idx, (input_path, is_image_sequence) in enumerate(zip(input_paths, input_types)):
-        input_path = Path(input_path)
-        input_type = "image directory" if is_image_sequence else "video"
+    # Define file extensions
+    video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'}
+    image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
 
-        print(f"\nProcessing {input_type} [{idx + 1}/{len(input_paths)}]: {input_path}")
+    # Find all processable items
+    found_videos = []
+    found_image_dirs = []
+    found_single_images = []
 
-        # Create output subdirectory
-        if is_image_sequence:
-            output_subdir = output_dir / f"images_{input_path.name}"
-        else:
-            output_subdir = output_dir / f"video_{input_path.stem}"
+    print("Scanning directory structure...")
 
+    # Walk through the directory
+    for item in input_dir.rglob('*'):
+        print(f"Checking item: {item}")
+        if item.is_file():
+            file_ext = item.suffix.lower()
+            print(f"  File extension: {file_ext}")
+            if file_ext in video_extensions:
+                found_videos.append(item)
+                print(f"  -> Added as video: {item.relative_to(input_dir)}")
+            elif file_ext in image_extensions:
+                # Check if this image is part of a sequence (in a subdirectory)
+                parent_dir = item.parent
+                if parent_dir != input_dir:
+                    # This is an image in a subdirectory - check if it's part of a sequence
+                    sibling_images = [f for f in parent_dir.glob('*') if f.suffix.lower() in image_extensions]
+                    if len(sibling_images) > 1:
+                        # This is part of an image sequence
+                        if parent_dir not in found_image_dirs:
+                            found_image_dirs.append(parent_dir)
+                            print(
+                                f"  -> Added as image directory: {parent_dir.relative_to(input_dir)} ({len(sibling_images)} images)")
+                    else:
+                        # Single image in subdirectory
+                        found_single_images.append(item)
+                        print(f"  -> Added as single image: {item.relative_to(input_dir)}")
+                else:
+                    # Single image in root data directory
+                    found_single_images.append(item)
+                    print(f"  -> Added as single image: {item.relative_to(input_dir)}")
+        elif item.is_dir():
+            print(f"  Directory: {item}")
+
+    total_items = len(found_videos) + len(found_image_dirs) + len(found_single_images)
+    print(f"\nScan results:")
+    print(f"- Videos: {len(found_videos)} -> {[v.name for v in found_videos]}")
+    print(f"- Image directories: {len(found_image_dirs)} -> {[d.name for d in found_image_dirs]}")
+    print(f"- Single images: {len(found_single_images)} -> {[i.name for i in found_single_images]}")
+    print(f"Total items to process: {total_items}")
+
+    if total_items == 0:
+        print("No processable items found.")
+        return
+
+    processed_count = 0
+    failed_count = 0
+
+    # Process videos
+    for idx, video_path in enumerate(found_videos):
+        print(f"\n=== Processing video [{idx + 1}/{len(found_videos)}]: {video_path.name} ===")
+
+        output_subdir = output_dir / f"video_{video_path.stem}"
         try:
             output_subdir.mkdir(parents=True, exist_ok=True)
+            print(f"Created video output dir: {output_subdir}")
 
-            # Process the item
+            print(f"Calling process_video with enhancement={args.enhance}")
             result = process_video(
-                str(input_path),
+                str(video_path),
                 output_dir=str(output_subdir),
                 skip_frames=args.skip_frames,
-                extract_face=True,  # Always extract face
-                extract_pose=True,  # Always extract pose
-                is_image_sequence=is_image_sequence,
+                extract_face=True,
+                extract_pose=True,
+                is_image_sequence=False,
                 image_extension=args.image_extension,
                 save_all_frames=args.save_all_frames,
                 use_full_mesh=args.full_mesh,
@@ -355,17 +459,80 @@ def process_batch(input_dir: Path, output_dir: Path, args) -> None:
             )
 
             if result is None:
-                print(f"WARNING: Processing failed for {input_path}")
+                print(f"WARNING: process_video returned None for {video_path}")
+                failed_count += 1
             else:
-                print(f"Successfully processed {input_path}")
+                print(f"SUCCESS: process_video completed for {video_path}")
+                processed_count += 1
 
         except Exception as e:
-            print(f"ERROR: Failed to process {input_path}: {str(e)}")
+            print(f"ERROR: Exception processing {video_path}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            failed_count += 1
+
+    # Process image directories
+    for idx, img_dir in enumerate(found_image_dirs):
+        print(f"\n=== Processing image directory [{idx + 1}/{len(found_image_dirs)}]: {img_dir.name} ===")
+
+        output_subdir = output_dir / f"images_{img_dir.name}"
+        try:
+            output_subdir.mkdir(parents=True, exist_ok=True)
+            print(f"Created image dir output: {output_subdir}")
+
+            print(f"Calling process_video (image sequence) with enhancement={args.enhance}")
+            result = process_video(
+                str(img_dir),
+                output_dir=str(output_subdir),
+                skip_frames=args.skip_frames,
+                extract_face=True,
+                extract_pose=True,
+                is_image_sequence=True,
+                image_extension=args.image_extension,
+                save_all_frames=args.save_all_frames,
+                use_full_mesh=args.full_mesh,
+                use_enhancement=args.enhance
+            )
+
+            if result is None:
+                print(f"WARNING: process_video returned None for {img_dir}")
+                failed_count += 1
+            else:
+                print(f"SUCCESS: process_video completed for {img_dir}")
+                processed_count += 1
+
+        except Exception as e:
+            print(f"ERROR: Exception processing {img_dir}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            failed_count += 1
+
+    # Process single images
+    for idx, img_path in enumerate(found_single_images):
+        print(f"\n=== Processing single image [{idx + 1}/{len(found_single_images)}]: {img_path.name} ===")
+
+        output_subdir = output_dir / f"image_{img_path.stem}"
+        try:
+            print(f"Calling process_single_image_file")
+            process_single_image_file(img_path, output_subdir, args)
+            print(f"SUCCESS: process_single_image_file completed for {img_path}")
+            processed_count += 1
+
+        except Exception as e:
+            print(f"ERROR: Exception processing {img_path}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            failed_count += 1
+
+    print(f"\n=== Processing Summary ===")
+    print(f"Total items: {total_items}")
+    print(f"Successfully processed: {processed_count}")
+    print(f"Failed: {failed_count}")
 
 
 def process_single_video_file(video_path: Path, output_dir: Path, args) -> None:
     """Process a single video file"""
-    print(f"Detected as video file")
+    print(f"Processing single video: {video_path}")
     output_subdir = output_dir / f"video_{video_path.stem}"
 
     try:
@@ -392,10 +559,9 @@ def process_single_video_file(video_path: Path, output_dir: Path, args) -> None:
     except Exception as e:
         print(f"ERROR: Failed to process {video_path}: {str(e)}")
 
-
 def process_single_image_directory(image_dir: Path, output_dir: Path, args, image_files: list) -> None:
     """Process a single directory containing image sequences"""
-    print(f"Detected as image directory with {len(image_files)} images")
+    print(f"Processing image directory: {image_dir} with {len(image_files)} images")
     output_subdir = output_dir / f"images_{image_dir.name}"
 
     try:
@@ -421,8 +587,6 @@ def process_single_image_directory(image_dir: Path, output_dir: Path, args, imag
 
     except Exception as e:
         print(f"ERROR: Failed to process {image_dir}: {str(e)}")
-
-
 def process_multiple_image_directories(parent_dir: Path, output_dir: Path, args) -> None:
     """Process multiple subdirectories containing image sequences"""
     # Check all common image extensions
@@ -470,7 +634,7 @@ def process_multiple_image_directories(parent_dir: Path, output_dir: Path, args)
                 image_extension=args.image_extension,
                 save_all_frames=args.save_all_frames,
                 use_full_mesh=args.full_mesh,
-                use_enhancement=args.enhance
+                use_enhancement=args.enhance  # ADD THIS LINE
             )
 
             if result is None:

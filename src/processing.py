@@ -18,9 +18,15 @@ mp_face_mesh = mp.solutions.face_mesh
 MOUTH_LANDMARKS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
 
 
+# TODO: visualise full mesh TODO: not all points present in all frames:
+#  1) count missing points frames (how?) and delete them if treshold is not exceeded
+#  2)  detect hand disappearing from frame and exclude that from missing points
+
 def enhance_image_for_hand_detection(
         image: np.ndarray,
-        visualize: bool = False
+        visualize: bool = False,
+        save_comparison: bool = False,
+        comparison_save_path: str = None
 ) -> np.ndarray:
     """
     Enhance the image to improve hand detection.
@@ -28,6 +34,8 @@ def enhance_image_for_hand_detection(
     Args:
         image: Input image in BGR format
         visualize: If True, displays all processing steps
+        save_comparison: If True, saves comparison images and histogram
+        comparison_save_path: Path to save comparison files (without extension)
 
     Returns:
         Enhanced image
@@ -42,27 +50,77 @@ def enhance_image_for_hand_detection(
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced_gray = clahe.apply(gray)
 
-    # Step 3: Convert back to color
+    # Step 3: Convert back to color - FIX: Use proper color conversion
     enhanced_gray_color = cv2.cvtColor(enhanced_gray, cv2.COLOR_GRAY2BGR)
-    # TODO: the conversion doesn't work for now?
 
     # Step 4: Blend with original for better color preservation
     enhanced_image = cv2.addWeighted(image, 0.7, enhanced_gray_color, 0.3, 0)
 
+    # Save comparison if requested
+    if save_comparison and comparison_save_path:
+        try:
+            # Ensure comparison directory exists
+            comparison_dir = Path(comparison_save_path).parent
+            comparison_dir.mkdir(parents=True, exist_ok=True)
 
-    # TODO: visualise full mesh TODO: not all points present in all frames:
-    #  1) count missing points frames (how?) and delete them if treshold is not exceeded
-    #  2)  detect hand disappearing from frame and exclude that from missing points
+            # Create side-by-side comparison
+            h, w = image.shape[:2]
+            comparison_image = np.zeros((h, w * 2, 3), dtype=np.uint8)
+            comparison_image[:, :w] = original
+            comparison_image[:, w:] = enhanced_image
 
-    # Visualize all steps if requested
+            # Add labels
+            cv2.putText(comparison_image, "Original", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.putText(comparison_image, "Enhanced", (w + 10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+            # Save comparison image
+            comparison_img_path = f"{comparison_save_path}_comparison.png"
+            cv2.imwrite(comparison_img_path, comparison_image)
+
+            # Create and save histogram comparison
+            try:
+                import matplotlib
+                matplotlib.use('Agg')  # Use non-interactive backend
+                import matplotlib.pyplot as plt
+
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+                # Original histogram
+                ax1.hist(gray.flatten(), 256, [0, 256], color='blue', alpha=0.7)
+                ax1.set_title('Original Image Histogram')
+                ax1.set_xlabel('Pixel Intensity')
+                ax1.set_ylabel('Frequency')
+
+                # Enhanced histogram
+                ax2.hist(enhanced_gray.flatten(), 256, [0, 256], color='red', alpha=0.7)
+                ax2.set_title('Enhanced Image Histogram')
+                ax2.set_xlabel('Pixel Intensity')
+                ax2.set_ylabel('Frequency')
+
+                plt.tight_layout()
+
+                # Save histogram
+                histogram_path = f"{comparison_save_path}_histogram.png"
+                plt.savefig(histogram_path, dpi=150, bbox_inches='tight')
+                plt.close()
+
+            except ImportError:
+                print("Matplotlib not available. Skipping histogram comparison.")
+            except Exception as e:
+                print(f"Error creating histogram comparison: {e}")
+
+        except Exception as e:
+            print(f"Error saving comparison files: {e}")
+
+    # Visualize all steps if requested (for debugging/development)
     if visualize:
         try:
             import matplotlib.pyplot as plt
 
             # Create a figure with subplots
             fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-
-            # Flatten axes for easier indexing
             axes = axes.flatten()
 
             # Display original image
@@ -109,39 +167,44 @@ def enhance_image_for_hand_detection(
 def process_image(
         file_path: str,
         detect_faces: bool = True,
-        detect_pose: bool = True
+        detect_pose: bool = True,
+        use_enhancement: bool = False
 ) -> Tuple[Optional[Dict[str, Any]], Optional[np.ndarray]]:
     """
     Process a single image and extract all landmarks.
-
-    Args:
-        file_path: Path to the image file
-        detect_faces: Whether to detect face landmarks
-        detect_pose: Whether to detect pose landmarks
-
-    Returns:
-        Tuple of (landmarks_data, annotated_image) or (None, None) if processing fails
     """
+    print(f"=== DEBUG process_image called ===")
+    print(f"File path: {file_path}")
+    print(f"Use enhancement: {use_enhancement}")
+    print(f"Detect faces: {detect_faces}")
+    print(f"Detect pose: {detect_pose}")
+
     if not os.path.exists(file_path):
-        print(f"File not found: {file_path}")
+        print(f"ERROR: File not found: {file_path}")
         return None, None
 
     image = cv2.imread(file_path)
     if image is None:
-        print(f"Could not read image: {file_path}")
+        print(f"ERROR: Could not read image: {file_path}")
         return None, None
+
+    print(f"Successfully loaded image: {image.shape}")
 
     image_height, image_width, _ = image.shape
 
-    # Create a copy for annotation
+    # Create a copy for annotation (always use original)
     annotated_image = image.copy()
 
-    # Enhance image for better hand detection
-    enhanced_image = enhance_image_for_hand_detection(image)
-
-    # Convert to RGB for MediaPipe
-    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    enhanced_rgb = cv2.cvtColor(enhanced_image, cv2.COLOR_BGR2RGB)
+    # Apply enhancement if requested
+    if use_enhancement:
+        enhanced_image = enhance_image_for_hand_detection(image)
+        # Convert enhanced image to RGB for MediaPipe
+        rgb_image = cv2.cvtColor(enhanced_image, cv2.COLOR_BGR2RGB)
+        enhanced_rgb = rgb_image  # This is now the enhanced version
+    else:
+        # Convert original to RGB for MediaPipe
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        enhanced_rgb = rgb_image
 
     image_data = {"face": {}, "pose": {}, "hands": {}}
 
@@ -153,12 +216,8 @@ def process_image(
             min_tracking_confidence=0.5,
             model_complexity=1
     ) as hands:
-        # Try with both original and enhanced images for better hand detection
-        results_hands = hands.process(rgb_image)
-
-        # If no hands detected in original, try with enhanced image
-        if not results_hands.multi_hand_landmarks:
-            results_hands = hands.process(enhanced_rgb)
+        # Use enhanced image for detection if available
+        results_hands = hands.process(enhanced_rgb)
 
         # Extract hand landmarks
         if results_hands.multi_hand_landmarks:
@@ -187,7 +246,7 @@ def process_image(
 
                     hands_data[f"{hand_label}_hand"] = hand_points
 
-                    # Draw hand landmarks with custom settings for better visibility
+                    # Draw hand landmarks on original image (not enhanced)
                     mp_drawing.draw_landmarks(
                         annotated_image,
                         hand_landmarks,
@@ -218,7 +277,7 @@ def process_image(
                 refine_landmarks=True,
                 min_detection_confidence=0.7
         ) as face_mesh:
-            results_face = face_mesh.process(rgb_image)
+            results_face = face_mesh.process(enhanced_rgb)
 
             if results_face.multi_face_landmarks:
                 for face_landmarks in results_face.multi_face_landmarks:
@@ -235,7 +294,7 @@ def process_image(
                     image_data["face"]["all_landmarks"] = face_data
                     image_data["face"]["mouth_landmarks"] = mouth_data
 
-                    # Draw face landmarks
+                    # Draw face landmarks on original image
                     mp_drawing.draw_landmarks(
                         annotated_image,
                         face_landmarks,
@@ -251,7 +310,7 @@ def process_image(
                 model_complexity=1,
                 min_detection_confidence=0.7
         ) as pose:
-            results_pose = pose.process(rgb_image)
+            results_pose = pose.process(enhanced_rgb)
 
             if results_pose.pose_landmarks:
                 pose_data = {}
@@ -261,7 +320,7 @@ def process_image(
 
                 image_data["pose"] = pose_data
 
-                # Draw pose landmarks
+                # Draw pose landmarks on original image
                 mp_drawing.draw_landmarks(
                     annotated_image,
                     results_pose.pose_landmarks,
@@ -271,9 +330,7 @@ def process_image(
 
     return image_data, annotated_image
 
-
 # TODO: check points in 3d
-
 def process_video(
         input_path: str,
         output_dir: str = './output_data/video',
@@ -449,12 +506,6 @@ def process_video(
                     print(f"Could not read image: {img_path}")
                     continue
 
-                # Apply enhancement if requested
-                if use_enhancement:
-                    enhanced_frame = enhance_image_for_hand_detection(frame, visualize=False)
-                else:
-                    enhanced_frame = frame
-
                 # Determine if we should save this frame - save every processed frame or just samples
                 if save_all_frames:
                     # Save every processed frame
@@ -465,14 +516,22 @@ def process_video(
                                 processed_frame_count % 10 == 0) else None
 
                 process_frame(
-                    enhanced_frame, current_frame_number, fps, hands, face_mesh, pose,
-                    extract_face, extract_pose, all_frames_data,
+                    frame,
+                    current_frame_number,
+                    fps,
+                    hands,
+                    face_mesh,
+                    pose,
+                    extract_face,
+                    extract_pose,
+                    all_frames_data,
                     annotated_frame_path=current_frame_path,
                     video_writer=video_writer,
                     total_frames=total_frames,
                     skip_frames=skip_frames,
                     save_all_frames=save_all_frames,
-                    use_full_mesh=use_full_mesh
+                    use_full_mesh=use_full_mesh,
+                    use_enhancement=use_enhancement
                 )
 
                 processed_frame_count += 1
@@ -492,12 +551,6 @@ def process_video(
 
                 # Process every nth frame to improve performance
                 if frame_count % skip_frames == 0:
-                    # Apply enhancement if requested
-                    if use_enhancement:
-                        enhanced_frame = enhance_image_for_hand_detection(frame, visualize=False)
-                    else:
-                        enhanced_frame = frame
-
                     # Determine if we should save this frame - save every processed frame or just samples
                     if save_all_frames:
                         # Save every processed frame
@@ -508,14 +561,22 @@ def process_video(
                                     processed_frame_count % 10 == 0) else None
 
                     process_frame(
-                        enhanced_frame, frame_count, fps, hands, face_mesh, pose,
-                        extract_face, extract_pose, all_frames_data,
+                        frame,
+                        frame_count,
+                        fps,
+                        hands,
+                        face_mesh,
+                        pose,
+                        extract_face,
+                        extract_pose,
+                        all_frames_data,
                         annotated_frame_path=current_frame_path,
                         video_writer=video_writer,
                         total_frames=total_frames,
                         skip_frames=skip_frames,
                         save_all_frames=save_all_frames,
-                        use_full_mesh=use_full_mesh
+                        use_full_mesh=use_full_mesh,
+                        use_enhancement=use_enhancement
                     )
 
                     processed_frame_count += 1
@@ -594,42 +655,69 @@ def process_frame(
         annotated_frame_path=None, video_writer=None,
         total_frames=0, skip_frames=1,
         save_all_frames=False,
-        use_full_mesh=False
+        use_full_mesh=False,
+        use_enhancement=False  # Add this parameter
 ):
     """
     Helper function to process a single frame
 
     Args:
         actual_frame_number: The actual frame number from the source (respects skip_frames)
+        use_enhancement: Whether to apply image enhancement for better hand detection
         Other parameters remain the same
     """
     try:
-        # Convert to RGB for MediaPipe
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Apply enhancement if requested - THIS IS THE KEY FIX
+        if use_enhancement:
+            # Create comparison save path if we're saving frames
+            comparison_save_path = None
+            if annotated_frame_path:
+                # Create comparisons directory alongside frames directory, not inside it
+                frames_dir = annotated_frame_path.parent  # This is the "frames" directory
+                output_dir = frames_dir.parent  # Go up one level to the main output directory
+                comparisons_dir = output_dir / "comparisons"
+                comparisons_dir.mkdir(parents=True, exist_ok=True)
 
-        # Make a copy for annotations
+                # Set comparison save path (without extension)
+                comparison_save_path = str(comparisons_dir / f"frame_{actual_frame_number:04d}")
+
+            # Apply enhancement with comparison saving
+            processing_frame = enhance_image_for_hand_detection(
+                frame,
+                visualize=False,
+                save_comparison=(annotated_frame_path is not None),
+                comparison_save_path=comparison_save_path
+            )
+        else:
+            processing_frame = frame
+
+        # Convert to RGB for MediaPipe - use the processing frame (enhanced or original)
+        rgb_frame = cv2.cvtColor(processing_frame, cv2.COLOR_BGR2RGB)
+
+        # Make a copy for annotations - always use original frame for annotations
         annotated_frame = frame.copy()
 
         # Initialize frame data structure - use actual frame number
         frame_data = {
-            "frame": actual_frame_number,  # This is now the actual frame number
+            "frame": actual_frame_number,
             "timestamp": actual_frame_number / fps,
             "hands": {"left_hand": [], "right_hand": []},
             "face": {"all_landmarks": [], "mouth_landmarks": []},
-            "pose": {}
+            "pose": {},
+            "enhancement_applied": use_enhancement  # Track if enhancement was used
         }
 
         # Custom drawing specs for smaller landmarks
         small_landmark_spec = mp_drawing.DrawingSpec(
             color=(0, 255, 0),  # Green
-            thickness=1,  # Thinner lines
-            circle_radius=1  # Smaller radius
+            thickness=1,
+            circle_radius=1
         )
 
         small_connection_spec = mp_drawing.DrawingSpec(
             color=(255, 0, 0),  # Red
-            thickness=1,  # Thinner connections
-            circle_radius=1  # Smaller radius
+            thickness=1,
+            circle_radius=1
         )
 
         # Custom specs for different landmark types
@@ -669,7 +757,7 @@ def process_frame(
             circle_radius=1
         )
 
-        # Step 1: Process hands
+        # Step 1: Process hands - use enhanced frame if available
         results_hands = hands.process(rgb_frame)
 
         if results_hands.multi_hand_landmarks:
@@ -700,7 +788,7 @@ def process_frame(
                 }
                 frame_data["hands"][f"{hand_type}_hand"] = hand_data
 
-                # Draw hand landmarks with smaller points
+                # Draw hand landmarks on original frame (not enhanced)
                 mp_drawing.draw_landmarks(
                     annotated_frame,
                     hand_landmarks,
@@ -716,14 +804,14 @@ def process_frame(
                 cv2.putText(
                     annotated_frame,
                     label_text,
-                    (wrist_x, wrist_y - 5),  # Move closer to the landmark
+                    (wrist_x, wrist_y - 5),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.4,  # Smaller font size
+                    0.4,
                     (0, 255, 0),
-                    1  # Thinner text
+                    1
                 )
 
-        # Step 2: Process face landmarks if requested
+        # Step 2: Process face landmarks if requested - use enhanced frame
         if extract_face:
             results_face = face_mesh.process(rgb_frame)
 
@@ -752,7 +840,7 @@ def process_frame(
 
                     # Choose visualization based on use_full_mesh parameter
                     if use_full_mesh:
-                        # Draw full face mesh
+                        # Draw full face mesh on original frame
                         mp_drawing.draw_landmarks(
                             annotated_frame,
                             face_landmarks,
@@ -761,7 +849,7 @@ def process_frame(
                             connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style()
                         )
                     else:
-                        # Draw simplified key landmarks
+                        # Draw simplified key landmarks (same as before)
                         KEY_FACE_LANDMARKS = {
                             'silhouette': [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
                                            397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
@@ -790,7 +878,6 @@ def process_frame(
                             silhouette_points.append((x, y))
 
                         if silhouette_points:
-                            # Draw the face contour as a polyline
                             cv2.polylines(annotated_frame, [np.array(silhouette_points)], True,
                                           color_map['silhouette'], 1)
 
@@ -802,14 +889,14 @@ def process_frame(
 
                         # Draw eyes
                         left_eye_points = []
-                        left_eye_indices = KEY_FACE_LANDMARKS['eyes'][:16]  # First 16 are left eye
+                        left_eye_indices = KEY_FACE_LANDMARKS['eyes'][:16]
                         for idx in left_eye_indices:
                             lm = face_landmarks.landmark[idx]
                             x, y = int(lm.x * w), int(lm.y * h)
                             left_eye_points.append((x, y))
 
                         right_eye_points = []
-                        right_eye_indices = KEY_FACE_LANDMARKS['eyes'][16:]  # Last 16 are right eye
+                        right_eye_indices = KEY_FACE_LANDMARKS['eyes'][16:]
                         for idx in right_eye_indices:
                             lm = face_landmarks.landmark[idx]
                             x, y = int(lm.x * w), int(lm.y * h)
@@ -853,7 +940,7 @@ def process_frame(
                             cv2.polylines(annotated_frame, [np.array(inner_lip_points)], True,
                                           color_map['lips'], 1)
 
-        # Step 3: Process pose landmarks if requested
+        # Step 3: Process pose landmarks if requested - use enhanced frame
         if extract_pose:
             results_pose = pose.process(rgb_frame)
 
@@ -874,7 +961,7 @@ def process_frame(
 
                 frame_data["pose"] = pose_data
 
-                # Draw pose landmarks with smaller points
+                # Draw pose landmarks on original frame
                 mp_drawing.draw_landmarks(
                     annotated_frame,
                     results_pose.pose_landmarks,
@@ -886,11 +973,12 @@ def process_frame(
         # Save frame data using actual frame number as key
         all_frames_data[str(actual_frame_number)] = frame_data
 
-        # Add frame info to image - show actual frame number
+        # Add frame info to image - show actual frame number and enhancement status
         progress_percent = (actual_frame_number / total_frames) * 100 if total_frames > 0 else 0
+        enhancement_text = " (Enhanced)" if use_enhancement else ""
         cv2.putText(
             annotated_frame,
-            f"Frame: {actual_frame_number} | {progress_percent:.1f}%",
+            f"Frame: {actual_frame_number} | {progress_percent:.1f}%{enhancement_text}",
             (10, 20),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
@@ -912,6 +1000,7 @@ def process_frame(
         print(f"Error processing frame {actual_frame_number}: {e}")
         import traceback
         traceback.print_exc()
+
 def natural_sort_key(s):
     """
     Sort strings with embedded numbers in natural order.
