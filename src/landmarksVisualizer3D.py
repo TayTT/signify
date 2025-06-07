@@ -17,6 +17,7 @@ from matplotlib.animation import FuncAnimation
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import argparse
+from collections import defaultdict, deque
 
 
 class LandmarksVisualizer3D:
@@ -101,7 +102,7 @@ class LandmarksVisualizer3D:
             # Use a subset of face landmarks for better visualization
             face_landmarks = face_data['all_landmarks']
             # Take every 10th landmark to reduce clutter
-            sampled_landmarks = face_landmarks[::10]
+            sampled_landmarks = face_landmarks[::2]
             points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
             landmarks_3d['face'] = points
 

@@ -22,6 +22,10 @@ MOUTH_LANDMARKS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
 #  1) count missing points frames (how?) and delete them if treshold is not exceeded
 #  2)  detect hand disappearing from frame and exclude that from missing points
 
+#TODO fix pose or ignore pose
+#TODO fix hands flickering
+#TODO visualize path of the hand
+
 def enhance_image_for_hand_detection(
         image: np.ndarray,
         visualize: bool = False,
@@ -330,7 +334,6 @@ def process_image(
 
     return image_data, annotated_image
 
-# TODO: check points in 3d
 def process_video(
         input_path: str,
         output_dir: str = './output_data/video',

@@ -70,6 +70,9 @@ Examples:
     parser.add_argument('--save-all-frames', action='store_true',
                         help='Save all annotated frames to disk (not just sample frames)')
 
+    parser.add_argument('--track-hands', action='store_true',
+                        help='Enable hand path visualization in 3D and 2D outputs (applied during visualization, not processing)')
+
     return parser.parse_args()
 
 
