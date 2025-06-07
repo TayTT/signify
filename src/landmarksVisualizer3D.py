@@ -23,20 +23,25 @@ from collections import defaultdict, deque
 class LandmarksVisualizer3D:
     """3D visualizer for sign language landmarks"""
 
-    def __init__(self, json_path: str, frame_rate: float = 10.0):
+    def __init__(self, json_path: str, frame_rate: float = 10.0, track_hands: bool = False):
         """
         Initialize the 3D visualizer
 
         Args:
             json_path: Path to video_landmarks.json file
             frame_rate: Animation frame rate (frames per second)
+            track_hands: Whether to enable hand path tracking
         """
         self.json_path = Path(json_path)
         self.frame_rate = frame_rate
+        self.track_hands = track_hands
         self.data = None
         self.frames_data = None
         self.metadata = None
         self.current_frame = 0
+
+        # Initialize hand path tracker if enabled
+        self.hand_tracker = None
 
         # Color scheme for different landmark types
         self.colors = {
@@ -47,6 +52,21 @@ class LandmarksVisualizer3D:
 
         # Load data
         self._load_data()
+
+        # Initialize hand tracking after data is loaded
+        if track_hands:
+            self.hand_tracker = HandPathTracker()
+            self.hand_tracker.precompute_paths_from_json(self.frames_data)
+
+            # Print path statistics
+            stats = self.hand_tracker.get_path_statistics()
+            print("Hand Path Statistics:")
+            print(f"  Left hand: {stats['left_hand']['total_points']} points, "
+                  f"distance: {stats['left_hand']['total_distance']:.3f}, "
+                  f"avg speed: {stats['left_hand']['avg_speed']:.3f}")
+            print(f"  Right hand: {stats['right_hand']['total_points']} points, "
+                  f"distance: {stats['right_hand']['total_distance']:.3f}, "
+                  f"avg speed: {stats['right_hand']['avg_speed']:.3f}")
 
     def _load_data(self):
         """Load landmarks data from JSON file"""
@@ -171,6 +191,7 @@ class LandmarksVisualizer3D:
             frame_num = len(frame_keys) - 1
 
         frame_key = frame_keys[frame_num]
+        current_frame_number = int(frame_key)
         landmarks = self._extract_landmarks_for_frame(frame_key)
 
         # Draw hand landmarks
@@ -196,9 +217,17 @@ class LandmarksVisualizer3D:
             # Draw pose connections
             self._draw_pose_connections(landmarks['pose'])
 
+        # Draw hand paths if tracking is enabled
+        if self.hand_tracker:
+            # For animations, show progressive path up to current frame
+            # For static, show full path
+            show_full_path = not hasattr(self, '_is_animating') or not self._is_animating
+            self.hand_tracker.draw_paths_3d(self.ax, current_frame_number, show_full_path)
+
         # Update title with frame info
         frame_timestamp = float(frame_key) / self.metadata.get('fps', 30)
-        self.ax.set_title(f'Frame {frame_key} (t={frame_timestamp:.2f}s)\n'
+        tracking_status = " (Hand Tracking ON)" if self.track_hands else ""
+        self.ax.set_title(f'Frame {frame_key} (t={frame_timestamp:.2f}s){tracking_status}\n'
                           f'Source: {self.metadata.get("input_source", "Unknown")}')
 
         # Add legend
@@ -253,14 +282,20 @@ class LandmarksVisualizer3D:
         """Display a static 3D visualization of landmarks for a specific frame"""
         self._setup_3d_plot()
 
+        # Mark as not animating for full path display
+        self._is_animating = False
+
         if frame_number is None:
             frame_number = 0
 
         self._draw_frame(frame_number)
 
-        # Add instructions
-        plt.figtext(0.02, 0.02, 'Use mouse to rotate view. Close window to exit.',
-                    fontsize=10, style='italic')
+        # Add instructions with hand tracking info
+        instruction_text = 'Use mouse to rotate view. Close window to exit.'
+        if self.track_hands:
+            instruction_text += '\nShowing complete hand movement paths.'
+
+        plt.figtext(0.02, 0.02, instruction_text, fontsize=10, style='italic')
 
         plt.tight_layout()
         plt.show()
@@ -268,6 +303,9 @@ class LandmarksVisualizer3D:
     def visualize_animated(self, interval: float = 100):
         """Display an animated 3D visualization of landmarks across all frames"""
         self._setup_3d_plot()
+
+        # Set animation flag for progressive path tracking
+        self._is_animating = True
 
         frame_keys = sorted(self.frames_data.keys(), key=int)
         total_frames = len(frame_keys)
@@ -280,8 +318,11 @@ class LandmarksVisualizer3D:
                                   interval=interval, blit=False, repeat=True)
 
         # Add instructions
-        plt.figtext(0.02, 0.02, 'Animation playing. Use mouse to rotate view. Close window to exit.',
-                    fontsize=10, style='italic')
+        instruction_text = 'Animation playing. Use mouse to rotate view. Close window to exit.'
+        if self.track_hands:
+            instruction_text += '\nHand paths build progressively as animation plays.'
+
+        plt.figtext(0.02, 0.02, instruction_text, fontsize=10, style='italic')
 
         plt.tight_layout()
         plt.show()
@@ -309,9 +350,287 @@ class LandmarksVisualizer3D:
 
         plt.close()
 
+    def analyze_hand_paths(self):
+        """Analyze and print detailed hand path information"""
+        if not self.hand_tracker:
+            print("Hand tracking is not enabled. Use track_hands=True to enable analysis.")
+            return
+
+        stats = self.hand_tracker.get_path_statistics()
+
+        print("\n" + "=" * 50)
+        print("HAND PATH ANALYSIS")
+        print("=" * 50)
+
+        print(f"\nVideo Information:")
+        print(f"  Source: {self.metadata.get('input_source', 'Unknown')}")
+        print(f"  FPS: {self.metadata.get('fps', 'Unknown')}")
+        print(f"  Total frames: {len(self.frames_data)}")
+
+        print(f"\nLeft Hand Movement:")
+        print(f"  Detected in {stats['left_hand']['total_points']} frames")
+        if stats['left_hand']['total_points'] > 0:
+            print(f"  Total distance traveled: {stats['left_hand']['total_distance']:.3f} units")
+            print(f"  Average speed: {stats['left_hand']['avg_speed']:.3f} units/second")
+            print(f"  Maximum speed: {stats['left_hand']['max_speed']:.3f} units/second")
+
+        print(f"\nRight Hand Movement:")
+        print(f"  Detected in {stats['right_hand']['total_points']} frames")
+        if stats['right_hand']['total_points'] > 0:
+            print(f"  Total distance traveled: {stats['right_hand']['total_distance']:.3f} units")
+            print(f"  Average speed: {stats['right_hand']['avg_speed']:.3f} units/second")
+            print(f"  Maximum speed: {stats['right_hand']['max_speed']:.3f} units/second")
+
+        # Detect periods of high activity
+        print(f"\nMovement Analysis:")
+        if self.hand_tracker.full_left_hand_path or self.hand_tracker.full_right_hand_path:
+            print("  Use the 3D visualization to see detailed movement patterns.")
+            print("  Green markers = Start positions")
+            print("  Red/Blue markers = Current/End positions")
+            print("  Path opacity increases toward the end of movement")
+
+        print("=" * 50)
+
+
+class HandPathTracker:
+    """Tracks and visualizes hand movement paths from JSON data"""
+
+    def __init__(self, max_path_length: int = 50):
+        """
+        Initialize hand path tracker
+
+        Args:
+            max_path_length: Maximum number of points to keep in path history
+        """
+        self.max_path_length = max_path_length
+        self.left_hand_path = deque(maxlen=max_path_length)
+        self.right_hand_path = deque(maxlen=max_path_length)
+
+        # Store full paths for analysis
+        self.full_left_hand_path = []
+        self.full_right_hand_path = []
+
+        # Path colors (slightly transparent)
+        self.path_colors = {
+            'left_hand': (1.0, 0.5, 0.5, 0.7),  # Light red with alpha
+            'right_hand': (0.5, 0.5, 1.0, 0.7)  # Light blue with alpha
+        }
+
+        # Wrist landmark index (MediaPipe hand landmark 0 is wrist)
+        self.wrist_index = 0
+
+    def precompute_paths_from_json(self, frames_data: dict):
+        """Precompute all hand paths from JSON data"""
+        print("Precomputing hand paths from JSON data...")
+
+        # Sort frame keys numerically
+        sorted_frame_keys = sorted(frames_data.keys(), key=int)
+
+        for frame_key in sorted_frame_keys:
+            frame_data = frames_data[frame_key]
+            hands_data = frame_data.get('hands', {})
+
+            # Process left hand
+            left_hand = hands_data.get('left_hand', [])
+            if left_hand:
+                # Handle both old and new JSON formats
+                if isinstance(left_hand, dict) and 'landmarks' in left_hand:
+                    landmarks = left_hand['landmarks']
+                else:
+                    landmarks = left_hand
+
+                if landmarks and len(landmarks) > self.wrist_index:
+                    wrist_point = landmarks[self.wrist_index]
+                    point = [wrist_point['x'], wrist_point['y'], wrist_point['z']]
+                    self.full_left_hand_path.append({
+                        'frame': int(frame_key),
+                        'point': point,
+                        'timestamp': frame_data.get('timestamp', int(frame_key) / 30.0)
+                    })
+
+            # Process right hand
+            right_hand = hands_data.get('right_hand', [])
+            if right_hand:
+                # Handle both old and new JSON formats
+                if isinstance(right_hand, dict) and 'landmarks' in right_hand:
+                    landmarks = right_hand['landmarks']
+                else:
+                    landmarks = right_hand
+
+                if landmarks and len(landmarks) > self.wrist_index:
+                    wrist_point = landmarks[self.wrist_index]
+                    point = [wrist_point['x'], wrist_point['y'], wrist_point['z']]
+                    self.full_right_hand_path.append({
+                        'frame': int(frame_key),
+                        'point': point,
+                        'timestamp': frame_data.get('timestamp', int(frame_key) / 30.0)
+                    })
+
+        print(
+            f"Computed paths: Left hand {len(self.full_left_hand_path)} points, Right hand {len(self.full_right_hand_path)} points")
+
+    def update_paths_for_frame(self, target_frame: int):
+        """Update visible paths up to the target frame"""
+        self.left_hand_path.clear()
+        self.right_hand_path.clear()
+
+        # Add left hand points up to target frame
+        for path_point in self.full_left_hand_path:
+            if path_point['frame'] <= target_frame:
+                self.left_hand_path.append(path_point['point'])
+            else:
+                break
+
+        # Add right hand points up to target frame
+        for path_point in self.full_right_hand_path:
+            if path_point['frame'] <= target_frame:
+                self.right_hand_path.append(path_point['point'])
+            else:
+                break
+
+    def get_path_for_frame_range(self, start_frame: int, end_frame: int, hand_type: str):
+        """Get path points for a specific frame range"""
+        if hand_type == 'left_hand':
+            path_data = self.full_left_hand_path
+        elif hand_type == 'right_hand':
+            path_data = self.full_right_hand_path
+        else:
+            return []
+
+        return [point['point'] for point in path_data
+                if start_frame <= point['frame'] <= end_frame]
+
+    def draw_paths_3d(self, ax, current_frame: int = None, show_full_path: bool = False):
+        """Draw hand paths on 3D plot"""
+        if show_full_path or current_frame is None:
+            # Draw complete paths
+            left_points = [p['point'] for p in self.full_left_hand_path]
+            right_points = [p['point'] for p in self.full_right_hand_path]
+        else:
+            # Draw paths up to current frame
+            left_points = [p['point'] for p in self.full_left_hand_path if p['frame'] <= current_frame]
+            right_points = [p['point'] for p in self.full_right_hand_path if p['frame'] <= current_frame]
+
+        # Draw left hand path
+        if len(left_points) > 1:
+            path_array = np.array(left_points)
+
+            # Draw main path line
+            ax.plot(path_array[:, 0], path_array[:, 1], path_array[:, 2],
+                    color=self.path_colors['left_hand'][:3],
+                    alpha=self.path_colors['left_hand'][3],
+                    linewidth=3, label='Left Hand Path')
+
+            # Add gradient effect by plotting segments with varying alpha
+            num_segments = min(20, len(path_array) - 1)
+            segment_size = max(1, len(path_array) // num_segments)
+
+            for i in range(0, len(path_array) - segment_size, segment_size):
+                end_idx = min(i + segment_size, len(path_array))
+                alpha = (i / len(path_array)) * 0.3 + 0.4  # Alpha from 0.4 to 0.7
+                ax.plot(path_array[i:end_idx, 0], path_array[i:end_idx, 1], path_array[i:end_idx, 2],
+                        color=self.path_colors['left_hand'][:3], alpha=alpha, linewidth=2)
+
+            # Mark start and end points
+            if len(path_array) > 0:
+                # Start point (green)
+                ax.scatter([path_array[0, 0]], [path_array[0, 1]], [path_array[0, 2]],
+                           c='green', s=100, marker='o', alpha=0.8, label='Left Start')
+                # End point (red)
+                ax.scatter([path_array[-1, 0]], [path_array[-1, 1]], [path_array[-1, 2]],
+                           c='red', s=100, marker='s', alpha=0.8, label='Left Current')
+
+        # Draw right hand path
+        if len(right_points) > 1:
+            path_array = np.array(right_points)
+
+            # Draw main path line
+            ax.plot(path_array[:, 0], path_array[:, 1], path_array[:, 2],
+                    color=self.path_colors['right_hand'][:3],
+                    alpha=self.path_colors['right_hand'][3],
+                    linewidth=3, label='Right Hand Path')
+
+            # Add gradient effect
+            num_segments = min(20, len(path_array) - 1)
+            segment_size = max(1, len(path_array) // num_segments)
+
+            for i in range(0, len(path_array) - segment_size, segment_size):
+                end_idx = min(i + segment_size, len(path_array))
+                alpha = (i / len(path_array)) * 0.3 + 0.4  # Alpha from 0.4 to 0.7
+                ax.plot(path_array[i:end_idx, 0], path_array[i:end_idx, 1], path_array[i:end_idx, 2],
+                        color=self.path_colors['right_hand'][:3], alpha=alpha, linewidth=2)
+
+            # Mark start and end points
+            if len(path_array) > 0:
+                # Start point (green)
+                ax.scatter([path_array[0, 0]], [path_array[0, 1]], [path_array[0, 2]],
+                           c='green', s=100, marker='o', alpha=0.8, label='Right Start')
+                # End point (blue)
+                ax.scatter([path_array[-1, 0]], [path_array[-1, 1]], [path_array[-1, 2]],
+                           c='blue', s=100, marker='s', alpha=0.8, label='Right Current')
+
+    def get_path_statistics(self):
+        """Get statistics about hand movements"""
+        stats = {
+            'left_hand': {
+                'total_points': len(self.full_left_hand_path),
+                'total_distance': 0.0,
+                'avg_speed': 0.0,
+                'max_speed': 0.0
+            },
+            'right_hand': {
+                'total_points': len(self.full_right_hand_path),
+                'total_distance': 0.0,
+                'avg_speed': 0.0,
+                'max_speed': 0.0
+            }
+        }
+
+        # Calculate distances and speeds for left hand
+        if len(self.full_left_hand_path) > 1:
+            distances = []
+            speeds = []
+            for i in range(1, len(self.full_left_hand_path)):
+                p1 = np.array(self.full_left_hand_path[i - 1]['point'])
+                p2 = np.array(self.full_left_hand_path[i]['point'])
+                distance = np.linalg.norm(p2 - p1)
+                distances.append(distance)
+
+                time_diff = self.full_left_hand_path[i]['timestamp'] - self.full_left_hand_path[i - 1]['timestamp']
+                if time_diff > 0:
+                    speed = distance / time_diff
+                    speeds.append(speed)
+
+            stats['left_hand']['total_distance'] = sum(distances)
+            if speeds:
+                stats['left_hand']['avg_speed'] = np.mean(speeds)
+                stats['left_hand']['max_speed'] = np.max(speeds)
+
+        # Calculate distances and speeds for right hand
+        if len(self.full_right_hand_path) > 1:
+            distances = []
+            speeds = []
+            for i in range(1, len(self.full_right_hand_path)):
+                p1 = np.array(self.full_right_hand_path[i - 1]['point'])
+                p2 = np.array(self.full_right_hand_path[i]['point'])
+                distance = np.linalg.norm(p2 - p1)
+                distances.append(distance)
+
+                time_diff = self.full_right_hand_path[i]['timestamp'] - self.full_right_hand_path[i - 1]['timestamp']
+                if time_diff > 0:
+                    speed = distance / time_diff
+                    speeds.append(speed)
+
+            stats['right_hand']['total_distance'] = sum(distances)
+            if speeds:
+                stats['right_hand']['avg_speed'] = np.mean(speeds)
+                stats['right_hand']['max_speed'] = np.max(speeds)
+
+        return stats
+
 
 def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: Optional[int] = None,
-                           save_path: Optional[str] = None):
+                           save_path: Optional[str] = None, track_hands: bool = False):
     """
     Visualize landmarks from video_landmarks.json in 3D space
 
@@ -320,9 +639,14 @@ def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: O
         mode: 'static' for single frame, 'animated' for animation
         frame_number: Specific frame to show (for static mode), None for first frame
         save_path: Path to save animation (optional, for animated mode)
+        track_hands: Whether to enable hand path tracking visualization
     """
     try:
-        visualizer = LandmarksVisualizer3D(json_path)
+        visualizer = LandmarksVisualizer3D(json_path, track_hands=track_hands)
+
+        # Show analysis if hand tracking is enabled
+        if track_hands:
+            visualizer.analyze_hand_paths()
 
         if mode == 'static':
             visualizer.visualize_static(frame_number)
@@ -339,6 +663,99 @@ def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: O
         raise
 
 
+def generate_2d_path_overlay_from_json(json_path: str, output_video_path: str = None):
+    """
+    Generate a 2D video with hand path overlays from JSON data
+    This works independently of the original video processing
+    """
+    import cv2
+
+    # Load JSON data
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    frames_data = data.get('frames', {})
+    metadata = data.get('metadata', {})
+
+    if not frames_data:
+        print("No frame data found in JSON")
+        return
+
+    # Get video properties from metadata
+    fps = metadata.get('fps', 30)
+    resolution = metadata.get('resolution', '640x480')
+    width, height = map(int, resolution.split('x'))
+
+    # Set up output video
+    if output_video_path is None:
+        output_video_path = Path(json_path).parent / "hand_paths_overlay.mp4"
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(str(output_video_path), fourcc, fps, (width, height))
+
+    # Initialize hand tracker
+    hand_tracker = HandPathTracker()
+    hand_tracker.precompute_paths_from_json(frames_data)
+
+    # Generate frames
+    frame_keys = sorted(frames_data.keys(), key=int)
+
+    for frame_key in frame_keys:
+        # Create blank frame
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+
+        current_frame_num = int(frame_key)
+
+        # Get paths up to current frame
+        left_points = [(int(p['point'][0] * width), int(p['point'][1] * height))
+                       for p in hand_tracker.full_left_hand_path
+                       if p['frame'] <= current_frame_num]
+
+        right_points = [(int(p['point'][0] * width), int(p['point'][1] * height))
+                        for p in hand_tracker.full_right_hand_path
+                        if p['frame'] <= current_frame_num]
+
+        # Draw paths
+        if len(left_points) > 1:
+            for i in range(1, len(left_points)):
+                alpha = i / len(left_points)
+                thickness = max(1, int(5 * alpha))
+                cv2.line(frame, left_points[i - 1], left_points[i], (0, 100, 255), thickness)
+
+        if len(right_points) > 1:
+            for i in range(1, len(right_points)):
+                alpha = i / len(right_points)
+                thickness = max(1, int(5 * alpha))
+                cv2.line(frame, right_points[i - 1], right_points[i], (255, 100, 0), thickness)
+
+        # Add current hand positions
+        current_frame_data = frames_data[frame_key]
+        hands_data = current_frame_data.get('hands', {})
+
+        for hand_type, color in [('left_hand', (0, 255, 255)), ('right_hand', (255, 255, 0))]:
+            hand_data = hands_data.get(hand_type, [])
+            if hand_data:
+                if isinstance(hand_data, dict) and 'landmarks' in hand_data:
+                    landmarks = hand_data['landmarks']
+                else:
+                    landmarks = hand_data
+
+                if landmarks:
+                    wrist = landmarks[0]
+                    x, y = int(wrist['x'] * width), int(wrist['y'] * height)
+                    cv2.circle(frame, (x, y), 8, color, -1)
+                    cv2.putText(frame, hand_type.replace('_', ' ').title(),
+                                (x + 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        # Add frame info
+        cv2.putText(frame, f"Frame: {frame_key}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+
+        out.write(frame)
+
+    out.release()
+    print(f"Hand path overlay video saved to: {output_video_path}")
+
 def main():
     """Command line interface for 3D visualization"""
     parser = argparse.ArgumentParser(description='Visualize sign language landmarks in 3D')
@@ -349,17 +766,19 @@ def main():
                         help='Frame number to display (for static mode, default: 0)')
     parser.add_argument('--save', type=str,
                         help='Save animation to file (for animated mode)')
+    parser.add_argument('--track-hands', action='store_true',
+                        help='Enable hand path visualization and analysis')
 
     args = parser.parse_args()
 
     print(f"Loading landmarks from: {args.json_path}")
     print(f"Mode: {args.mode}")
+    print(f"Hand tracking: {'ON' if args.track_hands else 'OFF'}")
 
     if args.mode == 'static':
         print(f"Displaying frame: {args.frame}")
 
-    visualize_landmarks_3d(args.json_path, args.mode, args.frame, args.save)
-
+    visualize_landmarks_3d(args.json_path, args.mode, args.frame, args.save, args.track_hands)
 
 if __name__ == "__main__":
     main()

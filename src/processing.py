@@ -25,6 +25,8 @@ MOUTH_LANDMARKS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
 #TODO fix pose or ignore pose
 #TODO fix hands flickering
 #TODO visualize path of the hand
+#TODO hands are only moving in 2d, flat to the boy. is there any 3d data?
+
 
 def enhance_image_for_hand_detection(
         image: np.ndarray,
