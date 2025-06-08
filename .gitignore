@@ -1,2 +1,7 @@
 ./src/__init__.py
 *.pyc
+.idea/signify.iml
+docs/changelog.txt
+data/
+output/
+output_data/
