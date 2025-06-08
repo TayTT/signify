@@ -45,6 +45,13 @@ mkdir -p data/videos data/images data/sequences
 
 ## Usage
 
+## Favourite commands
+```bash
+python src/main.py --save-all-frames --process-single data/01April_frames --skip-frames 1
+python src/landmarksVisualizer3D.py output/images_01Dec/video_landmarks.json --track-hands --mode animated
+
+```
+
 ### Basic Commands
 
 Process all data in the default `./data` directory:

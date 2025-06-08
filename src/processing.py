@@ -17,7 +17,6 @@ import math
 # TODO fix hands flickering - ADDRESSED WITH ENHANCED TRACKER
 # TODO visualize path of the hand
 # TODO hands are only moving in 2d, flat to the boy. is there any 3d data?
-#TODO add check if hand dosappears
 
 # MediaPipe solution instances
 mp_drawing = mp.solutions.drawing_utils
@@ -38,8 +37,19 @@ class EnhancedHandTracker:
                  min_tracking_confidence: float = 0.5,
                  temporal_smoothing_frames: int = 5,
                  confidence_threshold: float = 0.6,
-                 max_hand_distance_threshold: float = 0.3):
-        """Initialize enhanced hand tracker"""
+                 max_hand_distance_threshold: float = 0.3,
+                 frame_border_margin: float = 0.1):
+        """
+        Initialize enhanced hand tracker
+
+        Args:
+            min_detection_confidence: Higher threshold for initial detection
+            min_tracking_confidence: Threshold for tracking between frames
+            temporal_smoothing_frames: Number of frames to consider for smoothing
+            confidence_threshold: Minimum confidence to accept detection
+            max_hand_distance_threshold: Maximum distance a hand can move between frames
+            frame_border_margin: Distance from frame edge to consider "near border" (0.0-0.5)
+        """
         self.mp_hands = mp.solutions.hands
 
         # Initialize MediaPipe with optimized settings
@@ -55,6 +65,7 @@ class EnhancedHandTracker:
         self.temporal_smoothing_frames = temporal_smoothing_frames
         self.confidence_threshold = confidence_threshold
         self.max_hand_distance_threshold = max_hand_distance_threshold
+        self.frame_border_margin = frame_border_margin
 
         # Hand tracking history
         self.hand_history = {
@@ -71,6 +82,12 @@ class EnhancedHandTracker:
         # Previous frame data for continuity checking
         self.previous_hands = {'left_hand': None, 'right_hand': None}
 
+        # Track hand exit/entry status
+        self.hand_exit_status = {
+            'left_hand': {'exited_frame': False, 'exit_position': None, 'frames_since_exit': 0},
+            'right_hand': {'exited_frame': False, 'exit_position': None, 'frames_since_exit': 0}
+        }
+
         # Frame counter for analysis
         self.frame_count = 0
 
@@ -79,10 +96,183 @@ class EnhancedHandTracker:
             'total_detections': 0,
             'filtered_detections': 0,
             'false_positives_filtered': 0,
-            'smoothed_detections': 0
+            'smoothed_detections': 0,
+            'border_exits_detected': 0,
+            'invalid_reentries_filtered': 0
         }
 
+    def _is_near_frame_border(self, center: np.ndarray) -> tuple:
+        """
+        Check if hand center is near frame border
+
+        Args:
+            center: Hand center coordinates (normalized 0-1)
+
+        Returns:
+            Tuple of (is_near_border, border_side)
+            border_side can be 'left', 'right', 'top', 'bottom', or None
+        """
+        if center is None:
+            return False, None
+
+        x, y = center[0], center[1]
+        margin = self.frame_border_margin
+
+        # Check each border
+        if x <= margin:
+            return True, 'left'
+        elif x >= (1.0 - margin):
+            return True, 'right'
+        elif y <= margin:
+            return True, 'top'
+        elif y >= (1.0 - margin):
+            return True, 'bottom'
+
+        return False, None
+
+    def _is_valid_reentry(self, hand_type: str, current_center: np.ndarray) -> bool:
+        """
+        Check if a hand reentry is valid (near the border where it exited)
+
+        Args:
+            hand_type: 'left_hand' or 'right_hand'
+            current_center: Current hand center position
+
+        Returns:
+            True if reentry is valid, False if it's likely a false positive
+        """
+        exit_info = self.hand_exit_status[hand_type]
+
+        if not exit_info['exited_frame'] or exit_info['exit_position'] is None:
+            return True  # Hand never exited, so any detection is valid
+
+        # Check if current position is near a border
+        is_near_border, border_side = self._is_near_frame_border(current_center)
+
+        if is_near_border:
+            # Hand is re-entering near a border - this is likely valid
+            return True
+
+        # Hand is appearing in middle of frame after exiting
+        # This could be a false positive, especially if it happened recently
+        frames_since_exit = exit_info['frames_since_exit']
+
+        # Allow reentry in middle if enough frames have passed (hand might have moved off-screen and back)
+        max_frames_for_strict_check = 30  # About 1 second at 30fps
+
+        if frames_since_exit > max_frames_for_strict_check:
+            return True  # Enough time has passed, allow reentry anywhere
+
+        # Recent exit - be strict about reentry location
+        return False
+
+    def _update_exit_status(self, hand_type: str, current_center: np.ndarray, hand_detected: bool):
+        """
+        Update the exit status tracking for a hand
+
+        Args:
+            hand_type: 'left_hand' or 'right_hand'
+            current_center: Current hand center (or None if not detected)
+            hand_detected: Whether hand was detected in current frame
+        """
+        exit_info = self.hand_exit_status[hand_type]
+
+        if hand_detected and current_center is not None:
+            # Hand is detected
+            is_near_border, border_side = self._is_near_frame_border(current_center)
+
+            if exit_info['exited_frame']:
+                # Hand was previously marked as exited
+                if is_near_border:
+                    # Hand is re-entering near border - mark as back in frame
+                    exit_info['exited_frame'] = False
+                    exit_info['exit_position'] = None
+                    exit_info['frames_since_exit'] = 0
+                else:
+                    # Hand detected in middle after exit - increment counter but keep exit status
+                    exit_info['frames_since_exit'] += 1
+            else:
+                # Hand is in frame, check if it's about to exit
+                if is_near_border:
+                    # Hand is near border, store position in case it exits next frame
+                    exit_info['exit_position'] = current_center.copy()
+                # Reset exit status since hand is clearly in frame
+                exit_info['frames_since_exit'] = 0
+        else:
+            # Hand not detected
+            if not exit_info['exited_frame'] and exit_info['exit_position'] is not None:
+                # Hand was near border and now disappeared - mark as exited
+                exit_info['exited_frame'] = True
+                exit_info['frames_since_exit'] = 0
+                self.stats['border_exits_detected'] += 1
+            elif exit_info['exited_frame']:
+                # Hand was already marked as exited, increment counter
+                exit_info['frames_since_exit'] += 1
+
     def _get_hand_center(self, landmarks) -> np.ndarray:
+        """Get center point of hand (average of all landmarks)"""
+        if not landmarks:
+            return None
+
+        x_coords = [lm.x for lm in landmarks.landmark]
+        y_coords = [lm.y for lm in landmarks.landmark]
+        z_coords = [lm.z for lm in landmarks.landmark]
+
+        return np.array([
+            np.mean(x_coords),
+            np.mean(y_coords),
+            np.mean(z_coords)
+        ])
+
+    def _calculate_hand_size(self, landmarks) -> float:
+        """Calculate hand size based on distance between key points"""
+        if not landmarks or len(landmarks.landmark) < 21:
+            return 0.0
+
+        # Use distance between wrist and middle finger tip as size measure
+        wrist = landmarks.landmark[0]
+        middle_tip = landmarks.landmark[12]
+
+        distance = math.sqrt(
+            (wrist.x - middle_tip.x) ** 2 +
+            (wrist.y - middle_tip.y) ** 2
+        )
+
+        return distance
+
+    def _is_valid_hand_size(self, landmarks, min_size: float = 0.05, max_size: float = 0.5) -> bool:
+        """Check if detected hand has reasonable size"""
+        hand_size = self._calculate_hand_size(landmarks)
+        return min_size <= hand_size <= max_size
+
+    def _is_hand_shape_valid(self, landmarks) -> bool:
+        """Basic hand shape validation to filter false positives"""
+        if not landmarks or len(landmarks.landmark) < 21:
+            return False
+
+        # Check if landmarks form a reasonable hand shape
+        wrist = landmarks.landmark[0]
+        thumb_tip = landmarks.landmark[4]
+        index_tip = landmarks.landmark[8]
+        middle_tip = landmarks.landmark[12]
+        ring_tip = landmarks.landmark[16]
+        pinky_tip = landmarks.landmark[20]
+
+        # All fingertips should be further from wrist than palm
+        palm_center_y = np.mean([landmarks.landmark[i].y for i in [5, 9, 13, 17]])
+
+        # Basic validation: check if fingertips are in reasonable positions relative to palm
+        try:
+            fingertips_valid = True
+            for tip in [thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip]:
+                # Basic sanity check - fingertips shouldn't be exactly at wrist position
+                if abs(tip.x - wrist.x) < 0.01 and abs(tip.y - wrist.y) < 0.01:
+                    fingertips_valid = False
+                    break
+
+            return fingertips_valid
+        except:
+            return True  # If validation fails, accept the detection
         """Get center point of hand (average of all landmarks)"""
         if not landmarks:
             return None
@@ -289,6 +479,7 @@ class EnhancedHandTracker:
 
             for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
                 confidence = handedness.classification[0].score
+                hand_center = self._get_hand_center(hand_landmarks)
 
                 # Apply validation filters
                 if (confidence >= self.confidence_threshold and
@@ -304,8 +495,35 @@ class EnhancedHandTracker:
             if valid_hands:
                 current_hands = self._assign_hand_labels(valid_hands, valid_handedness)
 
+                # Apply frame boundary validation for each hand
+                for hand_type in ['left_hand', 'right_hand']:
+                    hand_data = current_hands.get(hand_type)
+
+                    if hand_data is not None:
+                        hand_center = hand_data['center']
+
+                        # Check if this is a valid reentry after hand exited frame
+                        if not self._is_valid_reentry(hand_type, hand_center):
+                            # Filter out this detection as likely false positive
+                            current_hands[hand_type] = None
+                            self.stats['invalid_reentries_filtered'] += 1
+
+                        # Update exit status for this hand
+                        self._update_exit_status(hand_type, hand_center, hand_data is not None)
+                    else:
+                        # No hand detected, update exit status
+                        self._update_exit_status(hand_type, None, False)
+
                 # Apply temporal smoothing
                 frame_hands = self._apply_temporal_smoothing(current_hands)
+            else:
+                # No valid hands detected, update exit status for both hands
+                self._update_exit_status('left_hand', None, False)
+                self._update_exit_status('right_hand', None, False)
+        else:
+            # No hands detected at all, update exit status for both hands
+            self._update_exit_status('left_hand', None, False)
+            self._update_exit_status('right_hand', None, False)
 
         # Update previous hands for next frame
         self.previous_hands = {k: v for k, v in frame_hands.items()}
@@ -387,9 +605,13 @@ class EnhancedHandTracker:
             'filtered_detections': self.stats['filtered_detections'],
             'false_positives_filtered': self.stats['false_positives_filtered'],
             'smoothed_detections': self.stats['smoothed_detections'],
+            'border_exits_detected': self.stats['border_exits_detected'],
+            'invalid_reentries_filtered': self.stats['invalid_reentries_filtered'],
             'filter_rate': (self.stats['filtered_detections'] / total) * 100,
             'false_positive_rate': (self.stats['false_positives_filtered'] / total) * 100,
-            'smooth_rate': (self.stats['smoothed_detections'] / total) * 100
+            'smooth_rate': (self.stats['smoothed_detections'] / total) * 100,
+            'border_exit_rate': (self.stats['border_exits_detected'] / max(1, self.frame_count)) * 100,
+            'invalid_reentry_rate': (self.stats['invalid_reentries_filtered'] / total) * 100
         }
 
 
@@ -835,7 +1057,8 @@ def process_video(
     enhanced_hand_tracker = EnhancedHandTracker(
         min_detection_confidence=0.7,
         temporal_smoothing_frames=5,
-        confidence_threshold=0.6
+        confidence_threshold=0.6,
+        frame_border_margin=0.1  # NEW: 10% of frame width/height considered "near border"
     )
 
     # Initialize face and pose solutions (keep existing)
