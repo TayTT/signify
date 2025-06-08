@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import argparse
 from collections import defaultdict, deque
+import cv2
 
 
 class LandmarksVisualizer3D:
@@ -30,7 +31,7 @@ class LandmarksVisualizer3D:
         Args:
             json_path: Path to video_landmarks.json file
             frame_rate: Animation frame rate (frames per second)
-            track_hands: Whether to enable hand path tracking
+            track_hands: Whether to enable hand path tracking with advanced consistency correction
         """
         self.json_path = Path(json_path)
         self.frame_rate = frame_rate
@@ -60,7 +61,10 @@ class LandmarksVisualizer3D:
 
             # Print path statistics
             stats = self.hand_tracker.get_path_statistics()
-            print("Hand Path Statistics:")
+            correction_info = stats['consistency_corrections']
+            print("\nHand Path Statistics (with advanced consistency correction):")
+            print(f"  Advanced corrections applied: {correction_info['corrections_made']}")
+            print(f"  Correction rate: {correction_info['correction_rate']:.1f}% of frames")
             print(f"  Left hand: {stats['left_hand']['total_points']} points, "
                   f"distance: {stats['left_hand']['total_distance']:.3f}, "
                   f"avg speed: {stats['left_hand']['avg_speed']:.3f}")
@@ -151,6 +155,71 @@ class LandmarksVisualizer3D:
 
         return landmarks_3d
 
+    def _extract_landmarks_for_frame_corrected(self, frame_key: str) -> Dict:
+        """Extract 3D coordinates for a specific frame using corrected hand data"""
+        if self.hand_tracker and hasattr(self.hand_tracker, 'corrected_frames_data'):
+            # Use corrected frame data if available
+            frame_data = self.hand_tracker.get_corrected_frame_data(frame_key)
+        else:
+            # Fall back to original data
+            frame_data = self.frames_data.get(frame_key, {})
+
+        landmarks_3d = {
+            'hands': {'left_hand': [], 'right_hand': []},
+            'face': [],
+            'pose': []
+        }
+
+        # Extract hand landmarks (using corrected data if available)
+        hands_data = frame_data.get('hands', {})
+        for hand_type in ['left_hand', 'right_hand']:
+            hand_info = hands_data.get(hand_type, {})
+            if isinstance(hand_info, dict) and 'landmarks' in hand_info:
+                # New format with confidence
+                hand_landmarks = hand_info['landmarks']
+            elif isinstance(hand_info, list):
+                # Old format - direct list
+                hand_landmarks = hand_info
+            else:
+                hand_landmarks = []
+
+            if hand_landmarks:
+                points = np.array([[lm['x'], lm['y'], lm['z']] for lm in hand_landmarks])
+                landmarks_3d['hands'][hand_type] = points
+
+        # Extract face landmarks (using original method since face doesn't have left/right issues)
+        face_data = frame_data.get('face', {})
+        if 'all_landmarks' in face_data and face_data['all_landmarks']:
+            face_landmarks = face_data['all_landmarks']
+            # Take every 2nd landmark to reduce clutter
+            sampled_landmarks = face_landmarks[::2]
+            points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
+            landmarks_3d['face'] = points
+
+        # Extract pose landmarks (using original method)
+        pose_data = frame_data.get('pose', {})
+        if pose_data:
+            key_pose_points = [
+                'NOSE', 'LEFT_EYE', 'RIGHT_EYE', 'LEFT_EAR', 'RIGHT_EAR',
+                'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
+                'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_HIP', 'RIGHT_HIP',
+                'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE'
+            ]
+
+            pose_points = []
+            for landmark_name in key_pose_points:
+                if landmark_name in pose_data:
+                    lm = pose_data[landmark_name]
+                    # Check visibility if available
+                    visibility = lm.get('visibility', 1.0)
+                    if visibility > 0.5:  # Only include visible landmarks
+                        pose_points.append([lm['x'], lm['y'], lm['z']])
+
+            if pose_points:
+                landmarks_3d['pose'] = np.array(pose_points)
+
+        return landmarks_3d
+
     def _setup_3d_plot(self):
         """Set up the 3D matplotlib plot"""
         self.fig = plt.figure(figsize=(12, 9))
@@ -192,7 +261,12 @@ class LandmarksVisualizer3D:
 
         frame_key = frame_keys[frame_num]
         current_frame_number = int(frame_key)
-        landmarks = self._extract_landmarks_for_frame(frame_key)
+
+        # Use corrected landmarks if hand tracking is enabled
+        if self.hand_tracker:
+            landmarks = self._extract_landmarks_for_frame_corrected(frame_key)
+        else:
+            landmarks = self._extract_landmarks_for_frame(frame_key)
 
         # Draw hand landmarks
         for hand_type, points in landmarks['hands'].items():
@@ -226,7 +300,7 @@ class LandmarksVisualizer3D:
 
         # Update title with frame info
         frame_timestamp = float(frame_key) / self.metadata.get('fps', 30)
-        tracking_status = " (Hand Tracking ON)" if self.track_hands else ""
+        tracking_status = " (Hand Tracking + Consistency Fix)" if self.track_hands else ""
         self.ax.set_title(f'Frame {frame_key} (t={frame_timestamp:.2f}s){tracking_status}\n'
                           f'Source: {self.metadata.get("input_source", "Unknown")}')
 
@@ -293,7 +367,8 @@ class LandmarksVisualizer3D:
         # Add instructions with hand tracking info
         instruction_text = 'Use mouse to rotate view. Close window to exit.'
         if self.track_hands:
-            instruction_text += '\nShowing complete hand movement paths.'
+            correction_stats = self.hand_tracker.get_path_statistics()['consistency_corrections']
+            instruction_text += f'\nShowing complete hand paths with {correction_stats["corrections_made"]} consistency corrections applied.'
 
         plt.figtext(0.02, 0.02, instruction_text, fontsize=10, style='italic')
 
@@ -320,7 +395,8 @@ class LandmarksVisualizer3D:
         # Add instructions
         instruction_text = 'Animation playing. Use mouse to rotate view. Close window to exit.'
         if self.track_hands:
-            instruction_text += '\nHand paths build progressively as animation plays.'
+            correction_stats = self.hand_tracker.get_path_statistics()['consistency_corrections']
+            instruction_text += f'\nHand paths build progressively with {correction_stats["corrections_made"]} consistency corrections.'
 
         plt.figtext(0.02, 0.02, instruction_text, fontsize=10, style='italic')
 
@@ -357,15 +433,21 @@ class LandmarksVisualizer3D:
             return
 
         stats = self.hand_tracker.get_path_statistics()
+        correction_info = stats['consistency_corrections']
 
-        print("\n" + "=" * 50)
-        print("HAND PATH ANALYSIS")
-        print("=" * 50)
+        print("\n" + "=" * 60)
+        print("HAND PATH ANALYSIS (WITH CONSISTENCY CORRECTION)")
+        print("=" * 60)
 
         print(f"\nVideo Information:")
         print(f"  Source: {self.metadata.get('input_source', 'Unknown')}")
         print(f"  FPS: {self.metadata.get('fps', 'Unknown')}")
         print(f"  Total frames: {len(self.frames_data)}")
+
+        print(f"\nConsistency Correction:")
+        print(f"  Left/Right hand swaps corrected: {correction_info['corrections_made']}")
+        print(f"  Distance threshold used: {correction_info['distance_threshold']:.3f}")
+        print(f"  Status: {'Applied' if correction_info['corrections_made'] > 0 else 'No corrections needed'}")
 
         print(f"\nLeft Hand Movement:")
         print(f"  Detected in {stats['left_hand']['total_points']} frames")
@@ -388,12 +470,195 @@ class LandmarksVisualizer3D:
             print("  Green markers = Start positions")
             print("  Red/Blue markers = Current/End positions")
             print("  Path opacity increases toward the end of movement")
+            print("  Hand paths are corrected for left/right consistency")
 
-        print("=" * 50)
+        print("=" * 60)
+
+
+class HandConsistencyTracker:
+    """Advanced hand tracking to fix left/right hand swapping issues"""
+
+    def __init__(self, distance_threshold: float = 0.2, confidence_threshold: int = 3):
+        """
+        Initialize hand consistency tracker
+
+        Args:
+            distance_threshold: Maximum distance for hand to be considered the same hand
+            confidence_threshold: Number of consecutive frames needed to confirm a swap
+        """
+        self.distance_threshold = distance_threshold
+        self.confidence_threshold = confidence_threshold
+
+        # Track hand positions over multiple frames
+        self.hand_history = {
+            'left_hand': [],
+            'right_hand': []
+        }
+
+        # Keep track of potential swaps
+        self.swap_confidence = 0
+        self.pending_swap = False
+
+        # Statistics
+        self.correction_count = 0
+        self.frame_count = 0
+
+        # Smoothing parameters
+        self.max_history = 5  # Keep last 5 positions for smoothing
+
+    def _extract_hand_position(self, hand_data):
+        """Extract wrist position from hand data"""
+        if not hand_data:
+            return None
+
+        if isinstance(hand_data, dict) and 'landmarks' in hand_data:
+            landmarks = hand_data['landmarks']
+        else:
+            landmarks = hand_data
+
+        if landmarks and len(landmarks) > 0:
+            wrist = landmarks[0]
+            return np.array([wrist['x'], wrist['y'], wrist['z']])
+        return None
+
+    def _get_average_position(self, hand_type):
+        """Get average position from recent history"""
+        if not self.hand_history[hand_type]:
+            return None
+
+        positions = self.hand_history[hand_type][-3:]  # Use last 3 positions
+        return np.mean(positions, axis=0)
+
+    def _should_swap_hands(self, current_left_pos, current_right_pos):
+        """Determine if hands should be swapped based on multiple criteria"""
+        if current_left_pos is None or current_right_pos is None:
+            return False
+
+        # Get expected positions based on history
+        expected_left = self._get_average_position('left_hand')
+        expected_right = self._get_average_position('right_hand')
+
+        if expected_left is None or expected_right is None:
+            return False
+
+        # Calculate distances
+        left_to_expected_left = np.linalg.norm(current_left_pos - expected_left)
+        left_to_expected_right = np.linalg.norm(current_left_pos - expected_right)
+        right_to_expected_left = np.linalg.norm(current_right_pos - expected_left)
+        right_to_expected_right = np.linalg.norm(current_right_pos - expected_right)
+
+        # Check if current labels are swapped
+        current_assignment_cost = left_to_expected_left + right_to_expected_right
+        swapped_assignment_cost = left_to_expected_right + right_to_expected_left
+
+        # Additional criteria: X-position consistency (left hand should generally be on the left side)
+        x_position_consistent = current_left_pos[0] <= current_right_pos[0]  # Left should be more to the left
+
+        # Decide if swap is needed
+        swap_needed = (
+                swapped_assignment_cost < current_assignment_cost and
+                swapped_assignment_cost < self.distance_threshold * 2 and
+                not x_position_consistent
+        )
+
+        return swap_needed
+
+    def correct_hand_labels(self, hands_data: dict):
+        """
+        Correct hand labels using advanced tracking with confidence voting
+
+        Args:
+            hands_data: Dictionary with 'left_hand' and 'right_hand' data
+
+        Returns:
+            Corrected hands_data dictionary
+        """
+        self.frame_count += 1
+
+        # Extract current positions
+        current_left_pos = self._extract_hand_position(hands_data.get('left_hand', []))
+        current_right_pos = self._extract_hand_position(hands_data.get('right_hand', []))
+
+        # If we don't have both hands, just update history and return
+        if current_left_pos is None or current_right_pos is None:
+            # Update history for available hands
+            if current_left_pos is not None:
+                self.hand_history['left_hand'].append(current_left_pos)
+                if len(self.hand_history['left_hand']) > self.max_history:
+                    self.hand_history['left_hand'].pop(0)
+
+            if current_right_pos is not None:
+                self.hand_history['right_hand'].append(current_right_pos)
+                if len(self.hand_history['right_hand']) > self.max_history:
+                    self.hand_history['right_hand'].pop(0)
+
+            # Reset swap confidence when we don't have both hands
+            self.swap_confidence = 0
+            self.pending_swap = False
+            return hands_data
+
+        # For the first few frames, just build up history
+        if len(self.hand_history['left_hand']) < 2:
+            self.hand_history['left_hand'].append(current_left_pos)
+            self.hand_history['right_hand'].append(current_right_pos)
+            return hands_data
+
+        # Check if swap is needed
+        swap_needed = self._should_swap_hands(current_left_pos, current_right_pos)
+
+        # Update confidence counter
+        if swap_needed:
+            self.swap_confidence += 1
+        else:
+            self.swap_confidence = max(0, self.swap_confidence - 1)
+
+        # Apply swap if confidence threshold is met
+        if self.swap_confidence >= self.confidence_threshold:
+            corrected_hands_data = {
+                'left_hand': hands_data.get('right_hand', []),
+                'right_hand': hands_data.get('left_hand', [])
+            }
+
+            # Update history with swapped positions
+            self.hand_history['left_hand'].append(current_right_pos)
+            self.hand_history['right_hand'].append(current_left_pos)
+
+            self.correction_count += 1
+            self.swap_confidence = 0  # Reset after correction
+
+            # Trim history
+            if len(self.hand_history['left_hand']) > self.max_history:
+                self.hand_history['left_hand'].pop(0)
+            if len(self.hand_history['right_hand']) > self.max_history:
+                self.hand_history['right_hand'].pop(0)
+
+            return corrected_hands_data
+        else:
+            # Update history with current positions
+            self.hand_history['left_hand'].append(current_left_pos)
+            self.hand_history['right_hand'].append(current_right_pos)
+
+            # Trim history
+            if len(self.hand_history['left_hand']) > self.max_history:
+                self.hand_history['left_hand'].pop(0)
+            if len(self.hand_history['right_hand']) > self.max_history:
+                self.hand_history['right_hand'].pop(0)
+
+            return hands_data
+
+    def get_correction_stats(self):
+        """Get statistics about corrections made"""
+        return {
+            'corrections_made': self.correction_count,
+            'total_frames': self.frame_count,
+            'correction_rate': self.correction_count / max(1, self.frame_count) * 100,
+            'distance_threshold': self.distance_threshold,
+            'confidence_threshold': self.confidence_threshold
+        }
 
 
 class HandPathTracker:
-    """Tracks and visualizes hand movement paths from JSON data"""
+    """Tracks and visualizes hand movement paths from JSON data with advanced consistency correction"""
 
     def __init__(self, max_path_length: int = 50):
         """
@@ -410,6 +675,12 @@ class HandPathTracker:
         self.full_left_hand_path = []
         self.full_right_hand_path = []
 
+        # Initialize advanced consistency tracker
+        self.consistency_tracker = HandConsistencyTracker(
+            distance_threshold=0.15,  # Stricter threshold
+            confidence_threshold=2  # Require 2 consecutive frames before swapping
+        )
+
         # Path colors (slightly transparent)
         self.path_colors = {
             'left_hand': (1.0, 0.5, 0.5, 0.7),  # Light red with alpha
@@ -420,14 +691,37 @@ class HandPathTracker:
         self.wrist_index = 0
 
     def precompute_paths_from_json(self, frames_data: dict):
-        """Precompute all hand paths from JSON data"""
-        print("Precomputing hand paths from JSON data...")
+        """Precompute all hand paths from JSON data with advanced consistency correction"""
+        print("Precomputing hand paths with advanced consistency correction...")
 
         # Sort frame keys numerically
         sorted_frame_keys = sorted(frames_data.keys(), key=int)
 
+        # First pass: collect all hand data and apply consistency correction
+        corrected_frames_data = {}
+
+        print(f"Processing {len(sorted_frame_keys)} frames for hand consistency...")
+
+        for i, frame_key in enumerate(sorted_frame_keys):
+            frame_data = frames_data[frame_key].copy()
+            hands_data = frame_data.get('hands', {})
+
+            # Apply advanced consistency correction
+            corrected_hands = self.consistency_tracker.correct_hand_labels(hands_data)
+
+            # Update frame data with corrected hands
+            frame_data['hands'] = corrected_hands
+            corrected_frames_data[frame_key] = frame_data
+
+            # Progress indicator
+            if (i + 1) % 50 == 0 or i == len(sorted_frame_keys) - 1:
+                print(f"  Processed {i + 1}/{len(sorted_frame_keys)} frames...")
+
+        print("Building hand movement paths from corrected data...")
+
+        # Second pass: build paths from corrected data
         for frame_key in sorted_frame_keys:
-            frame_data = frames_data[frame_key]
+            frame_data = corrected_frames_data[frame_key]
             hands_data = frame_data.get('hands', {})
 
             # Process left hand
@@ -466,8 +760,57 @@ class HandPathTracker:
                         'timestamp': frame_data.get('timestamp', int(frame_key) / 30.0)
                     })
 
+        # Store corrected data for use in visualization
+        self.corrected_frames_data = corrected_frames_data
+
+        # Print correction statistics
+        correction_stats = self.consistency_tracker.get_correction_stats()
+        print(f"\nAdvanced Hand Consistency Results:")
+        print(f"  Total corrections applied: {correction_stats['corrections_made']}")
+        print(f"  Correction rate: {correction_stats['correction_rate']:.1f}% of frames")
+        print(f"  Distance threshold: {correction_stats['distance_threshold']}")
+        print(f"  Confidence threshold: {correction_stats['confidence_threshold']} frames")
         print(
-            f"Computed paths: Left hand {len(self.full_left_hand_path)} points, Right hand {len(self.full_right_hand_path)} points")
+            f"Final paths: Left hand {len(self.full_left_hand_path)} points, Right hand {len(self.full_right_hand_path)} points")
+
+        # Validate path consistency
+        self._validate_path_consistency()
+
+    def _validate_path_consistency(self):
+        """Validate that the paths look consistent (no major jumps)"""
+        print("\nValidating path consistency...")
+
+        def check_path_jumps(path_data, hand_name):
+            if len(path_data) < 2:
+                return 0
+
+            jump_count = 0
+            jump_threshold = 0.3  # Large movement threshold
+
+            for i in range(1, len(path_data)):
+                p1 = np.array(path_data[i - 1]['point'])
+                p2 = np.array(path_data[i]['point'])
+                distance = np.linalg.norm(p2 - p1)
+
+                if distance > jump_threshold:
+                    jump_count += 1
+
+            return jump_count
+
+        left_jumps = check_path_jumps(self.full_left_hand_path, "Left")
+        right_jumps = check_path_jumps(self.full_right_hand_path, "Right")
+
+        print(f"  Left hand large movements: {left_jumps}")
+        print(f"  Right hand large movements: {right_jumps}")
+
+        if left_jumps + right_jumps < 5:
+            print("  ✅ Paths look consistent!")
+        else:
+            print("  ⚠️  Some large movements detected - this might be normal or indicate remaining issues")
+
+    def get_corrected_frame_data(self, frame_key: str):
+        """Get corrected frame data for a specific frame"""
+        return self.corrected_frames_data.get(frame_key, {})
 
     def update_paths_for_frame(self, target_frame: int):
         """Update visible paths up to the target frame"""
@@ -519,17 +862,18 @@ class HandPathTracker:
             ax.plot(path_array[:, 0], path_array[:, 1], path_array[:, 2],
                     color=self.path_colors['left_hand'][:3],
                     alpha=self.path_colors['left_hand'][3],
-                    linewidth=3, label='Left Hand Path')
+                    linewidth=3, label='Left Hand Path (Advanced Corrected)')
 
             # Add gradient effect by plotting segments with varying alpha
             num_segments = min(20, len(path_array) - 1)
-            segment_size = max(1, len(path_array) // num_segments)
+            if num_segments > 0:
+                segment_size = max(1, len(path_array) // num_segments)
 
-            for i in range(0, len(path_array) - segment_size, segment_size):
-                end_idx = min(i + segment_size, len(path_array))
-                alpha = (i / len(path_array)) * 0.3 + 0.4  # Alpha from 0.4 to 0.7
-                ax.plot(path_array[i:end_idx, 0], path_array[i:end_idx, 1], path_array[i:end_idx, 2],
-                        color=self.path_colors['left_hand'][:3], alpha=alpha, linewidth=2)
+                for i in range(0, len(path_array) - segment_size, segment_size):
+                    end_idx = min(i + segment_size, len(path_array))
+                    alpha = (i / len(path_array)) * 0.3 + 0.4  # Alpha from 0.4 to 0.7
+                    ax.plot(path_array[i:end_idx, 0], path_array[i:end_idx, 1], path_array[i:end_idx, 2],
+                            color=self.path_colors['left_hand'][:3], alpha=alpha, linewidth=2)
 
             # Mark start and end points
             if len(path_array) > 0:
@@ -548,17 +892,18 @@ class HandPathTracker:
             ax.plot(path_array[:, 0], path_array[:, 1], path_array[:, 2],
                     color=self.path_colors['right_hand'][:3],
                     alpha=self.path_colors['right_hand'][3],
-                    linewidth=3, label='Right Hand Path')
+                    linewidth=3, label='Right Hand Path (Advanced Corrected)')
 
             # Add gradient effect
             num_segments = min(20, len(path_array) - 1)
-            segment_size = max(1, len(path_array) // num_segments)
+            if num_segments > 0:
+                segment_size = max(1, len(path_array) // num_segments)
 
-            for i in range(0, len(path_array) - segment_size, segment_size):
-                end_idx = min(i + segment_size, len(path_array))
-                alpha = (i / len(path_array)) * 0.3 + 0.4  # Alpha from 0.4 to 0.7
-                ax.plot(path_array[i:end_idx, 0], path_array[i:end_idx, 1], path_array[i:end_idx, 2],
-                        color=self.path_colors['right_hand'][:3], alpha=alpha, linewidth=2)
+                for i in range(0, len(path_array) - segment_size, segment_size):
+                    end_idx = min(i + segment_size, len(path_array))
+                    alpha = (i / len(path_array)) * 0.3 + 0.4  # Alpha from 0.4 to 0.7
+                    ax.plot(path_array[i:end_idx, 0], path_array[i:end_idx, 1], path_array[i:end_idx, 2],
+                            color=self.path_colors['right_hand'][:3], alpha=alpha, linewidth=2)
 
             # Mark start and end points
             if len(path_array) > 0:
@@ -583,7 +928,8 @@ class HandPathTracker:
                 'total_distance': 0.0,
                 'avg_speed': 0.0,
                 'max_speed': 0.0
-            }
+            },
+            'consistency_corrections': self.consistency_tracker.get_correction_stats()
         }
 
         # Calculate distances and speeds for left hand
@@ -629,6 +975,103 @@ class HandPathTracker:
         return stats
 
 
+def generate_2d_path_overlay_from_json(json_path: str, output_video_path: str = None):
+    """
+    Generate a 2D video with hand path overlays from JSON data with consistency correction
+    This works independently of the original video processing
+    """
+    # Load JSON data
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    frames_data = data.get('frames', {})
+    metadata = data.get('metadata', {})
+
+    if not frames_data:
+        print("No frame data found in JSON")
+        return
+
+    # Get video properties from metadata
+    fps = metadata.get('fps', 30)
+    resolution = metadata.get('resolution', '640x480')
+    width, height = map(int, resolution.split('x'))
+
+    # Set up output video
+    if output_video_path is None:
+        output_video_path = Path(json_path).parent / "hand_paths_overlay_corrected.mp4"
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(str(output_video_path), fourcc, fps, (width, height))
+
+    # Initialize hand tracker with consistency correction
+    hand_tracker = HandPathTracker()
+    hand_tracker.precompute_paths_from_json(frames_data)
+
+    # Generate frames
+    frame_keys = sorted(frames_data.keys(), key=int)
+
+    for frame_key in frame_keys:
+        # Create blank frame
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+
+        current_frame_num = int(frame_key)
+
+        # Get paths up to current frame
+        left_points = [(int(p['point'][0] * width), int(p['point'][1] * height))
+                       for p in hand_tracker.full_left_hand_path
+                       if p['frame'] <= current_frame_num]
+
+        right_points = [(int(p['point'][0] * width), int(p['point'][1] * height))
+                        for p in hand_tracker.full_right_hand_path
+                        if p['frame'] <= current_frame_num]
+
+        # Draw paths with gradient effect
+        if len(left_points) > 1:
+            for i in range(1, len(left_points)):
+                alpha = i / len(left_points)
+                thickness = max(1, int(5 * alpha))
+                cv2.line(frame, left_points[i - 1], left_points[i], (0, 100, 255), thickness)
+
+        if len(right_points) > 1:
+            for i in range(1, len(right_points)):
+                alpha = i / len(right_points)
+                thickness = max(1, int(5 * alpha))
+                cv2.line(frame, right_points[i - 1], right_points[i], (255, 100, 0), thickness)
+
+        # Add current hand positions using corrected data
+        corrected_frame_data = hand_tracker.get_corrected_frame_data(frame_key)
+        hands_data = corrected_frame_data.get('hands', {})
+
+        for hand_type, color in [('left_hand', (0, 255, 255)), ('right_hand', (255, 255, 0))]:
+            hand_data = hands_data.get(hand_type, [])
+            if hand_data:
+                if isinstance(hand_data, dict) and 'landmarks' in hand_data:
+                    landmarks = hand_data['landmarks']
+                else:
+                    landmarks = hand_data
+
+                if landmarks:
+                    wrist = landmarks[0]
+                    x, y = int(wrist['x'] * width), int(wrist['y'] * height)
+                    cv2.circle(frame, (x, y), 8, color, -1)
+                    cv2.putText(frame, hand_type.replace('_', ' ').title(),
+                                (x + 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        # Add frame info and correction status
+        correction_stats = hand_tracker.get_path_statistics()['consistency_corrections']
+        cv2.putText(frame, f"Frame: {frame_key}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+        cv2.putText(frame, f"Corrections: {correction_stats['corrections_made']}", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        out.write(frame)
+
+    out.release()
+    correction_stats = hand_tracker.get_path_statistics()['consistency_corrections']
+    print(f"Hand path overlay video saved to: {output_video_path}")
+    print(f"Applied {correction_stats['corrections_made']} consistency corrections")
+
+
 def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: Optional[int] = None,
                            save_path: Optional[str] = None, track_hands: bool = False):
     """
@@ -639,7 +1082,7 @@ def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: O
         mode: 'static' for single frame, 'animated' for animation
         frame_number: Specific frame to show (for static mode), None for first frame
         save_path: Path to save animation (optional, for animated mode)
-        track_hands: Whether to enable hand path tracking visualization
+        track_hands: Whether to enable hand path tracking with consistency correction
     """
     try:
         visualizer = LandmarksVisualizer3D(json_path, track_hands=track_hands)
@@ -663,99 +1106,6 @@ def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: O
         raise
 
 
-def generate_2d_path_overlay_from_json(json_path: str, output_video_path: str = None):
-    """
-    Generate a 2D video with hand path overlays from JSON data
-    This works independently of the original video processing
-    """
-    import cv2
-
-    # Load JSON data
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-
-    frames_data = data.get('frames', {})
-    metadata = data.get('metadata', {})
-
-    if not frames_data:
-        print("No frame data found in JSON")
-        return
-
-    # Get video properties from metadata
-    fps = metadata.get('fps', 30)
-    resolution = metadata.get('resolution', '640x480')
-    width, height = map(int, resolution.split('x'))
-
-    # Set up output video
-    if output_video_path is None:
-        output_video_path = Path(json_path).parent / "hand_paths_overlay.mp4"
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(str(output_video_path), fourcc, fps, (width, height))
-
-    # Initialize hand tracker
-    hand_tracker = HandPathTracker()
-    hand_tracker.precompute_paths_from_json(frames_data)
-
-    # Generate frames
-    frame_keys = sorted(frames_data.keys(), key=int)
-
-    for frame_key in frame_keys:
-        # Create blank frame
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
-
-        current_frame_num = int(frame_key)
-
-        # Get paths up to current frame
-        left_points = [(int(p['point'][0] * width), int(p['point'][1] * height))
-                       for p in hand_tracker.full_left_hand_path
-                       if p['frame'] <= current_frame_num]
-
-        right_points = [(int(p['point'][0] * width), int(p['point'][1] * height))
-                        for p in hand_tracker.full_right_hand_path
-                        if p['frame'] <= current_frame_num]
-
-        # Draw paths
-        if len(left_points) > 1:
-            for i in range(1, len(left_points)):
-                alpha = i / len(left_points)
-                thickness = max(1, int(5 * alpha))
-                cv2.line(frame, left_points[i - 1], left_points[i], (0, 100, 255), thickness)
-
-        if len(right_points) > 1:
-            for i in range(1, len(right_points)):
-                alpha = i / len(right_points)
-                thickness = max(1, int(5 * alpha))
-                cv2.line(frame, right_points[i - 1], right_points[i], (255, 100, 0), thickness)
-
-        # Add current hand positions
-        current_frame_data = frames_data[frame_key]
-        hands_data = current_frame_data.get('hands', {})
-
-        for hand_type, color in [('left_hand', (0, 255, 255)), ('right_hand', (255, 255, 0))]:
-            hand_data = hands_data.get(hand_type, [])
-            if hand_data:
-                if isinstance(hand_data, dict) and 'landmarks' in hand_data:
-                    landmarks = hand_data['landmarks']
-                else:
-                    landmarks = hand_data
-
-                if landmarks:
-                    wrist = landmarks[0]
-                    x, y = int(wrist['x'] * width), int(wrist['y'] * height)
-                    cv2.circle(frame, (x, y), 8, color, -1)
-                    cv2.putText(frame, hand_type.replace('_', ' ').title(),
-                                (x + 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-
-        # Add frame info
-        cv2.putText(frame, f"Frame: {frame_key}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-
-        out.write(frame)
-
-    out.release()
-    print(f"Hand path overlay video saved to: {output_video_path}")
-
 def main():
     """Command line interface for 3D visualization"""
     parser = argparse.ArgumentParser(description='Visualize sign language landmarks in 3D')
@@ -767,7 +1117,7 @@ def main():
     parser.add_argument('--save', type=str,
                         help='Save animation to file (for animated mode)')
     parser.add_argument('--track-hands', action='store_true',
-                        help='Enable hand path visualization and analysis')
+                        help='Enable hand path visualization with left/right consistency correction')
 
     args = parser.parse_args()
 
@@ -779,6 +1129,7 @@ def main():
         print(f"Displaying frame: {args.frame}")
 
     visualize_landmarks_3d(args.json_path, args.mode, args.frame, args.save, args.track_hands)
+
 
 if __name__ == "__main__":
     main()
