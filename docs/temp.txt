@@ -1,0 +1,325 @@
+
+# def process_video(
+#         video_path: str,
+#         output_dir: str = './output/video',
+#         skip_frames: int = 2,
+#         extract_face: bool = True,
+#         extract_pose: bool = True
+# ) -> Optional[Dict[str, Any]]:
+#     """
+#     Process video for sign language detection including hands, face, and pose landmarks.
+#
+#     Args:
+#         video_path: Path to the video file
+#         output_dir: Directory to save output files
+#         skip_frames: Process every nth frame for performance
+#         extract_face: Whether to extract face landmarks
+#         extract_pose: Whether to extract pose landmarks
+#
+#     Returns:
+#         Dictionary containing all frame data or None if processing fails
+#     """
+#     video_path = Path(video_path)
+#     if not video_path.exists():
+#         print(f"Video file not found: {video_path}")
+#         return None
+#
+#     # Create output directory
+#     output_dir = Path(output_dir)
+#     output_dir.mkdir(parents=True, exist_ok=True)
+#
+#     cap = cv2.VideoCapture(str(video_path))
+#     if not cap.isOpened():
+#         print(f"Could not open video: {video_path}")
+#         return None
+#
+#     frame_count = 0
+#     all_frames_data = {}
+#
+#     # Get video properties for output
+#     fps = cap.get(cv2.CAP_PROP_FPS)
+#     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+#     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+#     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+#
+#     # Set up output video writer
+#     output_video_path = output_dir / "annotated_video.mp4"
+#
+#     # Use H264 codec if available, fallback to mp4v
+#     try:
+#         fourcc = cv2.VideoWriter_fourcc(*'H264')
+#         video_writer = cv2.VideoWriter(
+#             str(output_video_path),
+#             fourcc,
+#             fps / skip_frames,  # Adjust FPS based on frame skipping
+#             (frame_width, frame_height)
+#         )
+#
+#         # Test if the video writer was initialized correctly
+#         if not video_writer.isOpened():
+#             raise Exception("H264 codec not available")
+#
+#     except Exception:
+#         # Fallback to mp4v codec
+#         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+#         video_writer = cv2.VideoWriter(
+#             str(output_video_path),
+#             fourcc,
+#             fps / skip_frames,
+#             (frame_width, frame_height)
+#         )
+#
+#         if not video_writer.isOpened():
+#             print("Error: Could not initialize video writer")
+#             cap.release()
+#             return None
+#
+#     # Initialize all MediaPipe solutions concurrently for efficiency
+#     with mp_hands.Hands(
+#             static_image_mode=False,
+#             max_num_hands=2,
+#             min_detection_confidence=0.5,
+#             min_tracking_confidence=0.5,
+#             model_complexity=1
+#     ) as hands, mp_face_mesh.FaceMesh(
+#         static_image_mode=False,
+#         refine_landmarks=True,
+#         min_detection_confidence=0.5,
+#         min_tracking_confidence=0.5,
+#         max_num_faces=1  # Assuming one face for sign language
+#     ) as face_mesh, mp_pose.Pose(
+#         static_image_mode=False,
+#         model_complexity=1,
+#         min_detection_confidence=0.5,
+#         min_tracking_confidence=0.5
+#     ) as pose:
+#         while cap.isOpened():
+#             ret, frame = cap.read()
+#             if not ret:
+#                 break
+#
+#             # Process every nth frame to improve performance
+#             if frame_count % skip_frames == 0:
+#                 # Convert to RGB for MediaPipe
+#                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+#
+#                 # Make a copy for annotations
+#                 annotated_frame = frame.copy()
+#
+#                 # Initialize frame data structure
+#                 frame_data = {
+#                     "frame": frame_count,
+#                     "timestamp": frame_count / fps,  # Add timestamp in seconds
+#                     "hands": {"left_hand": [], "right_hand": []},
+#                     "face": {"all_landmarks": [], "mouth_landmarks": []},
+#                     "pose": {}
+#                 }
+#
+#                 # Step 1: Process hands (priority for sign language)
+#                 results_hands = hands.process(rgb_frame)
+#
+#                 if results_hands.multi_hand_landmarks:
+#                     for hand_idx, (hand_landmarks, handedness) in enumerate(
+#                             zip(results_hands.multi_hand_landmarks, results_hands.multi_handedness)
+#                     ):
+#                         # Get hand type (left or right)
+#                         hand_type = handedness.classification[0].label.lower()
+#                         confidence = handedness.classification[0].score
+#
+#                         # Extract landmarks
+#                         hand_points = []
+#                         for i, lm in enumerate(hand_landmarks.landmark):
+#                             h, w, _ = frame.shape
+#                             point = {
+#                                 "x": lm.x,
+#                                 "y": lm.y,
+#                                 "z": lm.z,
+#                                 "px": int(lm.x * w),
+#                                 "py": int(lm.y * h)
+#                             }
+#                             hand_points.append(point)
+#
+#                         # Store hand data with confidence score
+#                         hand_data = {
+#                             "landmarks": hand_points,
+#                             "confidence": float(confidence)
+#                         }
+#                         frame_data["hands"][f"{hand_type}_hand"] = hand_data
+#
+#                         # Draw hand landmarks
+#                         mp_drawing.draw_landmarks(
+#                             annotated_frame,
+#                             hand_landmarks,
+#                             mp_hands.HAND_CONNECTIONS,
+#                             mp_drawing_styles.get_default_hand_landmarks_style(),
+#                             mp_drawing_styles.get_default_hand_connections_style()
+#                         )
+#
+#                         # Add hand label
+#                         wrist_point = hand_landmarks.landmark[0]
+#                         wrist_x, wrist_y = int(wrist_point.x * w), int(wrist_point.y * h)
+#                         label_text = f"{hand_type.upper()} ({confidence:.2f})"
+#                         cv2.putText(
+#                             annotated_frame,
+#                             label_text,
+#                             (wrist_x, wrist_y - 10),
+#                             cv2.FONT_HERSHEY_SIMPLEX,
+#                             0.5,
+#                             (0, 255, 0),
+#                             1
+#                         )
+#
+#                 # Step 2: Process face landmarks if requested
+#                 if extract_face:
+#                     results_face = face_mesh.process(rgb_frame)
+#
+#                     if results_face.multi_face_landmarks:
+#                         for face_landmarks in results_face.multi_face_landmarks:
+#                             # Extract all face landmarks
+#                             face_data = []
+#                             mouth_data = []
+#
+#                             for i, lm in enumerate(face_landmarks.landmark):
+#                                 h, w, _ = frame.shape
+#                                 point = {
+#                                     "x": lm.x,
+#                                     "y": lm.y,
+#                                     "z": lm.z,
+#                                     "px": int(lm.x * w),
+#                                     "py": int(lm.y * h)
+#                                 }
+#                                 face_data.append(point)
+#
+#                                 # Extract mouth landmarks separately
+#                                 if i in MOUTH_LANDMARKS:
+#                                     mouth_data.append(point)
+#
+#                             frame_data["face"]["all_landmarks"] = face_data
+#                             frame_data["face"]["mouth_landmarks"] = mouth_data
+#
+#                             # Draw face landmarks - using a subset for cleaner visualization
+#                             mp_drawing.draw_landmarks(
+#                                 image=annotated_frame,
+#                                 landmark_list=face_landmarks,
+#                                 connections=mp_face_mesh.FACEMESH_CONTOURS,
+#                                 landmark_drawing_spec=None,
+#                                 connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_contours_style()
+#                             )
+#
+#                             # Draw mouth landmarks with different color
+#                             for i in MOUTH_LANDMARKS:
+#                                 lm = face_landmarks.landmark[i]
+#                                 x, y = int(lm.x * w), int(lm.y * h)
+#                                 cv2.circle(annotated_frame, (x, y), 2, (0, 0, 255), -1)
+#
+#                 # Step 3: Process pose landmarks if requested
+#                 if extract_pose:
+#                     results_pose = pose.process(rgb_frame)
+#
+#                     if results_pose.pose_landmarks:
+#                         # Extract pose landmarks
+#                         pose_data = {}
+#                         for landmark in mp_pose.PoseLandmark:
+#                             lm = results_pose.pose_landmarks.landmark[landmark]
+#                             h, w, _ = frame.shape
+#                             pose_data[landmark.name] = {
+#                                 "x": lm.x,
+#                                 "y": lm.y,
+#                                 "z": lm.z,
+#                                 "px": int(lm.x * w),
+#                                 "py": int(lm.y * h),
+#                                 "visibility": float(lm.visibility)
+#                             }
+#
+#                         frame_data["pose"] = pose_data
+#
+#                         # Draw pose landmarks - simplified for better visualization
+#                         mp_drawing.draw_landmarks(
+#                             annotated_frame,
+#                             results_pose.pose_landmarks,
+#                             mp_pose.POSE_CONNECTIONS,
+#                             landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
+#                         )
+#
+#                 # Save frame data to overall collection
+#                 all_frames_data[str(frame_count)] = frame_data
+#
+#                 # Add frame number and progress to the image
+#                 progress_percent = (frame_count / total_frames) * 100 if total_frames > 0 else 0
+#                 cv2.putText(
+#                     annotated_frame,
+#                     f"Frame: {frame_count} | {progress_percent:.1f}%",
+#                     (10, 30),
+#                     cv2.FONT_HERSHEY_SIMPLEX,
+#                     0.7,
+#                     (0, 255, 255),
+#                     2
+#                 )
+#
+#                 # Save annotated frame as image (every 10th processed frame to save disk space)
+#                 if frame_count % (skip_frames * 10) == 0:
+#                     output_path = output_dir / f"frame_{frame_count:04d}.jpg"
+#                     cv2.imwrite(str(output_path), annotated_frame)
+#
+#                 # Write frame to output video
+#                 video_writer.write(annotated_frame)
+#
+#             frame_count += 1
+#
+#             # Print progress every 100 frames
+#             if frame_count % 100 == 0:
+#                 progress_percent = (frame_count / total_frames) * 100 if total_frames > 0 else 0
+#                 print(f"Processed {frame_count} frames ({progress_percent:.1f}%)")
+#
+#     # Clean up
+#     cap.release()
+#     video_writer.release()
+#
+#     # Save metadata about the video
+#     metadata = {
+#         "original_video": video_path.name,
+#         "total_frames": frame_count,
+#         "processed_frames": len(all_frames_data),
+#         "frame_skip": skip_frames,
+#         "fps": fps,
+#         "resolution": f"{frame_width}x{frame_height}",
+#         "components_extracted": {
+#             "hands": True,
+#             "face": extract_face,
+#             "pose": extract_pose
+#         }
+#     }
+#
+#     # Save all frame data to JSON
+#     json_path = output_dir / "video_landmarks.json"
+#     try:
+#         with open(json_path, "w") as f:
+#             json.dump({"metadata": metadata, "frames": all_frames_data}, f, indent=4)
+#         print(f"Video processing complete. Data saved to {json_path}")
+#     except Exception as e:
+#         print(f"Error saving JSON data: {e}")
+#
+#     print(f"Annotated video saved to {output_video_path}")
+#     return all_frames_data
+
+# from pathlib import Path
+# import cv2
+# import json
+# import mediapipe as mp
+# from typing import Dict, Any, Optional, List, Union
+# import os
+# import numpy as np
+# import re
+#
+# # Initialize MediaPipe solutions
+# mp_drawing = mp.solutions.drawing_utils
+# mp_drawing_styles = mp.solutions.drawing_styles
+# mp_hands = mp.solutions.hands
+# mp_face_mesh = mp.solutions.face_mesh
+# mp_pose = mp.solutions.pose
+#
+# # Define mouth landmarks (example subset - can be expanded)
+# MOUTH_LANDMARKS = [
+#     61, 185, 40, 39, 37, 0, 267, 269, 270, 409,
+#     291, 375, 321, 405, 314, 17, 84, 181, 91, 146
+# ]
