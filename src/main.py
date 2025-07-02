@@ -4,17 +4,19 @@ import json
 import mediapipe as mp
 from pathlib import Path
 from typing import List, Dict, Any
+
+import numpy as np
+
 from processing import process_image, process_video, enhance_image_for_hand_detection
+from coordinate_calibrator import validate_hand_pose_alignment
 
 # TODO: visualise full mesh TODO: not all points present in all frames:
 #  1) count missing points frames (how?) and delete them if treshold is not exceeded
 #  2)  detect hand disappearing from frame and exclude that from missing points
 
-# TODO fix pose or ignore pose
-# TODO fix hands flickering - ADDRESSED WITH ENHANCED TRACKER
-# TODO visualize path of the hand
+# TODO fix pose or ignore pose?
 # TODO hands are only moving in 2d, flat to the boy. is there any 3d data?
-#TODO add check if hand dosappears
+# TODO add check if hand dosappears
 
 # MediaPipe solution instances
 mp_drawing = mp.solutions.drawing_utils
@@ -79,6 +81,11 @@ Examples:
 
     parser.add_argument('--track-hands', action='store_true',
                         help='Enable hand path visualization with consistency correction (applied during visualization, not processing)')
+    parser.add_argument('--enable-calibration', action='store_true', default=True,
+                        help='Enable coordinate calibration to align hands with pose wrists (default: enabled)')
+
+    parser.add_argument('--disable-calibration', action='store_true',
+                        help='Disable coordinate calibration (use raw MediaPipe coordinates)')
 
     return parser.parse_args()
 
@@ -104,7 +111,7 @@ def process_single_item(item_path: Path, output_dir: Path, args) -> None:
         if file_ext in video_extensions:
             # Single video file
             print("Detected: Single video file")
-            process_single_video_file(item_path, output_dir, args)
+            process_single_video_file_with_calibration(item_path, output_dir, args)
 
         elif file_ext in image_extensions:
             # Single image file
@@ -491,15 +498,18 @@ def process_batch(input_dir: Path, output_dir: Path, args) -> None:
     print(f"Failed: {failed_count}")
 
 
-def process_single_video_file(video_path: Path, output_dir: Path, args) -> None:
-    """Process a single video file"""
+def process_single_video_file_with_calibration(video_path: Path, output_dir: Path, args) -> None:
+    """Process a single video file with calibration"""
     print(f"Processing single video: {video_path}")
     output_subdir = output_dir / f"video_{video_path.stem}"
 
     try:
         output_subdir.mkdir(parents=True, exist_ok=True)
 
-        result = process_video(
+        # Determine calibration setting
+        enable_calibration = args.enable_calibration and not args.disable_calibration
+
+        result = process_video(  # Use new function
             str(video_path),
             output_dir=str(output_subdir),
             skip_frames=args.skip_frames,
@@ -509,7 +519,8 @@ def process_single_video_file(video_path: Path, output_dir: Path, args) -> None:
             image_extension=args.image_extension,
             save_all_frames=args.save_all_frames,
             use_full_mesh=args.full_mesh,
-            use_enhancement=args.enhance
+            use_enhancement=args.enhance,
+            enable_calibration=enable_calibration  # NEW
         )
 
         if result is None:
@@ -633,5 +644,61 @@ def main() -> None:
     print(f"Results saved to: {output_dir.absolute()}")
 
 
+def main_with_calibration():
+    """Modified main function with calibration support"""
+    # Parse arguments with calibration options
+    args = parse_arguments()
+
+    # Convert paths
+    output_dir = Path(args.output_directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Display processing options including calibration
+    print(f"\n=== Processing Options ===")
+    print(f"Full face mesh: {'Yes' if args.full_mesh else 'No (simplified)'}")
+    print(f"Image enhancement: {'Yes' if args.enhance else 'No'}")
+    print(f"Coordinate calibration: {'Yes' if (args.enable_calibration and not args.disable_calibration) else 'No'}")
+    print(f"Skip frames: {args.skip_frames}")
+    print(f"Save all frames: {'Yes' if args.save_all_frames else 'No'}")
+
+    # Process based on arguments
+    if args.process_single:
+        item_path = Path(args.process_single)
+        process_single_item(item_path, output_dir, args)
+    else:
+        input_dir = Path(args.input_directory)
+        process_batch(input_dir, output_dir, args)
+
+    print(f"\n=== Processing Complete ===")
+    print(f"Results saved to: {output_dir.absolute()}")
+
+
+# Example calibration validation function:
+def validate_calibration_results(json_path: str):
+    """
+    Validate calibration results in processed JSON data
+    """
+
+
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    frames_data = data.get('frames', {})
+    validation_results = []
+
+    for frame_key, frame_data in frames_data.items():
+        if frame_data.get('calibration_applied', False):
+            metrics = validate_hand_pose_alignment(frame_data)
+            validation_results.append(metrics)
+
+    if validation_results:
+        avg_error = np.mean(
+            [m['average_alignment_error'] for m in validation_results if m['average_alignment_error'] != float('inf')])
+        print(f"Average calibration alignment error: {avg_error:.4f}")
+        print(f"Calibrated frames: {len(validation_results)}")
+    else:
+        print("No calibrated frames found in data")
+
+
 if __name__ == "__main__":
-    main()
+    main_with_calibration()

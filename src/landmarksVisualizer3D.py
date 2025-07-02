@@ -20,6 +20,7 @@ import argparse
 from collections import defaultdict, deque
 import cv2
 
+#TODO coordinates for pose and hands are disconnected
 
 class LandmarksVisualizer3D:
     """3D visualizer for sign language landmarks"""
@@ -94,6 +95,159 @@ class LandmarksVisualizer3D:
         except Exception as e:
             raise Exception(f"Error loading JSON file: {e}")
 
+
+    def _setup_3d_plot(self):
+        """Set up the 3D matplotlib plot"""
+        self.fig = plt.figure(figsize=(12, 9))
+        self.ax = self.fig.add_subplot(111, projection='3d')
+
+        # Set labels and title
+        self.ax.set_xlabel('X')
+        self.ax.set_ylabel('Y')
+        self.ax.set_zlabel('Z')
+        self.ax.set_title(f'3D Landmarks Visualization\nSource: {self.metadata.get("input_source", "Unknown")}')
+
+        # Set axis limits (normalized coordinates are 0-1)
+        self.ax.set_xlim(0, 1)
+        self.ax.set_ylim(0, 1)
+        self.ax.set_zlim(-0.5, 0.5)  # Z coordinates are typically smaller
+
+        # Invert Y axis to match image coordinates
+        self.ax.invert_yaxis()
+
+        return self.ax
+
+
+
+    def _draw_hand_connections(self, points: np.ndarray, color: str):
+        """Draw connections between hand landmarks"""
+        if len(points) != 21:  # MediaPipe hand has 21 landmarks
+            return
+
+        # Define hand connections (simplified version)
+        connections = [
+            # Thumb
+            (0, 1), (1, 2), (2, 3), (3, 4),
+            # Index finger
+            (0, 5), (5, 6), (6, 7), (7, 8),
+            # Middle finger
+            (0, 9), (9, 10), (10, 11), (11, 12),
+            # Ring finger
+            (0, 13), (13, 14), (14, 15), (15, 16),
+            # Pinky
+            (0, 17), (17, 18), (18, 19), (19, 20),
+            # Palm connections
+            (5, 9), (9, 13), (13, 17)
+        ]
+
+        for start_idx, end_idx in connections:
+            start_point = points[start_idx]
+            end_point = points[end_idx]
+            self.ax.plot([start_point[0], end_point[0]],
+                         [start_point[1], end_point[1]],
+                         [start_point[2], end_point[2]],
+                         color=color, alpha=0.5, linewidth=1)
+
+    def _draw_pose_connections(self, points: np.ndarray, pose_names: list = None):
+        """Draw connections between pose landmarks using MediaPipe's pose structure"""
+        if len(points) == 0:
+            return
+
+        # Define MediaPipe pose connections (index pairs)
+        # These are the standard connections used by MediaPipe
+        mediapipe_pose_connections = [
+            # Face connections
+            ('NOSE', 'LEFT_EYE_INNER'), ('LEFT_EYE_INNER', 'LEFT_EYE'),
+            ('LEFT_EYE', 'LEFT_EYE_OUTER'), ('LEFT_EYE_OUTER', 'LEFT_EAR'),
+            ('NOSE', 'RIGHT_EYE_INNER'), ('RIGHT_EYE_INNER', 'RIGHT_EYE'),
+            ('RIGHT_EYE', 'RIGHT_EYE_OUTER'), ('RIGHT_EYE_OUTER', 'RIGHT_EAR'),
+            ('MOUTH_LEFT', 'MOUTH_RIGHT'),
+
+            # Torso connections
+            ('LEFT_SHOULDER', 'RIGHT_SHOULDER'),
+            ('LEFT_SHOULDER', 'LEFT_HIP'), ('RIGHT_SHOULDER', 'RIGHT_HIP'),
+            ('LEFT_HIP', 'RIGHT_HIP'),
+
+            # Left arm connections
+            ('LEFT_SHOULDER', 'LEFT_ELBOW'), ('LEFT_ELBOW', 'LEFT_WRIST'),
+            ('LEFT_WRIST', 'LEFT_PINKY'), ('LEFT_WRIST', 'LEFT_INDEX'),
+            ('LEFT_WRIST', 'LEFT_THUMB'), ('LEFT_PINKY', 'LEFT_INDEX'),
+
+            # Right arm connections
+            ('RIGHT_SHOULDER', 'RIGHT_ELBOW'), ('RIGHT_ELBOW', 'RIGHT_WRIST'),
+            ('RIGHT_WRIST', 'RIGHT_PINKY'), ('RIGHT_WRIST', 'RIGHT_INDEX'),
+            ('RIGHT_WRIST', 'RIGHT_THUMB'), ('RIGHT_PINKY', 'RIGHT_INDEX'),
+
+            # Left leg connections
+            ('LEFT_HIP', 'LEFT_KNEE'), ('LEFT_KNEE', 'LEFT_ANKLE'),
+            ('LEFT_ANKLE', 'LEFT_HEEL'), ('LEFT_ANKLE', 'LEFT_FOOT_INDEX'),
+            ('LEFT_HEEL', 'LEFT_FOOT_INDEX'),
+
+            # Right leg connections
+            ('RIGHT_HIP', 'RIGHT_KNEE'), ('RIGHT_KNEE', 'RIGHT_ANKLE'),
+            ('RIGHT_ANKLE', 'RIGHT_HEEL'), ('RIGHT_ANKLE', 'RIGHT_FOOT_INDEX'),
+            ('RIGHT_HEEL', 'RIGHT_FOOT_INDEX'),
+        ]
+
+        # If we don't have pose names, fall back to simplified connections
+        if pose_names is None or len(pose_names) != len(points):
+            # Simplified fallback: connect major body parts if we have enough points
+            if len(points) >= 4:
+                # Try to connect what we assume are major landmarks
+                color = self.colors['pose']
+                # Connect first few points (assuming they're major landmarks)
+                for i in range(min(4, len(points) - 1)):
+                    self.ax.plot([points[i][0], points[i + 1][0]],
+                                 [points[i][1], points[i + 1][1]],
+                                 [points[i][2], points[i + 1][2]],
+                                 color=color, alpha=0.6, linewidth=2)
+            return
+
+        # Create a mapping from landmark names to indices
+        name_to_index = {name: i for i, name in enumerate(pose_names)}
+
+        # Draw connections based on MediaPipe's structure
+        color = self.colors['pose']
+        connections_drawn = 0
+
+        for start_name, end_name in mediapipe_pose_connections:
+            if start_name in name_to_index and end_name in name_to_index:
+                start_idx = name_to_index[start_name]
+                end_idx = name_to_index[end_name]
+
+                start_point = points[start_idx]
+                end_point = points[end_idx]
+
+                # Draw the connection
+                self.ax.plot([start_point[0], end_point[0]],
+                             [start_point[1], end_point[1]],
+                             [start_point[2], end_point[2]],
+                             color=color, alpha=0.7, linewidth=2)
+                connections_drawn += 1
+
+        # If no connections were drawn, fall back to simplified approach
+        if connections_drawn == 0 and len(points) >= 2:
+            print(f"Warning: No pose connections found, using simplified visualization")
+            # Connect shoulders if we can identify them
+            shoulder_connections = [
+                ('LEFT_SHOULDER', 'RIGHT_SHOULDER'),
+                ('LEFT_SHOULDER', 'LEFT_ELBOW'),
+                ('RIGHT_SHOULDER', 'RIGHT_ELBOW')
+            ]
+
+            for start_name, end_name in shoulder_connections:
+                if start_name in name_to_index and end_name in name_to_index:
+                    start_idx = name_to_index[start_name]
+                    end_idx = name_to_index[end_name]
+
+                    start_point = points[start_idx]
+                    end_point = points[end_idx]
+
+                    self.ax.plot([start_point[0], end_point[0]],
+                                 [start_point[1], end_point[1]],
+                                 [start_point[2], end_point[2]],
+                                 color=color, alpha=0.7, linewidth=2)
+
     def _extract_landmarks_for_frame(self, frame_key: str) -> Dict:
         """Extract 3D coordinates for a specific frame"""
         frame_data = self.frames_data.get(frame_key, {})
@@ -130,28 +284,36 @@ class LandmarksVisualizer3D:
             points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
             landmarks_3d['face'] = points
 
-        # Extract pose landmarks
+        # Extract pose landmarks with proper ordering
         pose_data = frame_data.get('pose', {})
         if pose_data:
-            # Extract key pose landmarks
-            key_pose_points = [
-                'NOSE', 'LEFT_EYE', 'RIGHT_EYE', 'LEFT_EAR', 'RIGHT_EAR',
-                'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_HIP', 'RIGHT_HIP',
-                'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE'
+            # Define the complete MediaPipe pose landmark order
+            mediapipe_pose_landmarks = [
+                'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
+                'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
+                'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
+                'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_PINKY', 'RIGHT_PINKY', 'LEFT_INDEX',
+                'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB', 'LEFT_HIP', 'RIGHT_HIP',
+                'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE', 'LEFT_HEEL',
+                'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
             ]
 
+            # Extract landmarks in the correct order with visibility check
             pose_points = []
-            for landmark_name in key_pose_points:
+            pose_landmark_names = []
+
+            for landmark_name in mediapipe_pose_landmarks:
                 if landmark_name in pose_data:
                     lm = pose_data[landmark_name]
                     # Check visibility if available
                     visibility = lm.get('visibility', 1.0)
                     if visibility > 0.5:  # Only include visible landmarks
                         pose_points.append([lm['x'], lm['y'], lm['z']])
+                        pose_landmark_names.append(landmark_name)
 
             if pose_points:
                 landmarks_3d['pose'] = np.array(pose_points)
+                landmarks_3d['pose_names'] = pose_landmark_names
 
         return landmarks_3d
 
@@ -196,53 +358,142 @@ class LandmarksVisualizer3D:
             points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
             landmarks_3d['face'] = points
 
-        # Extract pose landmarks (using original method)
+        # Extract pose landmarks with proper ordering
         pose_data = frame_data.get('pose', {})
         if pose_data:
-            key_pose_points = [
-                'NOSE', 'LEFT_EYE', 'RIGHT_EYE', 'LEFT_EAR', 'RIGHT_EAR',
-                'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_HIP', 'RIGHT_HIP',
-                'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE'
+            # Define the complete MediaPipe pose landmark order and connections
+            mediapipe_pose_landmarks = [
+                'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
+                'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
+                'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
+                'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_PINKY', 'RIGHT_PINKY', 'LEFT_INDEX',
+                'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB', 'LEFT_HIP', 'RIGHT_HIP',
+                'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE', 'LEFT_HEEL',
+                'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
             ]
 
+            # Extract landmarks in the correct order with visibility check
             pose_points = []
-            for landmark_name in key_pose_points:
+            pose_landmark_names = []  # Keep track of which landmarks we actually have
+
+            for landmark_name in mediapipe_pose_landmarks:
                 if landmark_name in pose_data:
                     lm = pose_data[landmark_name]
                     # Check visibility if available
                     visibility = lm.get('visibility', 1.0)
                     if visibility > 0.5:  # Only include visible landmarks
                         pose_points.append([lm['x'], lm['y'], lm['z']])
+                        pose_landmark_names.append(landmark_name)
 
             if pose_points:
                 landmarks_3d['pose'] = np.array(pose_points)
+                # Store the landmark names for connection drawing
+                landmarks_3d['pose_names'] = pose_landmark_names
 
         return landmarks_3d
 
-    def _setup_3d_plot(self):
-        """Set up the 3D matplotlib plot"""
-        self.fig = plt.figure(figsize=(12, 9))
-        self.ax = self.fig.add_subplot(111, projection='3d')
+    def _draw_pose_connections(self, points: np.ndarray, pose_names: list = None):
+        """Draw connections between pose landmarks using MediaPipe's pose structure"""
+        if len(points) == 0:
+            return
 
-        # Set labels and title
-        self.ax.set_xlabel('X')
-        self.ax.set_ylabel('Y')
-        self.ax.set_zlabel('Z')
-        self.ax.set_title(f'3D Landmarks Visualization\nSource: {self.metadata.get("input_source", "Unknown")}')
+        # Define MediaPipe pose connections (index pairs)
+        # These are the standard connections used by MediaPipe
+        mediapipe_pose_connections = [
+            # Face connections
+            ('NOSE', 'LEFT_EYE_INNER'), ('LEFT_EYE_INNER', 'LEFT_EYE'),
+            ('LEFT_EYE', 'LEFT_EYE_OUTER'), ('LEFT_EYE_OUTER', 'LEFT_EAR'),
+            ('NOSE', 'RIGHT_EYE_INNER'), ('RIGHT_EYE_INNER', 'RIGHT_EYE'),
+            ('RIGHT_EYE', 'RIGHT_EYE_OUTER'), ('RIGHT_EYE_OUTER', 'RIGHT_EAR'),
+            ('MOUTH_LEFT', 'MOUTH_RIGHT'),
 
-        # Set axis limits (normalized coordinates are 0-1)
-        self.ax.set_xlim(0, 1)
-        self.ax.set_ylim(0, 1)
-        self.ax.set_zlim(-0.5, 0.5)  # Z coordinates are typically smaller
+            # Torso connections
+            ('LEFT_SHOULDER', 'RIGHT_SHOULDER'),
+            ('LEFT_SHOULDER', 'LEFT_HIP'), ('RIGHT_SHOULDER', 'RIGHT_HIP'),
+            ('LEFT_HIP', 'RIGHT_HIP'),
 
-        # Invert Y axis to match image coordinates
-        self.ax.invert_yaxis()
+            # Left arm connections
+            ('LEFT_SHOULDER', 'LEFT_ELBOW'), ('LEFT_ELBOW', 'LEFT_WRIST'),
+            ('LEFT_WRIST', 'LEFT_PINKY'), ('LEFT_WRIST', 'LEFT_INDEX'),
+            ('LEFT_WRIST', 'LEFT_THUMB'), ('LEFT_PINKY', 'LEFT_INDEX'),
 
-        return self.ax
+            # Right arm connections
+            ('RIGHT_SHOULDER', 'RIGHT_ELBOW'), ('RIGHT_ELBOW', 'RIGHT_WRIST'),
+            ('RIGHT_WRIST', 'RIGHT_PINKY'), ('RIGHT_WRIST', 'RIGHT_INDEX'),
+            ('RIGHT_WRIST', 'RIGHT_THUMB'), ('RIGHT_PINKY', 'RIGHT_INDEX'),
+
+            # Left leg connections
+            ('LEFT_HIP', 'LEFT_KNEE'), ('LEFT_KNEE', 'LEFT_ANKLE'),
+            ('LEFT_ANKLE', 'LEFT_HEEL'), ('LEFT_ANKLE', 'LEFT_FOOT_INDEX'),
+            ('LEFT_HEEL', 'LEFT_FOOT_INDEX'),
+
+            # Right leg connections
+            ('RIGHT_HIP', 'RIGHT_KNEE'), ('RIGHT_KNEE', 'RIGHT_ANKLE'),
+            ('RIGHT_ANKLE', 'RIGHT_HEEL'), ('RIGHT_ANKLE', 'RIGHT_FOOT_INDEX'),
+            ('RIGHT_HEEL', 'RIGHT_FOOT_INDEX'),
+        ]
+
+        # If we don't have pose names, fall back to simplified connections
+        if pose_names is None or len(pose_names) != len(points):
+            # Simplified fallback: connect major body parts if we have enough points
+            if len(points) >= 4:
+                # Try to connect what we assume are major landmarks
+                color = self.colors['pose']
+                # Connect first few points (assuming they're major landmarks)
+                for i in range(min(4, len(points) - 1)):
+                    self.ax.plot([points[i][0], points[i + 1][0]],
+                                 [points[i][1], points[i + 1][1]],
+                                 [points[i][2], points[i + 1][2]],
+                                 color=color, alpha=0.6, linewidth=2)
+            return
+
+        # Create a mapping from landmark names to indices
+        name_to_index = {name: i for i, name in enumerate(pose_names)}
+
+        # Draw connections based on MediaPipe's structure
+        color = self.colors['pose']
+        connections_drawn = 0
+
+        for start_name, end_name in mediapipe_pose_connections:
+            if start_name in name_to_index and end_name in name_to_index:
+                start_idx = name_to_index[start_name]
+                end_idx = name_to_index[end_name]
+
+                start_point = points[start_idx]
+                end_point = points[end_idx]
+
+                # Draw the connection
+                self.ax.plot([start_point[0], end_point[0]],
+                             [start_point[1], end_point[1]],
+                             [start_point[2], end_point[2]],
+                             color=color, alpha=0.7, linewidth=2)
+                connections_drawn += 1
+
+        # If no connections were drawn, fall back to simplified approach
+        if connections_drawn == 0 and len(points) >= 2:
+            print(f"Warning: No pose connections found, using simplified visualization")
+            # Connect shoulders if we can identify them
+            shoulder_connections = [
+                ('LEFT_SHOULDER', 'RIGHT_SHOULDER'),
+                ('LEFT_SHOULDER', 'LEFT_ELBOW'),
+                ('RIGHT_SHOULDER', 'RIGHT_ELBOW')
+            ]
+
+            for start_name, end_name in shoulder_connections:
+                if start_name in name_to_index and end_name in name_to_index:
+                    start_idx = name_to_index[start_name]
+                    end_idx = name_to_index[end_name]
+
+                    start_point = points[start_idx]
+                    end_point = points[end_idx]
+
+                    self.ax.plot([start_point[0], end_point[0]],
+                                 [start_point[1], end_point[1]],
+                                 [start_point[2], end_point[2]],
+                                 color=color, alpha=0.7, linewidth=2)
 
     def _draw_frame(self, frame_num: int):
-        """Draw landmarks for a specific frame"""
+        """Draw landmarks for a specific frame with improved pose visualization"""
         self.ax.clear()
 
         # Set up plot again
@@ -283,13 +534,14 @@ class LandmarksVisualizer3D:
             self.ax.scatter(landmarks['face'][:, 0], landmarks['face'][:, 1], landmarks['face'][:, 2],
                             c=self.colors['face'], s=10, alpha=0.6, label='Face')
 
-        # Draw pose landmarks
+        # Draw pose landmarks with proper connections
         if len(landmarks['pose']) > 0:
             self.ax.scatter(landmarks['pose'][:, 0], landmarks['pose'][:, 1], landmarks['pose'][:, 2],
                             c=self.colors['pose'], s=50, alpha=0.8, label='Pose')
 
-            # Draw pose connections
-            self._draw_pose_connections(landmarks['pose'])
+            # Draw pose connections using the landmark names if available
+            pose_names = landmarks.get('pose_names', None)
+            self._draw_pose_connections(landmarks['pose'], pose_names)
 
         # Draw hand paths if tracking is enabled
         if self.hand_tracker:
@@ -308,50 +560,6 @@ class LandmarksVisualizer3D:
         self.ax.legend(loc='upper left', bbox_to_anchor=(0, 1))
 
         return self.ax
-
-    def _draw_hand_connections(self, points: np.ndarray, color: str):
-        """Draw connections between hand landmarks"""
-        if len(points) != 21:  # MediaPipe hand has 21 landmarks
-            return
-
-        # Define hand connections (simplified version)
-        connections = [
-            # Thumb
-            (0, 1), (1, 2), (2, 3), (3, 4),
-            # Index finger
-            (0, 5), (5, 6), (6, 7), (7, 8),
-            # Middle finger
-            (0, 9), (9, 10), (10, 11), (11, 12),
-            # Ring finger
-            (0, 13), (13, 14), (14, 15), (15, 16),
-            # Pinky
-            (0, 17), (17, 18), (18, 19), (19, 20),
-            # Palm connections
-            (5, 9), (9, 13), (13, 17)
-        ]
-
-        for start_idx, end_idx in connections:
-            start_point = points[start_idx]
-            end_point = points[end_idx]
-            self.ax.plot([start_point[0], end_point[0]],
-                         [start_point[1], end_point[1]],
-                         [start_point[2], end_point[2]],
-                         color=color, alpha=0.5, linewidth=1)
-
-    def _draw_pose_connections(self, points: np.ndarray):
-        """Draw connections between pose landmarks"""
-        # This is simplified - would need to map the actual pose landmark indices
-        # For now, just connect some basic points
-        if len(points) >= 4:
-            # Connect shoulders to create basic pose structure
-            color = self.colors['pose']
-            for i in range(len(points) - 1):
-                if i % 2 == 0 and i + 1 < len(points):  # Connect pairs
-                    self.ax.plot([points[i][0], points[i + 1][0]],
-                                 [points[i][1], points[i + 1][1]],
-                                 [points[i][2], points[i + 1][2]],
-                                 color=color, alpha=0.3, linewidth=1)
-
     def visualize_static(self, frame_number: Optional[int] = None):
         """Display a static 3D visualization of landmarks for a specific frame"""
         self._setup_3d_plot()

@@ -9,15 +9,6 @@ from typing import Dict, Tuple, Any, Optional
 from collections import deque
 import math
 
-# TODO: visualise full mesh TODO: not all points present in all frames:
-#  1) count missing points frames (how?) and delete them if treshold is not exceeded
-#  2)  detect hand disappearing from frame and exclude that from missing points
-
-# TODO fix pose or ignore pose
-# TODO fix hands flickering - ADDRESSED WITH ENHANCED TRACKER
-# TODO visualize path of the hand
-# TODO hands are only moving in 2d, flat to the boy. is there any 3d data?
-
 # MediaPipe solution instances
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
