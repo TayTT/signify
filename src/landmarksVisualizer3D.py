@@ -95,7 +95,6 @@ class LandmarksVisualizer3D:
         except Exception as e:
             raise Exception(f"Error loading JSON file: {e}")
 
-
     def _setup_3d_plot(self):
         """Set up the 3D matplotlib plot"""
         self.fig = plt.figure(figsize=(12, 9))
@@ -115,9 +114,12 @@ class LandmarksVisualizer3D:
         # Invert Y axis to match image coordinates
         self.ax.invert_yaxis()
 
+        # Set initial view from Z-axis (looking down the Z-axis towards XY plane)
+        # elev=90 means looking straight down from above (Z-axis view)
+        # azim=0 sets the rotation around the Z-axis
+        self.ax.view_init(elev=-90, azim=90) #VIEWING ANGLE
+
         return self.ax
-
-
 
     def _draw_hand_connections(self, points: np.ndarray, color: str):
         """Draw connections between hand landmarks"""
@@ -445,24 +447,33 @@ class LandmarksVisualizer3D:
         pose_data = frame_data.get('pose', {})
 
         if pose_data:
-            if "LEFT_WRIST" in pose_data:
+            # MIRROR THE POSE DATA HORIZONTALLY
+            mirrored_pose_data = {}
+            for landmark_name, lm_data in pose_data.items():
+                mirrored_lm_data = lm_data.copy()
+                # Flip X coordinate (since they're normalized 0-1)
+                mirrored_lm_data['x'] = 1.0 - lm_data['x']
+                mirrored_pose_data[landmark_name] = mirrored_lm_data
+
+            # Use mirrored pose data for wrist positions
+            if "LEFT_WRIST" in mirrored_pose_data:
                 pose_wrists["LEFT_WRIST"] = np.array([
-                    pose_data["LEFT_WRIST"]["x"],
-                    pose_data["LEFT_WRIST"]["y"],
-                    pose_data["LEFT_WRIST"]["z"]
+                    mirrored_pose_data["LEFT_WRIST"]["x"],
+                    mirrored_pose_data["LEFT_WRIST"]["y"],
+                    mirrored_pose_data["LEFT_WRIST"]["z"]
                 ])
 
-            if "RIGHT_WRIST" in pose_data:
+            if "RIGHT_WRIST" in mirrored_pose_data:
                 pose_wrists["RIGHT_WRIST"] = np.array([
-                    pose_data["RIGHT_WRIST"]["x"],
-                    pose_data["RIGHT_WRIST"]["y"],
-                    pose_data["RIGHT_WRIST"]["z"]
+                    mirrored_pose_data["RIGHT_WRIST"]["x"],
+                    mirrored_pose_data["RIGHT_WRIST"]["y"],
+                    mirrored_pose_data["RIGHT_WRIST"]["z"]
                 ])
 
-        # Extract and calibrate hand landmarks
+        # Extract and calibrate hand landmarks (keep this part unchanged)
         hands_data = frame_data.get('hands', {})
         hand_to_wrist_mapping = {
-            'left_hand': 'LEFT_WRIST',
+            'left_hand': 'LEFT_WRIST',  # Back to original mapping
             'right_hand': 'RIGHT_WRIST'
         }
 
@@ -472,10 +483,8 @@ class LandmarksVisualizer3D:
             pose_wrist_position = pose_wrists.get(wrist_name)
 
             if isinstance(hand_info, dict) and 'landmarks' in hand_info:
-                # New format with confidence
                 hand_landmarks = hand_info['landmarks']
             elif isinstance(hand_info, list):
-                # Old format - direct list
                 hand_landmarks = hand_info
             else:
                 hand_landmarks = []
@@ -497,19 +506,9 @@ class LandmarksVisualizer3D:
 
                 landmarks_3d['hands'][hand_type] = points
 
-        # Extract face landmarks (using all landmarks)
-        face_data = frame_data.get('face', {})
-        if 'all_landmarks' in face_data and face_data['all_landmarks']:
-            # Use a subset of face landmarks for better visualization
-            face_landmarks = face_data['all_landmarks']
-            # Take every 10th landmark to reduce clutter
-            sampled_landmarks = face_landmarks[::2]
-            points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
-            landmarks_3d['face'] = points
-
-        # Extract pose landmarks with proper ordering
+        # For pose visualization, use the mirrored coordinates
         if pose_data:
-            # Define the complete MediaPipe pose landmark order
+            # Use mirrored_pose_data for visualization
             mediapipe_pose_landmarks = [
                 'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
                 'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
@@ -520,26 +519,30 @@ class LandmarksVisualizer3D:
                 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
             ]
 
-            # Extract landmarks in the correct order with visibility check
             pose_points = []
             pose_landmark_names = []
 
             for landmark_name in mediapipe_pose_landmarks:
-                if landmark_name in pose_data:
-                    lm = pose_data[landmark_name]
-                    # Check visibility if available
+                if landmark_name in mirrored_pose_data:  # Use mirrored data
+                    lm = mirrored_pose_data[landmark_name]
                     visibility = lm.get('visibility', 1.0)
-                    if visibility > 0.5:  # Only include visible landmarks
+                    if visibility > 0.5:
                         pose_points.append([lm['x'], lm['y'], lm['z']])
                         pose_landmark_names.append(landmark_name)
 
             if pose_points:
                 landmarks_3d['pose'] = np.array(pose_points)
-                # Store the landmark names for connection drawing
                 landmarks_3d['pose_names'] = pose_landmark_names
 
-        return landmarks_3d
+        # Face extraction remains unchanged
+        face_data = frame_data.get('face', {})
+        if 'all_landmarks' in face_data and face_data['all_landmarks']:
+            face_landmarks = face_data['all_landmarks']
+            sampled_landmarks = face_landmarks[::2]
+            points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
+            landmarks_3d['face'] = points
 
+        return landmarks_3d
     def precompute_paths_from_json(self, frames_data: dict):
         """Precompute all hand paths from JSON data with advanced consistency correction and hand-wrist calibration"""
         print("Precomputing hand paths with advanced consistency correction and hand-wrist calibration...")
@@ -831,9 +834,10 @@ class LandmarksVisualizer3D:
         self.ax.legend(loc='upper left', bbox_to_anchor=(0, 1))
 
         return self.ax
+
     def visualize_static(self, frame_number: Optional[int] = None):
         """Display a static 3D visualization of landmarks for a specific frame"""
-        self._setup_3d_plot()
+        self._setup_3d_plot(initial_view=self.initial_view)  # Use stored initial view
 
         # Mark as not animating for full path display
         self._is_animating = False
@@ -849,13 +853,14 @@ class LandmarksVisualizer3D:
             correction_stats = self.hand_tracker.get_path_statistics()['consistency_corrections']
             instruction_text += f'\nShowing complete hand paths with {correction_stats["corrections_made"]} consistency corrections applied.'
 
-        plt.figtext(0.02, 0.02, instruction_text, fontsize=10, style='italic')
+        plt.figtext(0.02, 0.95, instruction_text, fontsize=10, style='italic')
 
         plt.tight_layout()
         plt.show()
 
     def visualize_animated(self, interval: float = 100):
         """Display an animated 3D visualization of landmarks across all frames"""
+        # Set up the 3D plot FIRST - this creates self.fig and self.ax
         self._setup_3d_plot()
 
         # Set animation flag for progressive path tracking
@@ -867,7 +872,7 @@ class LandmarksVisualizer3D:
         def animate(frame):
             return self._draw_frame(frame)
 
-        # Create animation
+        # Create animation - now self.fig exists
         self.anim = FuncAnimation(self.fig, animate, frames=total_frames,
                                   interval=interval, blit=False, repeat=True)
 
@@ -957,33 +962,56 @@ class LandmarksVisualizer3D:
 class HandConsistencyTracker:
     """Advanced hand tracking to fix left/right hand swapping issues"""
 
-    def __init__(self, distance_threshold: float = 0.2, confidence_threshold: int = 3):
+    def __init__(self, json_path: str, frame_rate: float = 10.0, track_hands: bool = False,
+                 initial_view: str = 'z_axis'):
         """
-        Initialize hand consistency tracker
+        Initialize the 3D visualizer
 
         Args:
-            distance_threshold: Maximum distance for hand to be considered the same hand
-            confidence_threshold: Number of consecutive frames needed to confirm a swap
+            json_path: Path to video_landmarks.json file
+            frame_rate: Animation frame rate (frames per second)
+            track_hands: Whether to enable hand path tracking with advanced consistency correction
+            initial_view: Initial viewing angle ('z_axis', 'perspective', or tuple of (elev, azim))
         """
-        self.distance_threshold = distance_threshold
-        self.confidence_threshold = confidence_threshold
+        self.json_path = Path(json_path)
+        self.frame_rate = frame_rate
+        self.track_hands = track_hands
+        self.initial_view = initial_view  # Store initial view preference
+        self.data = None
+        self.frames_data = None
+        self.metadata = None
+        self.current_frame = 0
 
-        # Track hand positions over multiple frames
-        self.hand_history = {
-            'left_hand': [],
-            'right_hand': []
+        # Initialize hand path tracker if enabled
+        self.hand_tracker = None
+
+        # Color scheme for different landmark types
+        self.colors = {
+            'hands': {'left_hand': 'red', 'right_hand': 'blue'},
+            'face': 'yellow',
+            'pose': 'green'
         }
 
-        # Keep track of potential swaps
-        self.swap_confidence = 0
-        self.pending_swap = False
+        # Load data
+        self._load_data()
 
-        # Statistics
-        self.correction_count = 0
-        self.frame_count = 0
+        # Initialize hand tracking after data is loaded
+        if track_hands:
+            self.hand_tracker = HandPathTracker()
+            self.hand_tracker.precompute_paths_from_json(self.frames_data)
 
-        # Smoothing parameters
-        self.max_history = 5  # Keep last 5 positions for smoothing
+            # Print path statistics
+            stats = self.hand_tracker.get_path_statistics()
+            correction_info = stats['consistency_corrections']
+            print("\nHand Path Statistics (with advanced consistency correction):")
+            print(f"  Advanced corrections applied: {correction_info['corrections_made']}")
+            print(f"  Correction rate: {correction_info['correction_rate']:.1f}% of frames")
+            print(f"  Left hand: {stats['left_hand']['total_points']} points, "
+                  f"distance: {stats['left_hand']['total_distance']:.3f}, "
+                  f"avg speed: {stats['left_hand']['avg_speed']:.3f}")
+            print(f"  Right hand: {stats['right_hand']['total_points']} points, "
+                  f"distance: {stats['right_hand']['total_distance']:.3f}, "
+                  f"avg speed: {stats['right_hand']['avg_speed']:.3f}")
 
     def _extract_hand_position(self, hand_data):
         """Extract wrist position from hand data"""
@@ -1552,7 +1580,8 @@ def generate_2d_path_overlay_from_json(json_path: str, output_video_path: str = 
 
 
 def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: Optional[int] = None,
-                           save_path: Optional[str] = None, track_hands: bool = False):
+                           save_path: Optional[str] = None, track_hands: bool = False,
+                           initial_view: str = 'z_axis'):
     """
     Visualize landmarks from video_landmarks.json in 3D space
 
@@ -1562,6 +1591,7 @@ def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: O
         frame_number: Specific frame to show (for static mode), None for first frame
         save_path: Path to save animation (optional, for animated mode)
         track_hands: Whether to enable hand path tracking with consistency correction
+        initial_view: Initial viewing angle ('z_axis', 'perspective', or tuple of (elev, azim))
     """
     try:
         visualizer = LandmarksVisualizer3D(json_path, track_hands=track_hands)
