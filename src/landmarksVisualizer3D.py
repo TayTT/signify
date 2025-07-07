@@ -22,6 +22,11 @@ import cv2
 
 #TODO coordinates for pose and hands are disconnected
 
+FACE_AMPLIFICATION = 7
+HANDS_AMPLIFICATION = 7
+BOX_ASPECT = [1, 1, 1] # to squash/str ech axes by a factor
+DEBUG_HAND_DEPTH = False
+
 class LandmarksVisualizer3D:
     """3D visualizer for sign language landmarks"""
 
@@ -42,13 +47,14 @@ class LandmarksVisualizer3D:
         self.metadata = None
         self.current_frame = 0
 
+
         # Initialize hand path tracker if enabled
         self.hand_tracker = None
 
         # Color scheme for different landmark types
         self.colors = {
             'hands': {'left_hand': 'red', 'right_hand': 'blue'},
-            'face': 'yellow',
+            'face': 'orange',
             'pose': 'green'
         }
 
@@ -109,14 +115,13 @@ class LandmarksVisualizer3D:
         # Set axis limits (normalized coordinates are 0-1)
         self.ax.set_xlim(0, 1)
         self.ax.set_ylim(0, 1)
-        self.ax.set_zlim(-0.5, 0.5)  # Z coordinates are typically smaller
-
+        self.ax.set_zlim(0, 1)
+        # self.ax.set_zlim(-0.5, 0.5)  # Z coordinates are typically smaller
+        # self.ax.set_zlim(-0.1, 0.1)
         # Invert Y axis to match image coordinates
-        self.ax.invert_yaxis()
+        # self.ax.invert_yaxis()
 
-        # Set initial view from Z-axis (looking down the Z-axis towards XY plane)
-        # elev=90 means looking straight down from above (Z-axis view)
-        # azim=0 sets the rotation around the Z-axis
+        self.ax.set_box_aspect(BOX_ASPECT)
         self.ax.view_init(elev=-90, azim=90) #VIEWING ANGLE
 
         return self.ax
@@ -339,6 +344,30 @@ class LandmarksVisualizer3D:
         pose_data = frame_data.get('pose', {})
 
         if pose_data:
+            # MIRROR THE POSE DATA HORIZONTALLY
+            mirrored_pose_data = {}
+            for landmark_name, lm_data in pose_data.items():
+                mirrored_lm_data = lm_data.copy()
+                # Flip X coordinate (since they're normalized 0-1)
+                mirrored_lm_data['x'] = 1.0 - lm_data['x']
+                mirrored_pose_data[landmark_name] = mirrored_lm_data
+
+            # Use mirrored pose data for wrist positions
+            if "LEFT_WRIST" in mirrored_pose_data:
+                pose_wrists["LEFT_WRIST"] = np.array([
+                    mirrored_pose_data["LEFT_WRIST"]["x"],
+                    mirrored_pose_data["LEFT_WRIST"]["y"],
+                    mirrored_pose_data["LEFT_WRIST"]["z"]
+                ])
+
+            if "RIGHT_WRIST" in mirrored_pose_data:
+                pose_wrists["RIGHT_WRIST"] = np.array([
+                    mirrored_pose_data["RIGHT_WRIST"]["x"],
+                    mirrored_pose_data["RIGHT_WRIST"]["y"],
+                    mirrored_pose_data["RIGHT_WRIST"]["z"]
+                ])
+
+        if pose_data:
             if "LEFT_WRIST" in pose_data:
                 pose_wrists["LEFT_WRIST"] = np.array([
                     pose_data["LEFT_WRIST"]["x"],
@@ -377,6 +406,7 @@ class LandmarksVisualizer3D:
             if hand_landmarks:
                 # Convert to numpy array for easier manipulation
                 points = np.array([[lm['x'], lm['y'], lm['z']] for lm in hand_landmarks])
+                points[:, 2] *= HANDS_AMPLIFICATION  # amplify to accomodate small z-range
 
                 # Calibrate hand position to pose wrist if both are available
                 if pose_wrist_position is not None and len(points) > 0:
@@ -398,6 +428,7 @@ class LandmarksVisualizer3D:
             # Take every 2nd landmark to reduce clutter
             sampled_landmarks = face_landmarks[::2]
             points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
+            points[:, 2] *= FACE_AMPLIFICATION  # amplify to accomodate small z-range
             landmarks_3d['face'] = points
 
         # Extract pose landmarks with proper ordering
@@ -493,6 +524,9 @@ class LandmarksVisualizer3D:
                 # Convert to numpy array for easier manipulation
                 points = np.array([[lm['x'], lm['y'], lm['z']] for lm in hand_landmarks])
 
+                points[:, 2] *= HANDS_AMPLIFICATION #amplify to accomodate small z-range
+
+
                 # Calibrate hand position to pose wrist if both are available
                 if pose_wrist_position is not None and len(points) > 0:
                     # Hand wrist is landmark 0
@@ -540,6 +574,8 @@ class LandmarksVisualizer3D:
             face_landmarks = face_data['all_landmarks']
             sampled_landmarks = face_landmarks[::2]
             points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
+            points[:, 2] *= FACE_AMPLIFICATION # amplify to accomodate small z-range
+            points[:, 0] = 1.0 - points[:, 0]  # mirror face to match video
             landmarks_3d['face'] = points
 
         return landmarks_3d
@@ -776,7 +812,7 @@ class LandmarksVisualizer3D:
         self.ax.set_zlabel('Z')
         self.ax.set_xlim(0, 1)
         self.ax.set_ylim(0, 1)
-        self.ax.set_zlim(-0.5, 0.5)
+        self.ax.set_zlim(-2, 2)
         self.ax.invert_yaxis()
 
         # Get frame key
@@ -869,6 +905,12 @@ class LandmarksVisualizer3D:
         frame_keys = sorted(self.frames_data.keys(), key=int)
         total_frames = len(frame_keys)
 
+        if DEBUG_HAND_DEPTH:
+            print("=== Debugging Hand Depth ===")
+            for i in range(min(10, len(frame_keys))):  # Debug first 3 frames
+                print(f"\nFrame {frame_keys[i]}:")
+                self.debug_hand_depth(frame_keys[i])
+
         def animate(frame):
             return self._draw_frame(frame)
 
@@ -958,211 +1000,257 @@ class LandmarksVisualizer3D:
 
         print("=" * 60)
 
+    def debug_hand_depth(self, frame_key: str):
+        """Debug function to check raw Z-coordinate values"""
+        frame_data = self.frames_data.get(frame_key, {})
+        hands_data = frame_data.get('hands', {})
+
+        for hand_type in ['left_hand', 'right_hand']:
+            hand_info = hands_data.get(hand_type, {})
+            if hand_info:
+                if isinstance(hand_info, dict) and 'landmarks' in hand_info:
+                    landmarks = hand_info['landmarks']
+                else:
+                    landmarks = hand_info
+
+                if landmarks:
+                    z_values = [lm['z'] for lm in landmarks]
+                    print(f"{hand_type} Z-coordinates:")
+                    print(f"  Min: {min(z_values):.4f}, Max: {max(z_values):.4f}")
+                    print(f"  Range: {max(z_values) - min(z_values):.4f}")
+                    print(f"  Sample values: {z_values[:5]}")
+
+# class HandConsistencyTracker:
+#     """Advanced hand tracking to fix left/right hand swapping issues"""
+#
+#     def __init__(self, json_path: str, frame_rate: float = 10.0, track_hands: bool = False,
+#                  initial_view: str = 'z_axis', distance_threshold=0.15, confidence_threshold=2):
+#         """
+#         Initialize the 3D visualizer
+#
+#         Args:
+#             json_path: Path to video_landmarks.json file
+#             frame_rate: Animation frame rate (frames per second)
+#             track_hands: Whether to enable hand path tracking with advanced consistency correction
+#             initial_view: Initial viewing angle ('z_axis', 'perspective', or tuple of (elev, azim))
+#         """
+#         self.json_path = Path(json_path)
+#         self.frame_rate = frame_rate
+#         self.track_hands = track_hands
+#         self.initial_view = initial_view  # Store initial view preference
+#         self.data = None
+#         self.frames_data = None
+#         self.metadata = None
+#         self.current_frame = 0
+#         self.distance_threshold = distance_threshold
+#         self.confidence_threshold = confidence_threshold
+#
+#         # Initialize hand path tracker if enabled
+#         self.hand_tracker = None
+#
+#         # Color scheme for different landmark types
+#         self.colors = {
+#             'hands': {'left_hand': 'red', 'right_hand': 'blue'},
+#             'face': 'orange',
+#             'pose': 'green'
+#         }
+#
+#         # Load data
+#         self._load_data()
+#
+#         # Initialize hand tracking after data is loaded
+#         if track_hands:
+#             self.hand_tracker = HandPathTracker()
+#             self.hand_tracker.precompute_paths_from_json(self.frames_data)
+#
+#             # Print path statistics
+#             stats = self.hand_tracker.get_path_statistics()
+#             correction_info = stats['consistency_corrections']
+#             print("\nHand Path Statistics (with advanced consistency correction):")
+#             print(f"  Advanced corrections applied: {correction_info['corrections_made']}")
+#             print(f"  Correction rate: {correction_info['correction_rate']:.1f}% of frames")
+#             print(f"  Left hand: {stats['left_hand']['total_points']} points, "
+#                   f"distance: {stats['left_hand']['total_distance']:.3f}, "
+#                   f"avg speed: {stats['left_hand']['avg_speed']:.3f}")
+#             print(f"  Right hand: {stats['right_hand']['total_points']} points, "
+#                   f"distance: {stats['right_hand']['total_distance']:.3f}, "
+#                   f"avg speed: {stats['right_hand']['avg_speed']:.3f}")
+#
+#     def _extract_hand_position(self, hand_data):
+#         """Extract wrist position from hand data"""
+#         if not hand_data:
+#             return None
+#
+#         if isinstance(hand_data, dict) and 'landmarks' in hand_data:
+#             landmarks = hand_data['landmarks']
+#         else:
+#             landmarks = hand_data
+#
+#         if landmarks and len(landmarks) > 0:
+#             wrist = landmarks[0]
+#             return np.array([wrist['x'], wrist['y'], wrist['z']])
+#         return None
+#
+#     def _get_average_position(self, hand_type):
+#         """Get average position from recent history"""
+#         if not self.hand_history[hand_type]:
+#             return None
+#
+#         positions = self.hand_history[hand_type][-3:]  # Use last 3 positions
+#         return np.mean(positions, axis=0)
+#
+#     def _should_swap_hands(self, current_left_pos, current_right_pos):
+#         """Determine if hands should be swapped based on multiple criteria"""
+#         if current_left_pos is None or current_right_pos is None:
+#             return False
+#
+#         # Get expected positions based on history
+#         expected_left = self._get_average_position('left_hand')
+#         expected_right = self._get_average_position('right_hand')
+#
+#         if expected_left is None or expected_right is None:
+#             return False
+#
+#         # Calculate distances
+#         left_to_expected_left = np.linalg.norm(current_left_pos - expected_left)
+#         left_to_expected_right = np.linalg.norm(current_left_pos - expected_right)
+#         right_to_expected_left = np.linalg.norm(current_right_pos - expected_left)
+#         right_to_expected_right = np.linalg.norm(current_right_pos - expected_right)
+#
+#         # Check if current labels are swapped
+#         current_assignment_cost = left_to_expected_left + right_to_expected_right
+#         swapped_assignment_cost = left_to_expected_right + right_to_expected_left
+#
+#         # Additional criteria: X-position consistency (left hand should generally be on the left side)
+#         x_position_consistent = current_left_pos[0] <= current_right_pos[0]  # Left should be more to the left
+#
+#         # Decide if swap is needed
+#         swap_needed = (
+#                 swapped_assignment_cost < current_assignment_cost and
+#                 swapped_assignment_cost < self.distance_threshold * 2 and
+#                 not x_position_consistent
+#         )
+#
+#         return swap_needed
+#
+#     def correct_hand_labels(self, hands_data: dict):
+#         """
+#         Correct hand labels using advanced tracking with confidence voting
+#
+#         Args:
+#             hands_data: Dictionary with 'left_hand' and 'right_hand' data
+#
+#         Returns:
+#             Corrected hands_data dictionary
+#         """
+#         self.frame_count += 1
+#
+#         # Extract current positions
+#         current_left_pos = self._extract_hand_position(hands_data.get('left_hand', []))
+#         current_right_pos = self._extract_hand_position(hands_data.get('right_hand', []))
+#
+#         # If we don't have both hands, just update history and return
+#         if current_left_pos is None or current_right_pos is None:
+#             # Update history for available hands
+#             if current_left_pos is not None:
+#                 self.hand_history['left_hand'].append(current_left_pos)
+#                 if len(self.hand_history['left_hand']) > self.max_history:
+#                     self.hand_history['left_hand'].pop(0)
+#
+#             if current_right_pos is not None:
+#                 self.hand_history['right_hand'].append(current_right_pos)
+#                 if len(self.hand_history['right_hand']) > self.max_history:
+#                     self.hand_history['right_hand'].pop(0)
+#
+#             # Reset swap confidence when we don't have both hands
+#             self.swap_confidence = 0
+#             self.pending_swap = False
+#             return hands_data
+#
+#         # For the first few frames, just build up history
+#         if len(self.hand_history['left_hand']) < 2:
+#             self.hand_history['left_hand'].append(current_left_pos)
+#             self.hand_history['right_hand'].append(current_right_pos)
+#             return hands_data
+#
+#         # Check if swap is needed
+#         swap_needed = self._should_swap_hands(current_left_pos, current_right_pos)
+#
+#         # Update confidence counter
+#         if swap_needed:
+#             self.swap_confidence += 1
+#         else:
+#             self.swap_confidence = max(0, self.swap_confidence - 1)
+#
+#         # Apply swap if confidence threshold is met
+#         if self.swap_confidence >= self.confidence_threshold:
+#             corrected_hands_data = {
+#                 'left_hand': hands_data.get('right_hand', []),
+#                 'right_hand': hands_data.get('left_hand', [])
+#             }
+#
+#             # Update history with swapped positions
+#             self.hand_history['left_hand'].append(current_right_pos)
+#             self.hand_history['right_hand'].append(current_left_pos)
+#
+#             self.correction_count += 1
+#             self.swap_confidence = 0  # Reset after correction
+#
+#             # Trim history
+#             if len(self.hand_history['left_hand']) > self.max_history:
+#                 self.hand_history['left_hand'].pop(0)
+#             if len(self.hand_history['right_hand']) > self.max_history:
+#                 self.hand_history['right_hand'].pop(0)
+#
+#             return corrected_hands_data
+#         else:
+#             # Update history with current positions
+#             self.hand_history['left_hand'].append(current_left_pos)
+#             self.hand_history['right_hand'].append(current_right_pos)
+#
+#             # Trim history
+#             if len(self.hand_history['left_hand']) > self.max_history:
+#                 self.hand_history['left_hand'].pop(0)
+#             if len(self.hand_history['right_hand']) > self.max_history:
+#                 self.hand_history['right_hand'].pop(0)
+#
+#             return hands_data
+#
+#     def get_correction_stats(self):
+#         """Get statistics about corrections made"""
+#         return {
+#             'corrections_made': self.correction_count,
+#             'total_frames': self.frame_count,
+#             'correction_rate': self.correction_count / max(1, self.frame_count) * 100,
+#             'distance_threshold': self.distance_threshold,
+#             'confidence_threshold': self.confidence_threshold
+#         }
+#
 
 class HandConsistencyTracker:
-    """Advanced hand tracking to fix left/right hand swapping issues"""
+    """Simple hand tracking to fix left/right hand swapping issues"""
 
-    def __init__(self, json_path: str, frame_rate: float = 10.0, track_hands: bool = False,
-                 initial_view: str = 'z_axis'):
-        """
-        Initialize the 3D visualizer
+    def __init__(self, distance_threshold=0.15, confidence_threshold=2):
+        self.distance_threshold = distance_threshold
+        self.confidence_threshold = confidence_threshold
+        self.hand_history = {'left_hand': [], 'right_hand': []}
+        self.correction_count = 0
+        self.frame_count = 0
 
-        Args:
-            json_path: Path to video_landmarks.json file
-            frame_rate: Animation frame rate (frames per second)
-            track_hands: Whether to enable hand path tracking with advanced consistency correction
-            initial_view: Initial viewing angle ('z_axis', 'perspective', or tuple of (elev, azim))
-        """
-        self.json_path = Path(json_path)
-        self.frame_rate = frame_rate
-        self.track_hands = track_hands
-        self.initial_view = initial_view  # Store initial view preference
-        self.data = None
-        self.frames_data = None
-        self.metadata = None
-        self.current_frame = 0
-
-        # Initialize hand path tracker if enabled
-        self.hand_tracker = None
-
-        # Color scheme for different landmark types
-        self.colors = {
-            'hands': {'left_hand': 'red', 'right_hand': 'blue'},
-            'face': 'yellow',
-            'pose': 'green'
-        }
-
-        # Load data
-        self._load_data()
-
-        # Initialize hand tracking after data is loaded
-        if track_hands:
-            self.hand_tracker = HandPathTracker()
-            self.hand_tracker.precompute_paths_from_json(self.frames_data)
-
-            # Print path statistics
-            stats = self.hand_tracker.get_path_statistics()
-            correction_info = stats['consistency_corrections']
-            print("\nHand Path Statistics (with advanced consistency correction):")
-            print(f"  Advanced corrections applied: {correction_info['corrections_made']}")
-            print(f"  Correction rate: {correction_info['correction_rate']:.1f}% of frames")
-            print(f"  Left hand: {stats['left_hand']['total_points']} points, "
-                  f"distance: {stats['left_hand']['total_distance']:.3f}, "
-                  f"avg speed: {stats['left_hand']['avg_speed']:.3f}")
-            print(f"  Right hand: {stats['right_hand']['total_points']} points, "
-                  f"distance: {stats['right_hand']['total_distance']:.3f}, "
-                  f"avg speed: {stats['right_hand']['avg_speed']:.3f}")
-
-    def _extract_hand_position(self, hand_data):
-        """Extract wrist position from hand data"""
-        if not hand_data:
-            return None
-
-        if isinstance(hand_data, dict) and 'landmarks' in hand_data:
-            landmarks = hand_data['landmarks']
-        else:
-            landmarks = hand_data
-
-        if landmarks and len(landmarks) > 0:
-            wrist = landmarks[0]
-            return np.array([wrist['x'], wrist['y'], wrist['z']])
-        return None
-
-    def _get_average_position(self, hand_type):
-        """Get average position from recent history"""
-        if not self.hand_history[hand_type]:
-            return None
-
-        positions = self.hand_history[hand_type][-3:]  # Use last 3 positions
-        return np.mean(positions, axis=0)
-
-    def _should_swap_hands(self, current_left_pos, current_right_pos):
-        """Determine if hands should be swapped based on multiple criteria"""
-        if current_left_pos is None or current_right_pos is None:
-            return False
-
-        # Get expected positions based on history
-        expected_left = self._get_average_position('left_hand')
-        expected_right = self._get_average_position('right_hand')
-
-        if expected_left is None or expected_right is None:
-            return False
-
-        # Calculate distances
-        left_to_expected_left = np.linalg.norm(current_left_pos - expected_left)
-        left_to_expected_right = np.linalg.norm(current_left_pos - expected_right)
-        right_to_expected_left = np.linalg.norm(current_right_pos - expected_left)
-        right_to_expected_right = np.linalg.norm(current_right_pos - expected_right)
-
-        # Check if current labels are swapped
-        current_assignment_cost = left_to_expected_left + right_to_expected_right
-        swapped_assignment_cost = left_to_expected_right + right_to_expected_left
-
-        # Additional criteria: X-position consistency (left hand should generally be on the left side)
-        x_position_consistent = current_left_pos[0] <= current_right_pos[0]  # Left should be more to the left
-
-        # Decide if swap is needed
-        swap_needed = (
-                swapped_assignment_cost < current_assignment_cost and
-                swapped_assignment_cost < self.distance_threshold * 2 and
-                not x_position_consistent
-        )
-
-        return swap_needed
-
-    def correct_hand_labels(self, hands_data: dict):
-        """
-        Correct hand labels using advanced tracking with confidence voting
-
-        Args:
-            hands_data: Dictionary with 'left_hand' and 'right_hand' data
-
-        Returns:
-            Corrected hands_data dictionary
-        """
+    def correct_hand_labels(self, hands_data):
+        """Simple method to correct hand labels - placeholder for now"""
         self.frame_count += 1
-
-        # Extract current positions
-        current_left_pos = self._extract_hand_position(hands_data.get('left_hand', []))
-        current_right_pos = self._extract_hand_position(hands_data.get('right_hand', []))
-
-        # If we don't have both hands, just update history and return
-        if current_left_pos is None or current_right_pos is None:
-            # Update history for available hands
-            if current_left_pos is not None:
-                self.hand_history['left_hand'].append(current_left_pos)
-                if len(self.hand_history['left_hand']) > self.max_history:
-                    self.hand_history['left_hand'].pop(0)
-
-            if current_right_pos is not None:
-                self.hand_history['right_hand'].append(current_right_pos)
-                if len(self.hand_history['right_hand']) > self.max_history:
-                    self.hand_history['right_hand'].pop(0)
-
-            # Reset swap confidence when we don't have both hands
-            self.swap_confidence = 0
-            self.pending_swap = False
-            return hands_data
-
-        # For the first few frames, just build up history
-        if len(self.hand_history['left_hand']) < 2:
-            self.hand_history['left_hand'].append(current_left_pos)
-            self.hand_history['right_hand'].append(current_right_pos)
-            return hands_data
-
-        # Check if swap is needed
-        swap_needed = self._should_swap_hands(current_left_pos, current_right_pos)
-
-        # Update confidence counter
-        if swap_needed:
-            self.swap_confidence += 1
-        else:
-            self.swap_confidence = max(0, self.swap_confidence - 1)
-
-        # Apply swap if confidence threshold is met
-        if self.swap_confidence >= self.confidence_threshold:
-            corrected_hands_data = {
-                'left_hand': hands_data.get('right_hand', []),
-                'right_hand': hands_data.get('left_hand', [])
-            }
-
-            # Update history with swapped positions
-            self.hand_history['left_hand'].append(current_right_pos)
-            self.hand_history['right_hand'].append(current_left_pos)
-
-            self.correction_count += 1
-            self.swap_confidence = 0  # Reset after correction
-
-            # Trim history
-            if len(self.hand_history['left_hand']) > self.max_history:
-                self.hand_history['left_hand'].pop(0)
-            if len(self.hand_history['right_hand']) > self.max_history:
-                self.hand_history['right_hand'].pop(0)
-
-            return corrected_hands_data
-        else:
-            # Update history with current positions
-            self.hand_history['left_hand'].append(current_left_pos)
-            self.hand_history['right_hand'].append(current_right_pos)
-
-            # Trim history
-            if len(self.hand_history['left_hand']) > self.max_history:
-                self.hand_history['left_hand'].pop(0)
-            if len(self.hand_history['right_hand']) > self.max_history:
-                self.hand_history['right_hand'].pop(0)
-
-            return hands_data
+        return hands_data  # Just return unchanged for now
 
     def get_correction_stats(self):
         """Get statistics about corrections made"""
         return {
             'corrections_made': self.correction_count,
             'total_frames': self.frame_count,
-            'correction_rate': self.correction_count / max(1, self.frame_count) * 100,
+            'correction_rate': 0.0,
             'distance_threshold': self.distance_threshold,
             'confidence_threshold': self.confidence_threshold
         }
-
 
 class HandPathTracker:
     """Tracks and visualizes hand movement paths from JSON data with advanced consistency correction"""
@@ -1185,7 +1273,7 @@ class HandPathTracker:
         # Initialize advanced consistency tracker
         self.consistency_tracker = HandConsistencyTracker(
             distance_threshold=0.15,  # Stricter threshold
-            confidence_threshold=2  # Require 2 consecutive frames before swapping
+            confidence_threshold=10  # Require 2 consecutive frames before swapping
         )
 
         # Path colors (slightly transparent)
@@ -1593,6 +1681,7 @@ def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: O
         track_hands: Whether to enable hand path tracking with consistency correction
         initial_view: Initial viewing angle ('z_axis', 'perspective', or tuple of (elev, azim))
     """
+
     try:
         visualizer = LandmarksVisualizer3D(json_path, track_hands=track_hands)
 
