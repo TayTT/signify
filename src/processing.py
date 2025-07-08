@@ -502,6 +502,7 @@ class EnhancedHandTracker:
         return calibrated_hands
 
 
+
     def process_frame_enhanced(
             frame, actual_frame_number, fps, enhanced_hand_tracker, face_mesh, pose,
             extract_face, extract_pose, all_frames_data,
@@ -565,16 +566,29 @@ class EnhancedHandTracker:
                     # Extract pose landmarks
                     pose_data = {}
                     h, w, _ = frame.shape
-                    for landmark in mp_pose.PoseLandmark:
-                        lm = results_pose.pose_landmarks.landmark[landmark]
-                        pose_data[landmark.name] = {
-                            "x": lm.x,
-                            "y": lm.y,
-                            "z": lm.z,
-                            "px": int(lm.x * w),
-                            "py": int(lm.y * h),
-                            "visibility": float(lm.visibility)
-                        }
+                    CORE_POSE_LANDMARKS = [
+                        'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
+                        'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
+                        'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
+                        'LEFT_WRIST', 'RIGHT_WRIST',
+                        'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
+                        'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
+                    ]
+
+                    for landmark_name in CORE_POSE_LANDMARKS:
+                        try:
+                            landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
+                            lm = results_pose.pose_landmarks.landmark[landmark_enum]
+                            pose_data[landmark_name] = {
+                                "x": lm.x,
+                                "y": lm.y,
+                                "z": lm.z,
+                                "px": int(lm.x * w),
+                                "py": int(lm.y * h),
+                                "visibility": float(lm.visibility)
+                            }
+                        except AttributeError:
+                            continue
 
                     # Store wrist positions for hand calibration
                     if "LEFT_WRIST" in pose_data:
@@ -634,12 +648,25 @@ class EnhancedHandTracker:
 
                 if results_face.multi_face_landmarks:
                     for face_landmarks in results_face.multi_face_landmarks:
-                        # Extract all face landmarks for JSON data
+                        # CALIBRATE face landmarks to pose nose (following hands pattern)
+                        pose_nose_position = None
+                        if frame_data["pose"] and "NOSE" in frame_data["pose"]:
+                            pose_nose_position = np.array([
+                                frame_data["pose"]["NOSE"]["x"],
+                                frame_data["pose"]["NOSE"]["y"],
+                                frame_data["pose"]["NOSE"]["z"]
+                            ])
+
+                        # Calibrate the MediaPipe face landmarks object (same as hands)
+                        calibrated_face_landmarks = calibrate_face_to_nose(face_landmarks, pose_nose_position)
+
+                        # Extract calibrated face landmarks for JSON data
                         face_data = []
                         mouth_data = []
                         h, w, _ = frame.shape
 
-                        for i, lm in enumerate(face_landmarks.landmark):
+                        # Use CALIBRATED landmarks for JSON extraction
+                        for i, lm in enumerate(calibrated_face_landmarks.landmark):
                             point = {
                                 "x": lm.x,
                                 "y": lm.y,
@@ -655,12 +682,15 @@ class EnhancedHandTracker:
                         frame_data["face"]["all_landmarks"] = face_data
                         frame_data["face"]["mouth_landmarks"] = mouth_data
 
-                        # Choose visualization based on use_full_mesh parameter
+                        # Mark as calibrated if pose nose was available
+                        if pose_nose_position is not None:
+                            frame_data["face"]["calibrated"] = True
+
+                        # Draw face landmarks using CALIBRATED MediaPipe object (same as hands)
                         if use_full_mesh:
-                            # Draw full face mesh on original frame
                             mp_drawing.draw_landmarks(
                                 annotated_frame,
-                                face_landmarks,
+                                calibrated_face_landmarks,  # ← NOW using calibrated landmarks like hands
                                 mp_face_mesh.FACEMESH_TESSELATION,
                                 landmark_drawing_spec=None,
                                 connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style()
@@ -764,7 +794,7 @@ class EnhancedHandTracker:
             # Add frame info to image - show actual frame number and enhancement status
             progress_percent = (actual_frame_number / total_frames) * 100 if total_frames > 0 else 0
             enhancement_text = " (Enhanced)" if use_enhancement else ""
-            tracking_text = " | Enhanced + Calibrated Hand Tracking"
+            tracking_text = "  | Enhanced Hand + Face Calibration"
             cv2.putText(
                 annotated_frame,
                 f"Frame: {actual_frame_number} | {progress_percent:.1f}%{enhancement_text}{tracking_text}",
@@ -951,6 +981,33 @@ class EnhancedHandTracker:
             'border_exit_rate': (self.stats['border_exits_detected'] / max(1, self.frame_count)) * 100,
             'invalid_reentry_rate': (self.stats['invalid_reentries_filtered'] / total) * 100
         }
+
+def calibrate_face_to_nose(face_landmarks, pose_nose_position):
+    """
+    Calibrate face landmarks to align with pose nose position
+    Following the same pattern as calibrate_hands_to_wrists
+    """
+    if face_landmarks is None or pose_nose_position is None:
+        return face_landmarks
+
+    # Get face nose position (MediaPipe face landmark 1 is nose tip)
+    face_nose = face_landmarks.landmark[1]  # Nose tip
+    face_nose_position = np.array([face_nose.x, face_nose.y, face_nose.z])
+
+    # Calculate translation offset (same as hands)
+    translation_offset = pose_nose_position - face_nose_position
+
+    # Create calibrated landmarks structure (same as hands approach)
+    calibrated_landmarks = type(face_landmarks)()
+    calibrated_landmarks.CopyFrom(face_landmarks)
+
+    # Apply translation to all face landmarks (same as hands approach)
+    for landmark in calibrated_landmarks.landmark:
+        landmark.x += translation_offset[0]
+        landmark.y += translation_offset[1]
+        landmark.z += translation_offset[2]
+
+    return calibrated_landmarks
 
 
 # Keep your existing enhance_image_for_hand_detection function unchanged
@@ -1211,23 +1268,33 @@ def process_image(
 
             if results_face.multi_face_landmarks:
                 for face_landmarks in results_face.multi_face_landmarks:
+                    # Apply calibration if pose data is available
+                    calibrated_face_landmarks = face_landmarks
+                    if detect_pose and "pose" in image_data and "NOSE" in image_data["pose"]:
+                        pose_nose_position = np.array([
+                            image_data["pose"]["NOSE"]["x"],
+                            image_data["pose"]["NOSE"]["y"],
+                            image_data["pose"]["NOSE"]["z"]
+                        ])
+                        calibrated_face_landmarks = calibrate_face_to_nose(face_landmarks, pose_nose_position)
+                        image_data["face"]["calibrated"] = True
+
+                    # Extract JSON data from calibrated landmarks
                     face_data = []
                     mouth_data = []
-
-                    for i, lm in enumerate(face_landmarks.landmark):
+                    for i, lm in enumerate(calibrated_face_landmarks.landmark):
                         point = {"x": lm.x, "y": lm.y, "z": lm.z}
                         face_data.append(point)
-
                         if i in MOUTH_LANDMARKS:
                             mouth_data.append(point)
 
                     image_data["face"]["all_landmarks"] = face_data
                     image_data["face"]["mouth_landmarks"] = mouth_data
 
-                    # Draw face landmarks on original image
+                    # Draw calibrated face landmarks
                     mp_drawing.draw_landmarks(
                         annotated_image,
-                        face_landmarks,
+                        calibrated_face_landmarks,  # ← Use calibrated landmarks
                         mp_face_mesh.FACEMESH_TESSELATION,
                         landmark_drawing_spec=None,
                         connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style()
@@ -1247,6 +1314,24 @@ def process_image(
                 for landmark in mp_pose.PoseLandmark:
                     lm = results_pose.pose_landmarks.landmark[landmark]
                     pose_data[landmark.name] = {"x": lm.x, "y": lm.y, "z": lm.z}
+
+                # WITH this filtered loop:
+                CORE_POSE_LANDMARKS = [
+                    'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
+                    'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
+                    'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
+                    'LEFT_WRIST', 'RIGHT_WRIST',
+                    'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
+                    'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
+                ]
+
+                for landmark_name in CORE_POSE_LANDMARKS:
+                    try:
+                        landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
+                        lm = results_pose.pose_landmarks.landmark[landmark_enum]
+                        pose_data[landmark_name] = {"x": lm.x, "y": lm.y, "z": lm.z, "visibility": float(lm.visibility)}
+                    except AttributeError:
+                        continue
 
                 image_data["pose"] = pose_data
 
@@ -1587,7 +1672,20 @@ def process_video(
         return None
 
 
-# NEW: Enhanced process_frame function
+def create_calibrated_face_landmarks(original_landmarks, translation_offset):
+    """Create a new MediaPipe face landmarks structure with calibrated positions"""
+    # Create a copy of the original landmarks
+    calibrated_landmarks = type(original_landmarks)()
+    calibrated_landmarks.CopyFrom(original_landmarks)
+
+    # Apply translation to all landmarks
+    for landmark in calibrated_landmarks.landmark:
+        landmark.x += translation_offset[0]
+        landmark.y += translation_offset[1]
+        landmark.z += translation_offset[2]
+
+    return calibrated_landmarks
+
 def process_frame_enhanced(
         frame, actual_frame_number, fps, enhanced_hand_tracker, face_mesh, pose,
         extract_face, extract_pose, all_frames_data,
@@ -1677,6 +1775,8 @@ def process_frame_enhanced(
 
                     frame_data["face"]["all_landmarks"] = face_data
                     frame_data["face"]["mouth_landmarks"] = mouth_data
+
+
 
                     # Choose visualization based on use_full_mesh parameter
                     if use_full_mesh:

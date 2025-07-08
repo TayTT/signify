@@ -14,9 +14,6 @@ from processing import process_image, process_video, enhance_image_for_hand_dete
 #  1) count missing points frames (how?) and delete them if treshold is not exceeded
 #  2)  detect hand disappearing from frame and exclude that from missing points
 
-# TODO fix pose or ignore pose?
-# TODO hands are only moving in 2d, flat to the boy. is there any 3d data?
-# TODO add check if hand dosappears
 
 # MediaPipe solution instances
 mp_drawing = mp.solutions.drawing_utils
