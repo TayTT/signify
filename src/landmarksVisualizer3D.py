@@ -21,6 +21,7 @@ import cv2
 
 # TODO move hand-to-wrist and face-to-nose calibration to processing (with an option to not do it and leave it only for display if possible)
 # TODO make sure that visualization happens from json for video (% sure it does)
+# TODO when do we apply mirroring? before saving to json or at visualization? is it necessary or just viewing flavor?
 
 FACE_AMPLIFICATION = 7
 HANDS_AMPLIFICATION = 7
