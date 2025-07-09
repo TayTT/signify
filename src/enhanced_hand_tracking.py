@@ -371,9 +371,10 @@ class EnhancedHandTracker:
             cv2.putText(frame, text, (10, y_offset + i * 20),
                         font, 0.4, (0, 255, 255), 1)
 
-    def get_landmarks_for_json(self, hands_data: Dict) -> Dict:
+    def get_landmarks_for_json(self, hands_data: Dict, frame_shape: tuple) -> Dict:
         """Convert hand data to format suitable for JSON storage"""
         json_data = {'left_hand': [], 'right_hand': []}
+        h, w = frame_shape[:2]
 
         for hand_type, hand_data in hands_data.items():
             if hand_data is not None:
@@ -385,14 +386,17 @@ class EnhancedHandTracker:
                     point = {
                         "x": float(lm.x),
                         "y": float(lm.y),
-                        "z": float(lm.z)
+                        "z": float(lm.z),
+                        "px": int(lm.x * w),
+                        "py": int(lm.y * h)
                     }
                     hand_points.append(point)
 
                 json_data[hand_type] = {
                     'landmarks': hand_points,
                     'confidence': float(confidence),
-                    'smoothed': hand_data.get('smoothed', False)
+                    'smoothed': hand_data.get('smoothed', False),
+                    'calibrated': hand_data.get('calibrated', False)
                 }
 
         return json_data

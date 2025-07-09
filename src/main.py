@@ -84,6 +84,9 @@ Examples:
     parser.add_argument('--disable-calibration', action='store_true',
                         help='Disable coordinate calibration (use raw MediaPipe coordinates)')
 
+    parser.add_argument('--disable-mirroring', action='store_true',
+                        help='Disable coordinate mirroring during processing')
+
     return parser.parse_args()
 
 
@@ -420,7 +423,8 @@ def process_batch(input_dir: Path, output_dir: Path, args) -> None:
                 image_extension=args.image_extension,
                 save_all_frames=args.save_all_frames,
                 use_full_mesh=args.full_mesh,
-                use_enhancement=args.enhance
+                use_enhancement=args.enhance,
+                disable_mirroring=args.disable_mirroring
             )
 
             if result is None:
@@ -456,7 +460,8 @@ def process_batch(input_dir: Path, output_dir: Path, args) -> None:
                 image_extension=args.image_extension,
                 save_all_frames=args.save_all_frames,
                 use_full_mesh=args.full_mesh,
-                use_enhancement=args.enhance
+                use_enhancement=args.enhance,
+                disable_mirroring=args.disable_mirroring
             )
 
             if result is None:
@@ -517,7 +522,8 @@ def process_single_video_file_with_calibration(video_path: Path, output_dir: Pat
             save_all_frames=args.save_all_frames,
             use_full_mesh=args.full_mesh,
             use_enhancement=args.enhance,
-            enable_calibration=enable_calibration  # NEW
+            enable_calibration=enable_calibration,
+            disable_mirroring=args.disable_mirroring
         )
 
         if result is None:
@@ -547,7 +553,8 @@ def process_single_image_directory(image_dir: Path, output_dir: Path, args, imag
             image_extension=args.image_extension,
             save_all_frames=args.save_all_frames,
             use_full_mesh=args.full_mesh,
-            use_enhancement=args.enhance
+            use_enhancement=args.enhance,
+            disable_mirroring=args.disable_mirroring
         )
 
         if result is None:
@@ -588,7 +595,8 @@ def process_multiple_videos_from_directory(video_files: list, output_dir: Path, 
                 image_extension=args.image_extension,
                 save_all_frames=args.save_all_frames,
                 use_full_mesh=args.full_mesh,
-                use_enhancement=args.enhance
+                use_enhancement=args.enhance,
+                disable_mirroring=args.disable_mirroring
             )
 
             if result is None:
@@ -626,6 +634,7 @@ def main() -> None:
     print(f"Image enhancement: {'Yes' if args.enhance else 'No'}")
     print(f"Skip frames: {args.skip_frames}")
     print(f"Save all frames: {'Yes' if args.save_all_frames else 'No'}")
+    print(f"Mirroring applied: {'No' if args.disable_mirroring else 'Yes'}")
 
     # Process single item or batch
     if args.process_single:
@@ -657,6 +666,7 @@ def main_with_calibration():
     print(f"Coordinate calibration: {'Yes' if (args.enable_calibration and not args.disable_calibration) else 'No'}")
     print(f"Skip frames: {args.skip_frames}")
     print(f"Save all frames: {'Yes' if args.save_all_frames else 'No'}")
+    print(f"Mirroring applied: {'No' if args.disable_mirroring else 'Yes'}")
 
     # Process based on arguments
     if args.process_single:

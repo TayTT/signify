@@ -23,11 +23,11 @@ import cv2
 # TODO make sure that visualization happens from json for video (% sure it does)
 # TODO when do we apply mirroring? before saving to json or at visualization? is it necessary or just viewing flavor?
 
-FACE_AMPLIFICATION = 7
+FACE_AMPLIFICATION = 6
 HANDS_AMPLIFICATION = 7
 BOX_ASPECT = [1, 1, 1]  # to squash/str ech axes by a factor
 DEBUG_HAND_DEPTH = False
-
+DEBUG_ANCHORS = False
 
 class LandmarksVisualizer3D:
     """3D visualizer for sign language landmarks"""
@@ -307,390 +307,311 @@ class LandmarksVisualizer3D:
 
         return mirrored_landmarks
 
+    # def _recalibrate_after_mirroring(self, mirrored_landmarks: Dict, original_pose_wrists: Dict) -> Dict:
+    #     """
+    #     Recalibrate hand positions after mirroring to use the correct wrist mapping
+    #
+    #     After mirroring:
+    #     - left_hand landmarks are on the right side → should align with RIGHT_WRIST
+    #     - right_hand landmarks are on the left side → should align with LEFT_WRIST
+    #     """
+    #     # Check if we have any pose wrists to work with
+    #     if (original_pose_wrists.get("LEFT_WRIST") is None and
+    #             original_pose_wrists.get("RIGHT_WRIST") is None):
+    #         print("DEBUG: No pose wrists available for recalibration")
+    #         return mirrored_landmarks  # No calibration possible
+    #
+    #     # Mirror the pose wrists too (they follow the same mirroring as everything else)
+    #     mirrored_pose_wrists = {}
+    #
+    #     if original_pose_wrists.get("LEFT_WRIST") is not None:
+    #         mirrored_left_wrist = original_pose_wrists["LEFT_WRIST"].copy()
+    #         mirrored_left_wrist[0] = 1.0 - mirrored_left_wrist[0]  # Mirror X coordinate
+    #         mirrored_pose_wrists["LEFT_WRIST"] = mirrored_left_wrist
+    #
+    #     if original_pose_wrists.get("RIGHT_WRIST") is not None:
+    #         mirrored_right_wrist = original_pose_wrists["RIGHT_WRIST"].copy()
+    #         mirrored_right_wrist[0] = 1.0 - mirrored_right_wrist[0]  # Mirror X coordinate
+    #         mirrored_pose_wrists["RIGHT_WRIST"] = mirrored_right_wrist
+    #
+    #     # Now recalibrate with swapped mapping
+    #     corrected_hand_mapping = {
+    #         'left_hand': 'RIGHT_WRIST',  # After mirroring, left_hand should align with RIGHT_WRIST
+    #         'right_hand': 'LEFT_WRIST'  # After mirroring, right_hand should align with LEFT_WRIST
+    #     }
+    #
+    #     for hand_type in ['left_hand', 'right_hand']:
+    #         hand_landmarks = mirrored_landmarks['hands'].get(hand_type, [])
+    #
+    #         if len(hand_landmarks) > 0:
+    #             points = hand_landmarks
+    #             wrist_name = corrected_hand_mapping[hand_type]
+    #             target_wrist_position = mirrored_pose_wrists.get(wrist_name)
+    #
+    #             if target_wrist_position is not None:
+    #                 # Get current hand wrist position (landmark 0)
+    #                 current_hand_wrist = points[0]
+    #
+    #                 # Calculate new translation offset
+    #                 translation_offset = target_wrist_position - current_hand_wrist
+    #
+    #                 # Apply translation to all hand landmarks
+    #                 mirrored_landmarks['hands'][hand_type] = points + translation_offset
+    #                 print(f"DEBUG: Recalibrated {hand_type} to {wrist_name}")
+    #             else:
+    #                 print(f"DEBUG: No target wrist {wrist_name} for {hand_type}")
+    #
+    #     mirrored_pose_nose = None
+    #     if original_pose_wrists and hasattr(self, '_original_pose_nose'):
+    #         mirrored_pose_nose = self._original_pose_nose.copy()
+    #         mirrored_pose_nose[0] = 1.0 - mirrored_pose_nose[0]  # Mirror X coordinate
+    #
+    #     # Recalibrate face if we have both face landmarks and mirrored pose nose
+    #     if (mirrored_pose_nose is not None and
+    #             len(mirrored_landmarks['face']) > 0):
+    #         face_points = mirrored_landmarks['face']
+    #         # Use first point as face nose reference
+    #         current_face_nose = face_points[0]
+    #
+    #         # Calculate new translation offset
+    #         translation_offset = mirrored_pose_nose - current_face_nose
+    #
+    #         # Apply translation to all face landmarks
+    #         mirrored_landmarks['face'] = face_points + translation_offset
+    #         print(f"DEBUG: Recalibrated face to mirrored pose nose")
+    #
+    #         # Mirror the pose nose position
+    #         mirrored_pose_nose = None
+    #         if original_pose_wrists and hasattr(self, '_original_pose_nose'):
+    #             mirrored_pose_nose = self._original_pose_nose.copy()
+    #             mirrored_pose_nose[0] = 1.0 - mirrored_pose_nose[0]  # Mirror X coordinate
+    #
+    #         # Recalibrate face if we have both face landmarks and mirrored pose nose
+    #         if (mirrored_pose_nose is not None and
+    #                 len(mirrored_landmarks['face']) > 0):
+    #             face_points = mirrored_landmarks['face']
+    #             # Use first point as face nose reference
+    #             current_face_nose = face_points[0]
+    #
+    #             # Calculate new translation offset
+    #             translation_offset = mirrored_pose_nose - current_face_nose
+    #
+    #             # Apply translation to all face landmarks
+    #             mirrored_landmarks['face'] = face_points + translation_offset
+    #             print(f"DEBUG: Recalibrated face to mirrored pose nose")
+    #
+    #     return mirrored_landmarks
+
+
+    # def _extract_landmarks_for_frame_corrected(self, frame_key: str) -> Dict:
+    #     """Extract 3D coordinates for a specific frame using corrected hand data WITH CORRECTED CALIBRATION AFTER MIRRORING"""
+    #     print("DEBUG: using the corrected extract_landmarks_for_frame WITH CORRECTED CALIBRATION")
+    #     if self.hand_tracker and hasattr(self.hand_tracker, 'corrected_frames_data'):
+    #         # Use corrected frame data if available
+    #         frame_data = self.hand_tracker.get_corrected_frame_data(frame_key)
+    #     else:
+    #         # Fall back to original data
+    #         frame_data = self.frames_data.get(frame_key, {})
+    #
+    #     landmarks_3d = {
+    #         'hands': {'left_hand': [], 'right_hand': []},
+    #         'face': [],
+    #         'pose': []
+    #     }
+    #
+    #     # First, extract pose landmarks to get wrist positions for calibration
+    #     pose_wrists = {"LEFT_WRIST": None, "RIGHT_WRIST": None}
+    #     pose_data = frame_data.get('pose', {})
+    #
+    #     if pose_data and "NOSE" in pose_data:
+    #         self._original_pose_nose = np.array([
+    #             pose_data["NOSE"]["x"],
+    #             pose_data["NOSE"]["y"],
+    #             pose_data["NOSE"]["z"]
+    #         ])
+    #
+    #     if pose_data:
+    #         # Use original pose data for calibration
+    #         if "LEFT_WRIST" in pose_data:
+    #             pose_wrists["LEFT_WRIST"] = np.array([
+    #                 pose_data["LEFT_WRIST"]["x"],
+    #                 pose_data["LEFT_WRIST"]["y"],
+    #                 pose_data["LEFT_WRIST"]["z"]
+    #             ])
+    #
+    #         if "RIGHT_WRIST" in pose_data:
+    #             pose_wrists["RIGHT_WRIST"] = np.array([
+    #                 pose_data["RIGHT_WRIST"]["x"],
+    #                 pose_data["RIGHT_WRIST"]["y"],
+    #                 pose_data["RIGHT_WRIST"]["z"]
+    #             ])
+    #
+    #     # Extract and calibrate hand landmarks
+    #     hands_data = frame_data.get('hands', {})
+    #     hand_to_wrist_mapping = {
+    #         'left_hand': 'LEFT_WRIST',
+    #         'right_hand': 'RIGHT_WRIST'
+    #     }
+    #
+    #     for hand_type in ['left_hand', 'right_hand']:
+    #         hand_info = hands_data.get(hand_type, {})
+    #         wrist_name = hand_to_wrist_mapping[hand_type]
+    #         pose_wrist_position = pose_wrists.get(wrist_name)
+    #
+    #         if isinstance(hand_info, dict) and 'landmarks' in hand_info:
+    #             hand_landmarks = hand_info['landmarks']
+    #         elif isinstance(hand_info, list):
+    #             hand_landmarks = hand_info
+    #         else:
+    #             hand_landmarks = []
+    #
+    #         if hand_landmarks:
+    #             # Convert to numpy array for easier manipulation
+    #             points = np.array([[lm['x'], lm['y'], lm['z']] for lm in hand_landmarks])
+    #             points[:, 2] *= HANDS_AMPLIFICATION  # amplify to accommodate small z-range
+    #
+    #             # Calibrate hand position to pose wrist if both are available
+    #             if pose_wrist_position is not None and len(points) > 0:
+    #                 # Hand wrist is landmark 0
+    #                 hand_wrist_position = points[0]
+    #
+    #                 # Calculate translation offset
+    #                 translation_offset = pose_wrist_position - hand_wrist_position
+    #
+    #                 # Apply translation to all hand landmarks
+    #                 points = points + translation_offset
+    #
+    #             landmarks_3d['hands'][hand_type] = points
+    #
+    #     # Extract pose landmarks
+    #     if pose_data:
+    #         mediapipe_pose_landmarks = [
+    #             'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
+    #             'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
+    #             'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
+    #             'LEFT_WRIST', 'RIGHT_WRIST',
+    #             # 'LEFT_PINKY', 'RIGHT_PINKY', 'LEFT_INDEX',  'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB',
+    #             'LEFT_HIP', 'RIGHT_HIP',
+    #             'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE', 'LEFT_HEEL',
+    #             'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
+    #         ]
+    #
+    #         pose_points = []
+    #         pose_landmark_names = []
+    #
+    #         for landmark_name in mediapipe_pose_landmarks:
+    #             if landmark_name in pose_data:
+    #                 lm = pose_data[landmark_name]
+    #                 visibility = lm.get('visibility', 1.0)
+    #                 if visibility > 0.5:
+    #                     pose_points.append([lm['x'], lm['y'], lm['z']])
+    #                     pose_landmark_names.append(landmark_name)
+    #
+    #         if pose_points:
+    #             landmarks_3d['pose'] = np.array(pose_points)
+    #             landmarks_3d['pose_names'] = pose_landmark_names
+    #
+    #     # Extract face landmarks
+    #     face_data = frame_data.get('face', {})
+    #     if 'all_landmarks' in face_data and face_data['all_landmarks']:
+    #         face_landmarks = face_data['all_landmarks']
+    #         sampled_landmarks = face_landmarks[::2]
+    #         points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
+    #         points[:, 2] *= FACE_AMPLIFICATION
+    #
+    #         # ADD MISSING FACE CALIBRATION
+    #         if pose_data and "NOSE" in pose_data and len(sampled_landmarks) > 1:
+    #             pose_nose_position = np.array([
+    #                 pose_data["NOSE"]["x"],
+    #                 pose_data["NOSE"]["y"],
+    #                 pose_data["NOSE"]["z"]
+    #             ])
+    #
+    #             # Use first sampled landmark as nose reference
+    #             face_nose_position = np.array([
+    #                 sampled_landmarks[0]['x'],
+    #                 sampled_landmarks[0]['y'],
+    #                 sampled_landmarks[0]['z']
+    #             ])
+    #             face_nose_position[2] *= FACE_AMPLIFICATION
+    #
+    #             # Calculate and apply translation offset
+    #             translation_offset = pose_nose_position - face_nose_position
+    #             points = points + translation_offset
+    #
+    #         landmarks_3d['face'] = points
+    #
+    #     # Apply mirroring to all landmarks
+    #     mirrored_landmarks = self._apply_mirroring_to_landmarks(landmarks_3d)
+    #
+    #     # CRITICAL FIX: After mirroring, recalibrate with corrected wrist mapping
+    #     mirrored_landmarks = self._recalibrate_after_mirroring(mirrored_landmarks, pose_wrists)
+    #
+    #     return mirrored_landmarks
+
     def _extract_landmarks_for_frame(self, frame_key: str) -> Dict:
-        """Extract 3D coordinates for a specific frame WITH CORRECTED CALIBRATION AFTER MIRRORING"""
+        """Extract landmarks - now expects pre-mirrored data from processing"""
         frame_data = self.frames_data.get(frame_key, {})
 
-        landmarks_3d = {
-            'hands': {'left_hand': [], 'right_hand': []},
-            'face': [],
-            'pose': []
-        }
-
-
-        # First, extract pose landmarks to get wrist positions for calibration
-        pose_wrists = {"LEFT_WRIST": None, "RIGHT_WRIST": None}
-        pose_data = frame_data.get('pose', {})
-
-        if pose_data and "NOSE" in pose_data:
-            self._original_pose_nose = np.array([
-                pose_data["NOSE"]["x"],
-                pose_data["NOSE"]["y"],
-                pose_data["NOSE"]["z"]
-            ])
-
-        if pose_data:
-            # Use original pose data for calibration
-            if "LEFT_WRIST" in pose_data:
-                pose_wrists["LEFT_WRIST"] = np.array([
-                    pose_data["LEFT_WRIST"]["x"],
-                    pose_data["LEFT_WRIST"]["y"],
-                    pose_data["LEFT_WRIST"]["z"]
-                ])
-
-            if "RIGHT_WRIST" in pose_data:
-                pose_wrists["RIGHT_WRIST"] = np.array([
-                    pose_data["RIGHT_WRIST"]["x"],
-                    pose_data["RIGHT_WRIST"]["y"],
-                    pose_data["RIGHT_WRIST"]["z"]
-                ])
-
-        # Extract and calibrate hand landmarks
-        hands_data = frame_data.get('hands', {})
-
-        # Use original mapping for calibration (before mirroring)
-        hand_to_wrist_mapping = {
-            'left_hand': 'LEFT_WRIST',
-            'right_hand': 'RIGHT_WRIST'
-        }
-
-        for hand_type in ['left_hand', 'right_hand']:
-            hand_info = hands_data.get(hand_type, {})
-            wrist_name = hand_to_wrist_mapping[hand_type]
-            pose_wrist_position = pose_wrists.get(wrist_name)
-
-            if isinstance(hand_info, dict) and 'landmarks' in hand_info:
-                hand_landmarks = hand_info['landmarks']
-            elif isinstance(hand_info, list):
-                hand_landmarks = hand_info
-            else:
-                hand_landmarks = []
-
-            if hand_landmarks:
-                # Convert to numpy array for easier manipulation
-                points = np.array([[lm['x'], lm['y'], lm['z']] for lm in hand_landmarks])
-                points[:, 2] *= HANDS_AMPLIFICATION  # amplify to accommodate small z-range
-
-                # Calibrate hand position to pose wrist if both are available
-                if pose_wrist_position is not None and len(points) > 0:
-                    # Hand wrist is landmark 0
-                    hand_wrist_position = points[0]
-
-                    # Calculate translation offset
-                    translation_offset = pose_wrist_position - hand_wrist_position
-
-                    # Apply translation to all hand landmarks
-                    points = points + translation_offset
-
-                landmarks_3d['hands'][hand_type] = points
-
-        # Extract pose landmarks
-        if pose_data:
-            mediapipe_pose_landmarks = [
-                'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
-                'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
-                'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                'LEFT_WRIST', 'RIGHT_WRIST',  # Removed: LEFT_PINKY, RIGHT_PINKY, LEFT_INDEX, RIGHT_INDEX, LEFT_THUMB, RIGHT_THUMB
-                'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
-                'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
-            ]
-
-            pose_points = []
-            pose_landmark_names = []
-
-            for landmark_name in mediapipe_pose_landmarks:
-                if landmark_name in pose_data:
-                    lm = pose_data[landmark_name]
-                    visibility = lm.get('visibility', 1.0)
-                    if visibility > 0.5:
-                        pose_points.append([lm['x'], lm['y'], lm['z']])
-                        pose_landmark_names.append(landmark_name)
-
-            if pose_points:
-                landmarks_3d['pose'] = np.array(pose_points)
-                landmarks_3d['pose_names'] = pose_landmark_names
-
-        # Extract face landmarks
-        face_data = frame_data.get('face', {})
-        if 'all_landmarks' in face_data and face_data['all_landmarks']:
-            face_landmarks = face_data['all_landmarks']
-            sampled_landmarks = face_landmarks[::2]
-            points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
-            points[:, 2] *= FACE_AMPLIFICATION
-
-            # FIXED: Calibrate face to pose nose position if available
-            if pose_data and "NOSE" in pose_data and len(sampled_landmarks) > 1:
-                pose_nose_position = np.array([
-                    pose_data["NOSE"]["x"],
-                    pose_data["NOSE"]["y"],
-                    pose_data["NOSE"]["z"]
-                ])
-
-                face_nose_position = np.array([
-                    sampled_landmarks[0]['x'],
-                    sampled_landmarks[0]['y'],
-                    sampled_landmarks[0]['z']
-                ])
-                face_nose_position[2] *= FACE_AMPLIFICATION
-
-                translation_offset = pose_nose_position - face_nose_position
-
-                # Apply translation to all face landmarks
-                points = points + translation_offset
-
-            landmarks_3d['face'] = points
-
-        # Apply mirroring to all landmarks
-        mirrored_landmarks = self._apply_mirroring_to_landmarks(landmarks_3d)
-
-        # CRITICAL FIX: After mirroring, we need to recalibrate with swapped wrist mapping
-        # because now left_hand (on right side) should align with RIGHT_WRIST (also on right side)
-        mirrored_landmarks = self._recalibrate_after_mirroring(mirrored_landmarks, pose_wrists)
-
-        return mirrored_landmarks
-
-
-    def _recalibrate_after_mirroring(self, mirrored_landmarks: Dict, original_pose_wrists: Dict) -> Dict:
-        """
-        Recalibrate hand positions after mirroring to use the correct wrist mapping
-
-        After mirroring:
-        - left_hand landmarks are on the right side → should align with RIGHT_WRIST
-        - right_hand landmarks are on the left side → should align with LEFT_WRIST
-        """
-        # Check if we have any pose wrists to work with
-        if (original_pose_wrists.get("LEFT_WRIST") is None and
-                original_pose_wrists.get("RIGHT_WRIST") is None):
-            print("DEBUG: No pose wrists available for recalibration")
-            return mirrored_landmarks  # No calibration possible
-
-        # Mirror the pose wrists too (they follow the same mirroring as everything else)
-        mirrored_pose_wrists = {}
-
-        if original_pose_wrists.get("LEFT_WRIST") is not None:
-            mirrored_left_wrist = original_pose_wrists["LEFT_WRIST"].copy()
-            mirrored_left_wrist[0] = 1.0 - mirrored_left_wrist[0]  # Mirror X coordinate
-            mirrored_pose_wrists["LEFT_WRIST"] = mirrored_left_wrist
-
-        if original_pose_wrists.get("RIGHT_WRIST") is not None:
-            mirrored_right_wrist = original_pose_wrists["RIGHT_WRIST"].copy()
-            mirrored_right_wrist[0] = 1.0 - mirrored_right_wrist[0]  # Mirror X coordinate
-            mirrored_pose_wrists["RIGHT_WRIST"] = mirrored_right_wrist
-
-        # Now recalibrate with swapped mapping
-        corrected_hand_mapping = {
-            'left_hand': 'RIGHT_WRIST',  # After mirroring, left_hand should align with RIGHT_WRIST
-            'right_hand': 'LEFT_WRIST'  # After mirroring, right_hand should align with LEFT_WRIST
-        }
-
-        for hand_type in ['left_hand', 'right_hand']:
-            hand_landmarks = mirrored_landmarks['hands'].get(hand_type, [])
-
-            if len(hand_landmarks) > 0:
-                points = hand_landmarks
-                wrist_name = corrected_hand_mapping[hand_type]
-                target_wrist_position = mirrored_pose_wrists.get(wrist_name)
-
-                if target_wrist_position is not None:
-                    # Get current hand wrist position (landmark 0)
-                    current_hand_wrist = points[0]
-
-                    # Calculate new translation offset
-                    translation_offset = target_wrist_position - current_hand_wrist
-
-                    # Apply translation to all hand landmarks
-                    mirrored_landmarks['hands'][hand_type] = points + translation_offset
-                    print(f"DEBUG: Recalibrated {hand_type} to {wrist_name}")
-                else:
-                    print(f"DEBUG: No target wrist {wrist_name} for {hand_type}")
-
-        mirrored_pose_nose = None
-        if original_pose_wrists and hasattr(self, '_original_pose_nose'):
-            mirrored_pose_nose = self._original_pose_nose.copy()
-            mirrored_pose_nose[0] = 1.0 - mirrored_pose_nose[0]  # Mirror X coordinate
-
-        # Recalibrate face if we have both face landmarks and mirrored pose nose
-        if (mirrored_pose_nose is not None and
-                len(mirrored_landmarks['face']) > 0):
-            face_points = mirrored_landmarks['face']
-            # Use first point as face nose reference
-            current_face_nose = face_points[0]
-
-            # Calculate new translation offset
-            translation_offset = mirrored_pose_nose - current_face_nose
-
-            # Apply translation to all face landmarks
-            mirrored_landmarks['face'] = face_points + translation_offset
-            print(f"DEBUG: Recalibrated face to mirrored pose nose")
-
-            # Mirror the pose nose position
-            mirrored_pose_nose = None
-            if original_pose_wrists and hasattr(self, '_original_pose_nose'):
-                mirrored_pose_nose = self._original_pose_nose.copy()
-                mirrored_pose_nose[0] = 1.0 - mirrored_pose_nose[0]  # Mirror X coordinate
-
-            # Recalibrate face if we have both face landmarks and mirrored pose nose
-            if (mirrored_pose_nose is not None and
-                    len(mirrored_landmarks['face']) > 0):
-                face_points = mirrored_landmarks['face']
-                # Use first point as face nose reference
-                current_face_nose = face_points[0]
-
-                # Calculate new translation offset
-                translation_offset = mirrored_pose_nose - current_face_nose
-
-                # Apply translation to all face landmarks
-                mirrored_landmarks['face'] = face_points + translation_offset
-                print(f"DEBUG: Recalibrated face to mirrored pose nose")
-
-        return mirrored_landmarks
-
-
-    def _extract_landmarks_for_frame_corrected(self, frame_key: str) -> Dict:
-        """Extract 3D coordinates for a specific frame using corrected hand data WITH CORRECTED CALIBRATION AFTER MIRRORING"""
-        print("DEBUG: using the corrected extract_landmarks_for_frame WITH CORRECTED CALIBRATION")
-        if self.hand_tracker and hasattr(self.hand_tracker, 'corrected_frames_data'):
-            # Use corrected frame data if available
-            frame_data = self.hand_tracker.get_corrected_frame_data(frame_key)
+        if frame_data.get('mirrored', False):
+            # Data is already mirrored and recalibrated during processing
+            return self._extract_from_processed_mirrored_data(frame_data)
         else:
-            # Fall back to original data
-            frame_data = self.frames_data.get(frame_key, {})
+            # Fallback for old data format
+            print("Warning: Using old non-mirrored data")
+            return self._extract_from_processed_mirrored_data(frame_key)
 
+    def _extract_from_processed_mirrored_data(self, frame_data: Dict) -> Dict:
+        """Simple extraction from pre-mirrored data with anchored amplification"""
         landmarks_3d = {
             'hands': {'left_hand': [], 'right_hand': []},
             'face': [],
             'pose': []
         }
 
-        # First, extract pose landmarks to get wrist positions for calibration
-        pose_wrists = {"LEFT_WRIST": None, "RIGHT_WRIST": None}
-        pose_data = frame_data.get('pose', {})
-
-        if pose_data and "NOSE" in pose_data:
-            self._original_pose_nose = np.array([
-                pose_data["NOSE"]["x"],
-                pose_data["NOSE"]["y"],
-                pose_data["NOSE"]["z"]
-            ])
-
-        if pose_data:
-            # Use original pose data for calibration
-            if "LEFT_WRIST" in pose_data:
-                pose_wrists["LEFT_WRIST"] = np.array([
-                    pose_data["LEFT_WRIST"]["x"],
-                    pose_data["LEFT_WRIST"]["y"],
-                    pose_data["LEFT_WRIST"]["z"]
-                ])
-
-            if "RIGHT_WRIST" in pose_data:
-                pose_wrists["RIGHT_WRIST"] = np.array([
-                    pose_data["RIGHT_WRIST"]["x"],
-                    pose_data["RIGHT_WRIST"]["y"],
-                    pose_data["RIGHT_WRIST"]["z"]
-                ])
-
-        # Extract and calibrate hand landmarks
+        # Extract hands (already mirrored and calibrated) - NO amplification here
         hands_data = frame_data.get('hands', {})
-        hand_to_wrist_mapping = {
-            'left_hand': 'LEFT_WRIST',
-            'right_hand': 'RIGHT_WRIST'
-        }
-
         for hand_type in ['left_hand', 'right_hand']:
-            hand_info = hands_data.get(hand_type, {})
-            wrist_name = hand_to_wrist_mapping[hand_type]
-            pose_wrist_position = pose_wrists.get(wrist_name)
-
+            hand_info = hands_data.get(hand_type, [])
             if isinstance(hand_info, dict) and 'landmarks' in hand_info:
-                hand_landmarks = hand_info['landmarks']
+                landmarks = hand_info['landmarks']
             elif isinstance(hand_info, list):
-                hand_landmarks = hand_info
+                landmarks = hand_info
             else:
-                hand_landmarks = []
+                landmarks = []
 
-            if hand_landmarks:
-                # Convert to numpy array for easier manipulation
-                points = np.array([[lm['x'], lm['y'], lm['z']] for lm in hand_landmarks])
-                points[:, 2] *= HANDS_AMPLIFICATION  # amplify to accommodate small z-range
-
-                # Calibrate hand position to pose wrist if both are available
-                if pose_wrist_position is not None and len(points) > 0:
-                    # Hand wrist is landmark 0
-                    hand_wrist_position = points[0]
-
-                    # Calculate translation offset
-                    translation_offset = pose_wrist_position - hand_wrist_position
-
-                    # Apply translation to all hand landmarks
-                    points = points + translation_offset
-
+            if landmarks:
+                points = np.array([[lm['x'], lm['y'], lm['z']] for lm in landmarks])
+                # NO amplification here - will be done in anchored method
                 landmarks_3d['hands'][hand_type] = points
 
-        # Extract pose landmarks
-        if pose_data:
-            mediapipe_pose_landmarks = [
-                'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
-                'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
-                'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                'LEFT_WRIST', 'RIGHT_WRIST',
-                # 'LEFT_PINKY', 'RIGHT_PINKY', 'LEFT_INDEX',  'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB',
-                'LEFT_HIP', 'RIGHT_HIP',
-                'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE', 'LEFT_HEEL',
-                'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
-            ]
-
-            pose_points = []
-            pose_landmark_names = []
-
-            for landmark_name in mediapipe_pose_landmarks:
-                if landmark_name in pose_data:
-                    lm = pose_data[landmark_name]
-                    visibility = lm.get('visibility', 1.0)
-                    if visibility > 0.5:
-                        pose_points.append([lm['x'], lm['y'], lm['z']])
-                        pose_landmark_names.append(landmark_name)
-
-            if pose_points:
-                landmarks_3d['pose'] = np.array(pose_points)
-                landmarks_3d['pose_names'] = pose_landmark_names
-
-        # Extract face landmarks
+        # Extract face (already mirrored and calibrated) - NO amplification here
         face_data = frame_data.get('face', {})
         if 'all_landmarks' in face_data and face_data['all_landmarks']:
             face_landmarks = face_data['all_landmarks']
-            sampled_landmarks = face_landmarks[::2]
+            sampled_landmarks = face_landmarks[::2]  # Sample every 2nd landmark
             points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
-            points[:, 2] *= FACE_AMPLIFICATION
-
-            # ADD MISSING FACE CALIBRATION
-            if pose_data and "NOSE" in pose_data and len(sampled_landmarks) > 1:
-                pose_nose_position = np.array([
-                    pose_data["NOSE"]["x"],
-                    pose_data["NOSE"]["y"],
-                    pose_data["NOSE"]["z"]
-                ])
-
-                # Use first sampled landmark as nose reference
-                face_nose_position = np.array([
-                    sampled_landmarks[0]['x'],
-                    sampled_landmarks[0]['y'],
-                    sampled_landmarks[0]['z']
-                ])
-                face_nose_position[2] *= FACE_AMPLIFICATION
-
-                # Calculate and apply translation offset
-                translation_offset = pose_nose_position - face_nose_position
-                points = points + translation_offset
-
+            # NO amplification here - will be done in anchored method
             landmarks_3d['face'] = points
 
-        # Apply mirroring to all landmarks
-        mirrored_landmarks = self._apply_mirroring_to_landmarks(landmarks_3d)
+        # Extract pose (already mirrored) - NO amplification needed for anchor points
+        pose_data = frame_data.get('pose', {})
+        if pose_data:
+            pose_points = []
+            pose_names = []
 
-        # CRITICAL FIX: After mirroring, recalibrate with corrected wrist mapping
-        mirrored_landmarks = self._recalibrate_after_mirroring(mirrored_landmarks, pose_wrists)
+            for landmark_name, lm_data in pose_data.items():
+                pose_points.append([lm_data['x'], lm_data['y'], lm_data['z']])
+                pose_names.append(landmark_name)
 
-        return mirrored_landmarks
+            if pose_points:
+                landmarks_3d['pose'] = np.array(pose_points)
+                landmarks_3d['pose_names'] = pose_names
+
+        # CRITICAL: Apply anchored amplification AFTER extracting all data
+        landmarks_3d = self._apply_anchored_amplification(landmarks_3d)
+
+        return landmarks_3d
 
     def precompute_paths_from_json(self, frames_data: dict):
         """Precompute all hand paths from JSON data WITHOUT hand swapping"""
@@ -715,72 +636,72 @@ class LandmarksVisualizer3D:
 
         print("Building hand movement paths from original data...")
 
-        # Second pass: build paths from original data with hand-wrist calibration
-        for frame_key in sorted_frame_keys:
-            frame_data = corrected_frames_data[frame_key]
-            hands_data = frame_data.get('hands', {})
-            pose_data = frame_data.get('pose', {})
-
-            # Extract pose wrist positions for calibration
-            pose_wrists = {"LEFT_WRIST": None, "RIGHT_WRIST": None}
-            if pose_data:
-                if "LEFT_WRIST" in pose_data:
-                    pose_wrists["LEFT_WRIST"] = np.array([
-                        pose_data["LEFT_WRIST"]["x"],
-                        pose_data["LEFT_WRIST"]["y"],
-                        pose_data["LEFT_WRIST"]["z"]
-                    ])
-
-                if "RIGHT_WRIST" in pose_data:
-                    pose_wrists["RIGHT_WRIST"] = np.array([
-                        pose_data["RIGHT_WRIST"]["x"],
-                        pose_data["RIGHT_WRIST"]["y"],
-                        pose_data["RIGHT_WRIST"]["z"]
-                    ])
-
-            # NO HAND SWAPPING - use original hand mapping
-            hand_to_wrist_mapping = {
-                'left_hand': 'LEFT_WRIST',
-                'right_hand': 'RIGHT_WRIST'
-            }
-
-            # Process both hands with calibration (no swapping)
-            for hand_type in ['left_hand', 'right_hand']:
-                hand_data = hands_data.get(hand_type, [])  # Use original hand data
-                wrist_name = hand_to_wrist_mapping[hand_type]
-                pose_wrist_position = pose_wrists.get(wrist_name)
-
-                if hand_data:
-                    # Handle both old and new JSON formats
-                    if isinstance(hand_data, dict) and 'landmarks' in hand_data:
-                        landmarks = hand_data['landmarks']
-                    else:
-                        landmarks = hand_data
-
-                    if landmarks and len(landmarks) > self.wrist_index:
-                        wrist_point = landmarks[self.wrist_index]
-                        hand_wrist_position = np.array([wrist_point['x'], wrist_point['y'], wrist_point['z']])
-
-                        # Apply calibration if pose wrist is available
-                        if pose_wrist_position is not None:
-                            # Use pose wrist position instead of detected hand wrist
-                            calibrated_position = pose_wrist_position
-                        else:
-                            # Fall back to detected hand wrist position
-                            calibrated_position = hand_wrist_position
-
-                        # Store the path point
-                        path_data = {
-                            'frame': int(frame_key),
-                            'point': calibrated_position.tolist(),
-                            'timestamp': frame_data.get('timestamp', int(frame_key) / 30.0),
-                            'calibrated': pose_wrist_position is not None
-                        }
-
-                        if hand_type == 'left_hand':
-                            self.full_left_hand_path.append(path_data)
-                        else:
-                            self.full_right_hand_path.append(path_data)
+        # # Second pass: build paths from original data with hand-wrist calibration
+        # for frame_key in sorted_frame_keys:
+        #     frame_data = corrected_frames_data[frame_key]
+        #     hands_data = frame_data.get('hands', {})
+        #     pose_data = frame_data.get('pose', {})
+        #
+        #     # Extract pose wrist positions for calibration
+        #     pose_wrists = {"LEFT_WRIST": None, "RIGHT_WRIST": None}
+        #     if pose_data:
+        #         if "LEFT_WRIST" in pose_data:
+        #             pose_wrists["LEFT_WRIST"] = np.array([
+        #                 pose_data["LEFT_WRIST"]["x"],
+        #                 pose_data["LEFT_WRIST"]["y"],
+        #                 pose_data["LEFT_WRIST"]["z"]
+        #             ])
+        #
+        #         if "RIGHT_WRIST" in pose_data:
+        #             pose_wrists["RIGHT_WRIST"] = np.array([
+        #                 pose_data["RIGHT_WRIST"]["x"],
+        #                 pose_data["RIGHT_WRIST"]["y"],
+        #                 pose_data["RIGHT_WRIST"]["z"]
+        #             ])
+        #
+        #     # NO HAND SWAPPING - use original hand mapping
+        #     hand_to_wrist_mapping = {
+        #         'left_hand': 'LEFT_WRIST',
+        #         'right_hand': 'RIGHT_WRIST'
+        #     }
+        #
+        #     # Process both hands with calibration (no swapping)
+        #     for hand_type in ['left_hand', 'right_hand']:
+        #         hand_data = hands_data.get(hand_type, [])  # Use original hand data
+        #         wrist_name = hand_to_wrist_mapping[hand_type]
+        #         pose_wrist_position = pose_wrists.get(wrist_name)
+        #
+        #         if hand_data:
+        #             # Handle both old and new JSON formats
+        #             if isinstance(hand_data, dict) and 'landmarks' in hand_data:
+        #                 landmarks = hand_data['landmarks']
+        #             else:
+        #                 landmarks = hand_data
+        #
+        #             if landmarks and len(landmarks) > self.wrist_index:
+        #                 wrist_point = landmarks[self.wrist_index]
+        #                 hand_wrist_position = np.array([wrist_point['x'], wrist_point['y'], wrist_point['z']])
+        #
+        #                 # Apply calibration if pose wrist is available
+        #                 if pose_wrist_position is not None:
+        #                     # Use pose wrist position instead of detected hand wrist
+        #                     calibrated_position = pose_wrist_position
+        #                 else:
+        #                     # Fall back to detected hand wrist position
+        #                     calibrated_position = hand_wrist_position
+        #
+        #                 # Store the path point
+        #                 path_data = {
+        #                     'frame': int(frame_key),
+        #                     'point': calibrated_position.tolist(),
+        #                     'timestamp': frame_data.get('timestamp', int(frame_key) / 30.0),
+        #                     'calibrated': pose_wrist_position is not None
+        #                 }
+        #
+        #                 if hand_type == 'left_hand':
+        #                     self.full_left_hand_path.append(path_data)
+        #                 else:
+        #                     self.full_right_hand_path.append(path_data)
 
         # Store corrected data for use in visualization
         self.corrected_frames_data = corrected_frames_data
@@ -922,10 +843,12 @@ class LandmarksVisualizer3D:
         current_frame_number = int(frame_key)
 
         # Use corrected landmarks if hand tracking is enabled
-        if self.hand_tracker:
-            landmarks = self._extract_landmarks_for_frame_corrected(frame_key)
-        else:
-            landmarks = self._extract_landmarks_for_frame(frame_key)
+        # if self.hand_tracker:
+        #     landmarks = self._extract_landmarks_for_frame_corrected(frame_key)
+        # else:
+        #     landmarks = self._extract_landmarks_for_frame(frame_key)
+
+        landmarks = self._extract_landmarks_for_frame(frame_key)
 
         # Draw hand landmarks
         for hand_type, points in landmarks['hands'].items():
@@ -968,6 +891,86 @@ class LandmarksVisualizer3D:
         self.ax.legend(loc='upper left', bbox_to_anchor=(0, 1))
 
         return self.ax
+
+    def _apply_anchored_amplification(self, landmarks_3d: Dict) -> Dict:
+        """
+        Apply Z-amplification to hands and face while keeping them anchored to pose reference points
+
+        Args:
+            landmarks_3d: Dictionary with hands, face, and pose landmarks
+
+        Returns:
+            Dictionary with amplified but anchored landmarks
+        """
+        amplified_landmarks = landmarks_3d.copy()
+
+        # Get pose reference points (anchors)
+        pose_points = landmarks_3d.get('pose', [])
+        pose_names = landmarks_3d.get('pose_names', [])
+
+        if len(pose_points) == 0 or len(pose_names) == 0:
+            return landmarks_3d  # No pose data, return as-is
+
+        # Create pose name-to-index mapping
+        pose_name_to_idx = {name: i for i, name in enumerate(pose_names)}
+
+        # Amplify hands relative to their corresponding wrist anchors
+        for hand_type in ['left_hand', 'right_hand']:
+            hand_points = landmarks_3d['hands'].get(hand_type, [])
+
+            if len(hand_points) > 0:
+                # Determine which wrist to use as anchor
+                wrist_name = 'LEFT_WRIST' if hand_type == 'left_hand' else 'RIGHT_WRIST'
+
+                if wrist_name in pose_name_to_idx:
+                    wrist_idx = pose_name_to_idx[wrist_name]
+                    anchor_point = pose_points[wrist_idx]  # This is the anchor (pose wrist)
+
+                    # Calculate relative positions from anchor
+                    relative_positions = hand_points - anchor_point
+
+                    # Amplify only the Z-component of relative positions
+                    relative_positions[:, 2] *= HANDS_AMPLIFICATION
+
+                    # Add back to anchor to get final positions
+                    amplified_hand_points = anchor_point + relative_positions
+
+                    amplified_landmarks['hands'][hand_type] = amplified_hand_points
+
+                    if DEBUG_ANCHORS:
+                        print(f"DEBUG: {hand_type} anchored to {wrist_name}")
+                        print(f"  Anchor point: {anchor_point}")
+                        print(f"  Original hand wrist: {hand_points[0] if len(hand_points) > 0 else 'None'}")
+                        print(
+                            f"  Amplified hand wrist: {amplified_hand_points[0] if len(amplified_hand_points) > 0 else 'None'}")
+
+        # Amplify face relative to pose nose anchor
+        face_points = landmarks_3d.get('face', [])
+        if len(face_points) > 0 and 'NOSE' in pose_name_to_idx:
+            nose_idx = pose_name_to_idx['NOSE']
+            anchor_point = pose_points[nose_idx]  # This is the anchor (pose nose)
+
+            # Calculate relative positions from anchor
+            relative_positions = face_points - anchor_point
+
+            # Amplify only the Z-component of relative positions
+            relative_positions[:, 2] *= FACE_AMPLIFICATION
+
+            # Add back to anchor to get final positions
+            amplified_face_points = anchor_point + relative_positions
+
+            amplified_landmarks['face'] = amplified_face_points
+
+            if DEBUG_ANCHORS:
+                print(f"DEBUG: Face anchored to NOSE")
+                print(f"  Anchor point: {anchor_point}")
+                print(
+                    f"  Original face nose: {face_points[1] if len(face_points) > 1 else 'None'}")  # Face nose is landmark 1
+                print(f"  Amplified face nose: {amplified_face_points[1] if len(amplified_face_points) > 1 else 'None'}")
+
+        return amplified_landmarks
+
+
 
     def visualize_static(self, frame_number: Optional[int] = None):
         """Display a static 3D visualization of landmarks for a specific frame"""
@@ -1499,9 +1502,9 @@ class HandPathTracker:
         print(f"  Right hand large movements: {right_jumps}")
 
         if left_jumps + right_jumps < 5:
-            print("  ✅ Paths look consistent!")
+            print("Paths look consistent!")
         else:
-            print("  ⚠️  Some large movements detected - this might be normal or indicate remaining issues")
+            print("Some large movements detected - this might be normal or indicate remaining issues")
 
     def get_corrected_frame_data(self, frame_key: str):
         """Get corrected frame data for a specific frame"""
@@ -1568,12 +1571,14 @@ class HandPathTracker:
                 break
 
             # Extract calibrated 3D landmarks for this frame
-            if hasattr(self, 'corrected_frames_data') and self.corrected_frames_data:
-                # Use corrected method if we have corrected data
-                landmarks_3d = visualizer._extract_landmarks_for_frame_corrected(frame_key)
-            else:
-                # Use regular method
-                landmarks_3d = visualizer._extract_landmarks_for_frame(frame_key)
+            # if hasattr(self, 'corrected_frames_data') and self.corrected_frames_data:
+            #     # Use corrected method if we have corrected data
+            #     landmarks_3d = visualizer._extract_landmarks_for_frame_corrected(frame_key)
+            # else:
+            #     # Use regular method
+            #     landmarks_3d = visualizer._extract_landmarks_for_frame(frame_key)
+
+            landmarks_3d = visualizer._extract_landmarks_for_frame(frame_key)
 
             # Extract wrist positions from calibrated 3D landmarks
             left_hand_landmarks = landmarks_3d['hands']['left_hand']
