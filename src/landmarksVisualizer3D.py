@@ -155,11 +155,11 @@ class LandmarksVisualizer3D:
         # These are the standard connections used by MediaPipe
         mediapipe_pose_connections = [
             # Face connections
-            ('NOSE', 'LEFT_EYE_INNER'), ('LEFT_EYE_INNER', 'LEFT_EYE'),
-            ('LEFT_EYE', 'LEFT_EYE_OUTER'), ('LEFT_EYE_OUTER', 'LEFT_EAR'),
-            ('NOSE', 'RIGHT_EYE_INNER'), ('RIGHT_EYE_INNER', 'RIGHT_EYE'),
-            ('RIGHT_EYE', 'RIGHT_EYE_OUTER'), ('RIGHT_EYE_OUTER', 'RIGHT_EAR'),
-            ('MOUTH_LEFT', 'MOUTH_RIGHT'),
+            # ('NOSE', 'LEFT_EYE_INNER'), ('LEFT_EYE_INNER', 'LEFT_EYE'),
+            # ('LEFT_EYE', 'LEFT_EYE_OUTER'), ('LEFT_EYE_OUTER', 'LEFT_EAR'),
+            # ('NOSE', 'RIGHT_EYE_INNER'), ('RIGHT_EYE_INNER', 'RIGHT_EYE'),
+            # ('RIGHT_EYE', 'RIGHT_EYE_OUTER'), ('RIGHT_EYE_OUTER', 'RIGHT_EAR'),
+            # ('MOUTH_LEFT', 'MOUTH_RIGHT'),
 
             # Torso connections
             ('LEFT_SHOULDER', 'RIGHT_SHOULDER'),
@@ -177,14 +177,14 @@ class LandmarksVisualizer3D:
             # ('RIGHT_WRIST', 'RIGHT_THUMB'), ('RIGHT_PINKY', 'RIGHT_INDEX'),
 
             # Left leg connections
-            ('LEFT_HIP', 'LEFT_KNEE'), ('LEFT_KNEE', 'LEFT_ANKLE'),
-            ('LEFT_ANKLE', 'LEFT_HEEL'), ('LEFT_ANKLE', 'LEFT_FOOT_INDEX'),
-            ('LEFT_HEEL', 'LEFT_FOOT_INDEX'),
-
-            # Right leg connections
-            ('RIGHT_HIP', 'RIGHT_KNEE'), ('RIGHT_KNEE', 'RIGHT_ANKLE'),
-            ('RIGHT_ANKLE', 'RIGHT_HEEL'), ('RIGHT_ANKLE', 'RIGHT_FOOT_INDEX'),
-            ('RIGHT_HEEL', 'RIGHT_FOOT_INDEX'),
+            # ('LEFT_HIP', 'LEFT_KNEE'), ('LEFT_KNEE', 'LEFT_ANKLE'),
+            # ('LEFT_ANKLE', 'LEFT_HEEL'), ('LEFT_ANKLE', 'LEFT_FOOT_INDEX'),
+            # ('LEFT_HEEL', 'LEFT_FOOT_INDEX'),
+            #
+            # # Right leg connections
+            # ('RIGHT_HIP', 'RIGHT_KNEE'), ('RIGHT_KNEE', 'RIGHT_ANKLE'),
+            # ('RIGHT_ANKLE', 'RIGHT_HEEL'), ('RIGHT_ANKLE', 'RIGHT_FOOT_INDEX'),
+            # ('RIGHT_HEEL', 'RIGHT_FOOT_INDEX'),
         ]
 
         # If we don't have pose names, fall back to simplified connections

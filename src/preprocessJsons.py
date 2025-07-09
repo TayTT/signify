@@ -21,7 +21,20 @@ from dataclasses import dataclass
 from collections import defaultdict
 import warnings
 
+CORE_POSE_LANDMARKS = [
+    'NOSE',
+    'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
+    'LEFT_WRIST', 'RIGHT_WRIST',
+    'LEFT_HIP', 'RIGHT_HIP',
+]
 
+# CORE_POSE_LANDMARKS = [
+#     'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
+#     'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT', 'MOUTH_RIGHT',
+#     'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW', 'LEFT_WRIST', 'RIGHT_WRIST',
+#     'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
+#     'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
+# ]
 @dataclass
 class PreprocessingConfig:
     """Configuration for preprocessing parameters"""
@@ -267,16 +280,7 @@ class SignLanguagePreprocessor:
         features = []
 
         # MediaPipe pose landmark names in order
-        pose_landmarks = [
-            'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
-            'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
-            'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-            'LEFT_WRIST', 'RIGHT_WRIST',
-            # 'LEFT_PINKY', 'RIGHT_PINKY', 'LEFT_INDEX', 'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB',
-            'LEFT_HIP', 'RIGHT_HIP',
-            'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE', 'LEFT_HEEL',
-            'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
-        ]
+        pose_landmarks = CORE_POSE_LANDMARKS
 
         # Extract coordinates
         for landmark_name in pose_landmarks:

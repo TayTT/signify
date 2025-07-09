@@ -18,7 +18,21 @@ mp_face_mesh = mp.solutions.face_mesh
 
 # Mouth landmark indices from MediaPipe FaceMesh
 MOUTH_LANDMARKS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
+DEBUG = False
+CORE_POSE_LANDMARKS = [
+    'NOSE',
+    'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
+    'LEFT_WRIST', 'RIGHT_WRIST',
+    'LEFT_HIP', 'RIGHT_HIP',
+]
 
+# CORE_POSE_LANDMARKS = [
+#     'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
+#     'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT', 'MOUTH_RIGHT',
+#     'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW', 'LEFT_WRIST', 'RIGHT_WRIST',
+#     'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
+#     'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
+# ]
 
 class EnhancedHandTracker:
     """Enhanced hand tracker with flickering reduction and false positive filtering"""
@@ -1401,12 +1415,12 @@ def process_image(
     """
     # ... keep your existing implementation unchanged for now ...
     # This function is mainly for single images, so enhanced tracking is less critical
-
-    print(f"=== DEBUG process_image called ===")
-    print(f"File path: {file_path}")
-    print(f"Use enhancement: {use_enhancement}")
-    print(f"Detect faces: {detect_faces}")
-    print(f"Detect pose: {detect_pose}")
+    if DEBUG:
+        print(f"=== DEBUG process_image called ===")
+        print(f"File path: {file_path}")
+        print(f"Use enhancement: {use_enhancement}")
+        print(f"Detect faces: {detect_faces}")
+        print(f"Detect pose: {detect_pose}")
 
     if not os.path.exists(file_path):
         print(f"ERROR: File not found: {file_path}")
@@ -1553,25 +1567,16 @@ def process_image(
 
             if results_pose.pose_landmarks:
                 pose_data = {}
-                for landmark in mp_pose.PoseLandmark:
-                    lm = results_pose.pose_landmarks.landmark[landmark]
-                    pose_data[landmark.name] = {"x": lm.x, "y": lm.y, "z": lm.z}
-
-                # WITH this filtered loop:
-                CORE_POSE_LANDMARKS = [
-                    'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
-                    'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
-                    'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                    'LEFT_WRIST', 'RIGHT_WRIST',
-                    'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
-                    'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
-                ]
-
                 for landmark_name in CORE_POSE_LANDMARKS:
                     try:
                         landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
                         lm = results_pose.pose_landmarks.landmark[landmark_enum]
-                        pose_data[landmark_name] = {"x": lm.x, "y": lm.y, "z": lm.z, "visibility": float(lm.visibility)}
+                        pose_data[landmark_name] = {
+                            "x": lm.x,
+                            "y": lm.y,
+                            "z": lm.z,
+                            "visibility": float(lm.visibility)
+                        }
                     except AttributeError:
                         continue
 
@@ -2529,16 +2534,18 @@ def process_frame_enhanced(
             if results_pose.pose_landmarks:
                 pose_data = {}
 
-                for landmark in mp_pose.PoseLandmark:
-                    lm = results_pose.pose_landmarks.landmark[landmark]
-                    pose_data[landmark.name] = {
-                        "x": lm.x,
-                        "y": lm.y,
-                        "z": lm.z,
-                        "px": int(lm.x * w),
-                        "py": int(lm.y * h),
-                        "visibility": float(lm.visibility)
-                    }
+                for landmark_name in CORE_POSE_LANDMARKS:
+                    try:
+                        landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
+                        lm = results_pose.pose_landmarks.landmark[landmark_enum]
+                        pose_data[landmark_name] = {
+                            "x": lm.x,
+                            "y": lm.y,
+                            "z": lm.z,
+                            "visibility": float(lm.visibility)
+                        }
+                    except AttributeError:
+                        continue
 
                 # Store reference positions for calibration
                 if "LEFT_WRIST" in pose_data:
@@ -2636,9 +2643,10 @@ def process_frame_enhanced(
         if not disable_mirroring:
             frame_data = apply_mirroring_to_frame_data(frame_data, pose_wrists, frame.shape)
 
-        # Add debug output for first few frames
-        if actual_frame_number < 5:
-            debug_calibration_alignment(frame_data, actual_frame_number)
+        if DEBUG:
+            # Add debug output for first few frames
+            if actual_frame_number < 5:
+                debug_calibration_alignment(frame_data, actual_frame_number)
 
         # Save frame data
         all_frames_data[str(actual_frame_number)] = frame_data
@@ -2736,16 +2744,6 @@ def process_frame_enhanced_legacy_newer(
                 # Extract pose landmarks
                 pose_data = {}
                 h, w, _ = frame.shape
-
-                # Define core pose landmarks to extract
-                CORE_POSE_LANDMARKS = [
-                    'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
-                    'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
-                    'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                    'LEFT_WRIST', 'RIGHT_WRIST',
-                    'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
-                    'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
-                ]
 
                 for landmark_name in CORE_POSE_LANDMARKS:
                     try:
