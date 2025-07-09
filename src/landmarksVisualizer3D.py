@@ -65,7 +65,6 @@ class LandmarksVisualizer3D:
 
             # Print path statistics
             stats = self.hand_tracker.get_path_statistics()
-            correction_info = stats['consistency_corrections']
             print("\nHand Path Statistics:")
             print(f"  Left hand: {stats['left_hand']['total_points']} points, "
                   f"distance: {stats['left_hand']['total_distance']:.3f}, "
@@ -983,9 +982,6 @@ class LandmarksVisualizer3D:
 
         # Add instructions
         instruction_text = 'Animation playing. Use mouse to rotate view. Close window to exit.'
-        if self.track_hands:
-            correction_stats = self.hand_tracker.get_path_statistics()['consistency_corrections']
-            instruction_text += f'\nHand paths build progressively with {correction_stats["corrections_made"]} consistency corrections.'
 
         plt.figtext(0.02, 0.02, instruction_text, fontsize=10, style='italic')
 
@@ -1055,31 +1051,6 @@ class LandmarksVisualizer3D:
 
         print("=" * 60)
 
-class HandConsistencyTracker:
-    """Simple hand tracking to fix left/right hand swapping issues"""
-
-    def __init__(self, distance_threshold=0.15, confidence_threshold=2):
-        self.distance_threshold = distance_threshold
-        self.confidence_threshold = confidence_threshold
-        self.hand_history = {'left_hand': [], 'right_hand': []}
-        self.correction_count = 0
-        self.frame_count = 0
-
-    def correct_hand_labels(self, hands_data):
-        """Simple method to correct hand labels - placeholder for now"""
-        self.frame_count += 1
-        return hands_data  # Just return unchanged for now
-
-    def get_correction_stats(self):
-        """Get statistics about corrections made"""
-        return {
-            'corrections_made': self.correction_count,
-            'total_frames': self.frame_count,
-            'correction_rate': 0.0,
-            'distance_threshold': self.distance_threshold,
-            'confidence_threshold': self.confidence_threshold
-        }
-
 
 class HandPathTracker:
     """Tracks and visualizes hand movement paths from JSON data with advanced consistency correction"""
@@ -1098,12 +1069,6 @@ class HandPathTracker:
         # Store full paths for analysis
         self.full_left_hand_path = []
         self.full_right_hand_path = []
-
-        # Initialize advanced consistency tracker
-        self.consistency_tracker = HandConsistencyTracker(
-            distance_threshold=0.15,  # Stricter threshold
-            confidence_threshold=10  # Require 2 consecutive frames before swapping
-        )
 
         # Path colors (slightly transparent)
         self.path_colors = {
@@ -1130,13 +1095,6 @@ class HandPathTracker:
             frame_data = frames_data[frame_key].copy()
             hands_data = frame_data.get('hands', {})
 
-            # Apply advanced consistency correction
-            corrected_hands = self.consistency_tracker.correct_hand_labels(hands_data)
-
-            # Update frame data with corrected hands
-            frame_data['hands'] = corrected_hands
-            corrected_frames_data[frame_key] = frame_data
-
             # Progress indicator
             if (i + 1) % 50 == 0 or i == len(sorted_frame_keys) - 1:
                 print(f"  Processed {i + 1}/{len(sorted_frame_keys)} frames...")
@@ -1145,7 +1103,7 @@ class HandPathTracker:
 
         # Second pass: build paths from corrected data
         for frame_key in sorted_frame_keys:
-            frame_data = corrected_frames_data[frame_key]
+            frame_data = frames_data[frame_key]
             hands_data = frame_data.get('hands', {})
 
             # Process left hand
@@ -1183,19 +1141,6 @@ class HandPathTracker:
                         'point': point,
                         'timestamp': frame_data.get('timestamp', int(frame_key) / 30.0)
                     })
-
-        # Store corrected data for use in visualization
-        self.corrected_frames_data = corrected_frames_data
-
-        # Print correction statistics
-        correction_stats = self.consistency_tracker.get_correction_stats()
-        print(f"\nAdvanced Hand Consistency Results:")
-        print(f"  Total corrections applied: {correction_stats['corrections_made']}")
-        print(f"  Correction rate: {correction_stats['correction_rate']:.1f}% of frames")
-        print(f"  Distance threshold: {correction_stats['distance_threshold']}")
-        print(f"  Confidence threshold: {correction_stats['confidence_threshold']} frames")
-        print(
-            f"Final paths: Left hand {len(self.full_left_hand_path)} points, Right hand {len(self.full_right_hand_path)} points")
 
         # Validate path consistency
         self._validate_path_consistency()
@@ -1394,8 +1339,7 @@ class HandPathTracker:
                 'total_distance': 0.0,
                 'avg_speed': 0.0,
                 'max_speed': 0.0
-            },
-            'consistency_corrections': self.consistency_tracker.get_correction_stats()
+            }
         }
 
         # Calculate distances and speeds for left hand
