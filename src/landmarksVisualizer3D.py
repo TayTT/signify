@@ -919,12 +919,6 @@ class LandmarksVisualizer3D:
 
                     amplified_landmarks['hands'][hand_type] = amplified_hand_points
 
-                    if DEBUG_ANCHORS:
-                        print(f"DEBUG: {hand_type} anchored to {wrist_name}")
-                        print(f"  Anchor point: {anchor_point}")
-                        print(f"  Original hand wrist: {hand_points[0] if len(hand_points) > 0 else 'None'}")
-                        print(
-                            f"  Amplified hand wrist: {amplified_hand_points[0] if len(amplified_hand_points) > 0 else 'None'}")
 
         # Amplify face relative to pose nose anchor
         face_points = landmarks_3d.get('face', [])
@@ -942,13 +936,6 @@ class LandmarksVisualizer3D:
             amplified_face_points = anchor_point + relative_positions
 
             amplified_landmarks['face'] = amplified_face_points
-
-            if DEBUG_ANCHORS:
-                print(f"DEBUG: Face anchored to NOSE")
-                print(f"  Anchor point: {anchor_point}")
-                print(
-                    f"  Original face nose: {face_points[1] if len(face_points) > 1 else 'None'}")  # Face nose is landmark 1
-                print(f"  Amplified face nose: {amplified_face_points[1] if len(amplified_face_points) > 1 else 'None'}")
 
         return amplified_landmarks
 
@@ -986,12 +973,6 @@ class LandmarksVisualizer3D:
 
         frame_keys = sorted(self.frames_data.keys(), key=int)
         total_frames = len(frame_keys)
-
-        if DEBUG_HAND_DEPTH:
-            print("=== Debugging Hand Depth ===")
-            for i in range(min(10, len(frame_keys))):  # Debug first 3 frames
-                print(f"\nFrame {frame_keys[i]}:")
-                self.debug_hand_depth(frame_keys[i])
 
         def animate(frame):
             return self._draw_frame(frame)
@@ -1458,103 +1439,6 @@ class HandPathTracker:
                 stats['right_hand']['max_speed'] = np.max(speeds)
 
         return stats
-
-
-def generate_2d_path_overlay_from_json(json_path: str, output_video_path: str = None):
-    """
-    Generate a 2D video with hand path overlays from JSON data with consistency correction
-    This works independently of the original video processing
-    """
-    # Load JSON data
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-
-    frames_data = data.get('frames', {})
-    metadata = data.get('metadata', {})
-
-    if not frames_data:
-        print("No frame data found in JSON")
-        return
-
-    # Get video properties from metadata
-    fps = metadata.get('fps', 30)
-    resolution = metadata.get('resolution', '640x480')
-    width, height = map(int, resolution.split('x'))
-
-    # Set up output video
-    if output_video_path is None:
-        output_video_path = Path(json_path).parent / "hand_paths_overlay_corrected.mp4"
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(str(output_video_path), fourcc, fps, (width, height))
-
-    # Initialize hand tracker with consistency correction
-    hand_tracker = HandPathTracker()
-    hand_tracker.precompute_paths_from_json(frames_data)
-
-    # Generate frames
-    frame_keys = sorted(frames_data.keys(), key=int)
-
-    for frame_key in frame_keys:
-        # Create blank frame
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
-
-        current_frame_num = int(frame_key)
-
-        # Get paths up to current frame
-        left_points = [(int(p['point'][0] * width), int(p['point'][1] * height))
-                       for p in hand_tracker.full_left_hand_path
-                       if p['frame'] <= current_frame_num]
-
-        right_points = [(int(p['point'][0] * width), int(p['point'][1] * height))
-                        for p in hand_tracker.full_right_hand_path
-                        if p['frame'] <= current_frame_num]
-
-        # Draw paths with gradient effect
-        if len(left_points) > 1:
-            for i in range(1, len(left_points)):
-                alpha = i / len(left_points)
-                thickness = max(1, int(5 * alpha))
-                cv2.line(frame, left_points[i - 1], left_points[i], (0, 100, 255), thickness)
-
-        if len(right_points) > 1:
-            for i in range(1, len(right_points)):
-                alpha = i / len(right_points)
-                thickness = max(1, int(5 * alpha))
-                cv2.line(frame, right_points[i - 1], right_points[i], (255, 100, 0), thickness)
-
-        # Add current hand positions using corrected data
-        corrected_frame_data = hand_tracker.get_corrected_frame_data(frame_key)
-        hands_data = corrected_frame_data.get('hands', {})
-
-        for hand_type, color in [('left_hand', (0, 255, 255)), ('right_hand', (255, 255, 0))]:
-            hand_data = hands_data.get(hand_type, [])
-            if hand_data:
-                if isinstance(hand_data, dict) and 'landmarks' in hand_data:
-                    landmarks = hand_data['landmarks']
-                else:
-                    landmarks = hand_data
-
-                if landmarks:
-                    wrist = landmarks[0]
-                    x, y = int(wrist['x'] * width), int(wrist['y'] * height)
-                    cv2.circle(frame, (x, y), 8, color, -1)
-                    cv2.putText(frame, hand_type.replace('_', ' ').title(),
-                                (x + 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-
-        # Add frame info and correction status
-        correction_stats = hand_tracker.get_path_statistics()['consistency_corrections']
-        cv2.putText(frame, f"Frame: {frame_key}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-        cv2.putText(frame, f"Corrections: {correction_stats['corrections_made']}", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-
-        out.write(frame)
-
-    out.release()
-    correction_stats = hand_tracker.get_path_statistics()['consistency_corrections']
-    print(f"Hand path overlay video saved to: {output_video_path}")
-    print(f"Applied {correction_stats['corrections_made']} consistency corrections")
 
 
 def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: Optional[int] = None,
