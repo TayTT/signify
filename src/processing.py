@@ -1768,8 +1768,8 @@ def process_video(
                     else:
                         # Save every 10th processed frame as a sample
                         current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png" if (
-                                processed_frame_count % 10 == 0) else None
-
+                                # processed_frame_count % 10 == 0) else None
+                                processed_frame_count == 10) else None
                     process_frame_enhanced(
                         frame,
                         current_frame_number,
@@ -1812,9 +1812,10 @@ def process_video(
                             # Save every processed frame
                             current_frame_path = frames_dir / f"frame_{frame_count:04d}.png"
                         else:
-                            # Save every 10th processed frame as a sample
+                            # Save only 10th processed frame as a sample
                             current_frame_path = frames_dir / f"frame_{frame_count:04d}.png" if (
-                                    processed_frame_count % 10 == 0) else None
+                                    # processed_frame_count % 10 == 0) else None
+                                    processed_frame_count == 10) else None
 
                         process_frame_enhanced(
                             frame,
