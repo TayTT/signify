@@ -77,7 +77,7 @@ Examples:
                         help='Save all annotated frames to disk (not just sample frames)')
 
     parser.add_argument('--track-hands', action='store_true',
-                        help='Enable hand path visualization with consistency correction (applied during visualization, not processing)')
+                        help='Enable hand path visualization (applied during visualization, not processing)')
     parser.add_argument('--enable-calibration', action='store_true', default=True,
                         help='Enable coordinate calibration to align hands with pose wrists (default: enabled)')
 

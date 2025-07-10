@@ -105,6 +105,184 @@ class EnhancedHandTracker:
             'border_exits_detected': 0,
             'invalid_reentries_filtered': 0
         }
+        self.disappearance_stats = {
+            'left_hand': {
+                'total_missing_frames': 0,
+                'unexpected_disappearances': 0,
+                'expected_disappearances': 0,
+                'current_missing_streak': 0,
+                'max_missing_streak': 0,
+                'last_seen_frame': None,
+                'disappearance_events': []  # List of disappearance events
+            },
+            'right_hand': {
+                'total_missing_frames': 0,
+                'unexpected_disappearances': 0,
+                'expected_disappearances': 0,
+                'current_missing_streak': 0,
+                'max_missing_streak': 0,
+                'last_seen_frame': None,
+                'disappearance_events': []
+            }
+        }
+
+    def _analyze_hand_disappearance(self, hand_type: str, hand_detected: bool, current_center: np.ndarray = None):
+        """
+        Analyze if hand disappearance is expected (left frame) or unexpected (detection failure)
+
+        Args:
+            hand_type: 'left_hand' or 'right_hand'
+            hand_detected: Whether hand was detected in current frame
+            current_center: Current hand center position (if detected)
+        """
+        stats = self.disappearance_stats[hand_type]
+        exit_info = self.hand_exit_status[hand_type]
+
+        if hand_detected and current_center is not None:
+            # Hand is detected
+            if stats['current_missing_streak'] > 0:
+                # Hand reappeared after being missing
+                stats['current_missing_streak'] = 0
+
+            stats['last_seen_frame'] = self.frame_count
+
+        else:
+            # Hand not detected
+            stats['total_missing_frames'] += 1
+            stats['current_missing_streak'] += 1
+            stats['max_missing_streak'] = max(stats['max_missing_streak'], stats['current_missing_streak'])
+
+            # Determine if disappearance is expected or unexpected
+            if stats['current_missing_streak'] == 1:  # First frame of disappearance
+                was_near_border = False
+
+                # Check if hand was near border in recent frames
+                if len(self.hand_history[hand_type]) > 0:
+                    recent_hand = self.hand_history[hand_type][-1]
+                    if recent_hand and 'center' in recent_hand:
+                        recent_center = recent_hand['center']
+                        is_near_border, border_side = self._is_near_frame_border(recent_center)
+                        was_near_border = is_near_border
+
+                # Create disappearance event
+                event = {
+                    'frame': self.frame_count,
+                    'type': 'expected' if was_near_border else 'unexpected',
+                    'was_near_border': was_near_border,
+                    'border_side': border_side if was_near_border else None,
+                    'streak_length': None  # Will be filled when hand reappears
+                }
+
+                if was_near_border:
+                    stats['expected_disappearances'] += 1
+                else:
+                    stats['unexpected_disappearances'] += 1
+
+                stats['disappearance_events'].append(event)
+
+            # Update the last event's streak length
+            if stats['disappearance_events']:
+                stats['disappearance_events'][-1]['streak_length'] = stats['current_missing_streak']
+
+    def process_frame(self, rgb_frame: np.ndarray) -> Dict:
+        """Enhanced process_frame with disappearance tracking"""
+        self.frame_count += 1
+
+        # Get MediaPipe results
+        results = self.hands.process(rgb_frame)
+
+        # Initialize frame output
+        frame_hands = {'left_hand': None, 'right_hand': None}
+
+        if results.multi_hand_landmarks:
+            self.stats['total_detections'] += len(results.multi_hand_landmarks)
+
+            # Filter valid hands (existing logic)
+            valid_hands = []
+            valid_handedness = []
+
+            for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+                confidence = handedness.classification[0].score
+                hand_center = self._get_hand_center(hand_landmarks)
+
+                if (confidence >= self.confidence_threshold and
+                        self._is_valid_hand_size(hand_landmarks) and
+                        self._is_hand_shape_valid(hand_landmarks)):
+
+                    valid_hands.append((hand_landmarks, confidence))
+                    valid_handedness.append(handedness)
+                else:
+                    self.stats['false_positives_filtered'] += 1
+
+            # Assign hand labels (existing logic)
+            if valid_hands:
+                current_hands = self._assign_hand_labels(valid_hands, valid_handedness)
+
+                # Apply frame boundary validation (existing logic)
+                for hand_type in ['left_hand', 'right_hand']:
+                    hand_data = current_hands.get(hand_type)
+
+                    if hand_data is not None:
+                        hand_center = hand_data['center']
+
+                        if not self._is_valid_reentry(hand_type, hand_center):
+                            current_hands[hand_type] = None
+                            self.stats['invalid_reentries_filtered'] += 1
+
+                        self._update_exit_status(hand_type, hand_center, hand_data is not None)
+                    else:
+                        self._update_exit_status(hand_type, None, False)
+
+                frame_hands = self._apply_temporal_smoothing(current_hands)
+            else:
+                for hand_type in ['left_hand', 'right_hand']:
+                    self._update_exit_status(hand_type, None, False)
+        else:
+            for hand_type in ['left_hand', 'right_hand']:
+                self._update_exit_status(hand_type, None, False)
+
+        # NEW: Analyze disappearances for both hands
+        for hand_type in ['left_hand', 'right_hand']:
+            hand_data = frame_hands.get(hand_type)
+            hand_detected = hand_data is not None
+            current_center = hand_data['center'] if hand_data else None
+
+            self._analyze_hand_disappearance(hand_type, hand_detected, current_center)
+
+        # Update previous hands for next frame
+        self.previous_hands = {k: v for k, v in frame_hands.items()}
+
+        return frame_hands
+
+    def get_disappearance_statistics(self) -> Dict:
+        """Get detailed disappearance statistics"""
+        total_frames = max(1, self.frame_count)
+
+        # Calculate frame-by-frame success rates
+        left_successful_frames = total_frames - self.disappearance_stats['left_hand']['total_missing_frames']
+        right_successful_frames = total_frames - self.disappearance_stats['right_hand']['total_missing_frames']
+
+        return {
+            'left_hand': self.disappearance_stats['left_hand'].copy(),
+            'right_hand': self.disappearance_stats['right_hand'].copy(),
+            'summary': {
+                'total_frames_processed': self.frame_count,
+                'left_hand_missing_rate': (self.disappearance_stats['left_hand'][
+                                               'total_missing_frames'] / total_frames) * 100,
+                'right_hand_missing_rate': (self.disappearance_stats['right_hand'][
+                                                'total_missing_frames'] / total_frames) * 100,
+
+                # ADD THESE NEW SUCCESS RATES
+                'left_hand_success_rate': (left_successful_frames / total_frames) * 100,
+                'right_hand_success_rate': (right_successful_frames / total_frames) * 100,
+
+                'total_unexpected_disappearances': (self.disappearance_stats['left_hand']['unexpected_disappearances'] +
+                                                    self.disappearance_stats['right_hand'][
+                                                        'unexpected_disappearances']),
+                'total_expected_disappearances': (self.disappearance_stats['left_hand']['expected_disappearances'] +
+                                                  self.disappearance_stats['right_hand']['expected_disappearances'])
+            }
+        }
 
     def _is_near_frame_border(self, center: np.ndarray) -> tuple:
         """
@@ -245,66 +423,66 @@ class EnhancedHandTracker:
 
         return distance
 
-    def _is_valid_hand_size(self, landmarks, min_size: float = 0.05, max_size: float = 0.5) -> bool:
-        """Check if detected hand has reasonable size"""
-        hand_size = self._calculate_hand_size(landmarks)
-        return min_size <= hand_size <= max_size
+    # def _is_valid_hand_size(self, landmarks, min_size: float = 0.05, max_size: float = 0.5) -> bool:
+    #     """Check if detected hand has reasonable size"""
+    #     hand_size = self._calculate_hand_size(landmarks)
+    #     return min_size <= hand_size <= max_size
 
-    def _is_hand_shape_valid(self, landmarks) -> bool:
-        """Basic hand shape validation to filter false positives"""
-        if not landmarks or len(landmarks.landmark) < 21:
-            return False
+    # def _is_hand_shape_valid(self, landmarks) -> bool:
+    #     """Basic hand shape validation to filter false positives"""
+    #     if not landmarks or len(landmarks.landmark) < 21:
+    #         return False
+    #
+    #     # Check if landmarks form a reasonable hand shape
+    #     wrist = landmarks.landmark[0]
+    #     thumb_tip = landmarks.landmark[4]
+    #     index_tip = landmarks.landmark[8]
+    #     middle_tip = landmarks.landmark[12]
+    #     ring_tip = landmarks.landmark[16]
+    #     pinky_tip = landmarks.landmark[20]
+    #
+    #     # All fingertips should be further from wrist than palm
+    #     palm_center_y = np.mean([landmarks.landmark[i].y for i in [5, 9, 13, 17]])
+    #
+    #     # Basic validation: check if fingertips are in reasonable positions relative to palm
+    #     try:
+    #         fingertips_valid = True
+    #         for tip in [thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip]:
+    #             # Basic sanity check - fingertips shouldn't be exactly at wrist position
+    #             if abs(tip.x - wrist.x) < 0.01 and abs(tip.y - wrist.y) < 0.01:
+    #                 fingertips_valid = False
+    #                 break
+    #
+    #         return fingertips_valid
+    #     except:
+    #         return True  # If validation fails, accept the detection
+    #     """Get center point of hand (average of all landmarks)"""
+    #     if not landmarks:
+    #         return None
+    #
+    #     x_coords = [lm.x for lm in landmarks.landmark]
+    #     y_coords = [lm.y for lm in landmarks.landmark]
+    #     z_coords = [lm.z for lm in landmarks.landmark]
+    #
+    #     return np.array([
+    #         np.mean(x_coords),
+    #         np.mean(y_coords),
+    #         np.mean(z_coords)
+    #     ])
 
-        # Check if landmarks form a reasonable hand shape
-        wrist = landmarks.landmark[0]
-        thumb_tip = landmarks.landmark[4]
-        index_tip = landmarks.landmark[8]
-        middle_tip = landmarks.landmark[12]
-        ring_tip = landmarks.landmark[16]
-        pinky_tip = landmarks.landmark[20]
-
-        # All fingertips should be further from wrist than palm
-        palm_center_y = np.mean([landmarks.landmark[i].y for i in [5, 9, 13, 17]])
-
-        # Basic validation: check if fingertips are in reasonable positions relative to palm
-        try:
-            fingertips_valid = True
-            for tip in [thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip]:
-                # Basic sanity check - fingertips shouldn't be exactly at wrist position
-                if abs(tip.x - wrist.x) < 0.01 and abs(tip.y - wrist.y) < 0.01:
-                    fingertips_valid = False
-                    break
-
-            return fingertips_valid
-        except:
-            return True  # If validation fails, accept the detection
-        """Get center point of hand (average of all landmarks)"""
-        if not landmarks:
-            return None
-
-        x_coords = [lm.x for lm in landmarks.landmark]
-        y_coords = [lm.y for lm in landmarks.landmark]
-        z_coords = [lm.z for lm in landmarks.landmark]
-
-        return np.array([
-            np.mean(x_coords),
-            np.mean(y_coords),
-            np.mean(z_coords)
-        ])
-
-    def _calculate_hand_size(self, landmarks) -> float:
-        """Calculate hand size based on distance between key points"""
-        if not landmarks or len(landmarks.landmark) < 21:
-            return 0.0
-
-        # Use distance between wrist and middle finger tip as size measure
-        wrist = landmarks.landmark[0]
-        middle_tip = landmarks.landmark[12]
-
-        distance = math.sqrt(
-            (wrist.x - middle_tip.x) ** 2 +
-            (wrist.y - middle_tip.y) ** 2
-        )
+    # def _calculate_hand_size(self, landmarks) -> float:
+    #     """Calculate hand size based on distance between key points"""
+    #     if not landmarks or len(landmarks.landmark) < 21:
+    #         return 0.0
+    #
+    #     # Use distance between wrist and middle finger tip as size measure
+    #     wrist = landmarks.landmark[0]
+    #     middle_tip = landmarks.landmark[12]
+    #
+    #     distance = math.sqrt(
+    #         (wrist.x - middle_tip.x) ** 2 +
+    #         (wrist.y - middle_tip.y) ** 2
+    #     )
 
         return distance
 
@@ -835,12 +1013,6 @@ class EnhancedHandTracker:
     def process_frame(self, rgb_frame: np.ndarray) -> Dict:
         """
         Process a single frame and return enhanced hand tracking results
-
-        Args:
-            rgb_frame: Input frame in RGB format (for MediaPipe)
-
-        Returns:
-            Dict with hand data suitable for your existing JSON structure
         """
         self.frame_count += 1
 
@@ -905,11 +1077,17 @@ class EnhancedHandTracker:
             self._update_exit_status('left_hand', None, False)
             self._update_exit_status('right_hand', None, False)
 
+        for hand_type in ['left_hand', 'right_hand']:
+            hand_data = frame_hands.get(hand_type)
+            hand_detected = hand_data is not None
+            current_center = hand_data['center'] if hand_data else None
+
+            self._analyze_hand_disappearance(hand_type, hand_detected, current_center)
+
         # Update previous hands for next frame
         self.previous_hands = {k: v for k, v in frame_hands.items()}
 
         return frame_hands
-
     def get_landmarks_for_json(self, hands_data: Dict, frame_shape: tuple) -> Dict:
         """Convert hand data to format suitable for your existing JSON storage"""
         json_data = {'left_hand': [], 'right_hand': []}
@@ -977,8 +1155,14 @@ class EnhancedHandTracker:
             self.hands.close()
 
     def get_statistics(self) -> Dict:
-        """Get tracking statistics"""
+        """Get tracking statistics including frame-by-frame success rates"""
         total = max(1, self.stats['total_detections'])
+        total_frames = max(1, self.frame_count)
+
+        # Calculate frame-by-frame success rates
+        left_successful_frames = total_frames - self.disappearance_stats['left_hand']['total_missing_frames']
+        right_successful_frames = total_frames - self.disappearance_stats['right_hand']['total_missing_frames']
+
         return {
             'frames_processed': self.frame_count,
             'total_detections': self.stats['total_detections'],
@@ -991,7 +1175,175 @@ class EnhancedHandTracker:
             'false_positive_rate': (self.stats['false_positives_filtered'] / total) * 100,
             'smooth_rate': (self.stats['smoothed_detections'] / total) * 100,
             'border_exit_rate': (self.stats['border_exits_detected'] / max(1, self.frame_count)) * 100,
-            'invalid_reentry_rate': (self.stats['invalid_reentries_filtered'] / total) * 100
+            'invalid_reentry_rate': (self.stats['invalid_reentries_filtered'] / total) * 100,
+
+            'left_hand_success_rate': (left_successful_frames / total_frames) * 100,
+            'right_hand_success_rate': (right_successful_frames / total_frames) * 100,
+            'left_hand_missing_rate': (self.disappearance_stats['left_hand'][
+                                           'total_missing_frames'] / total_frames) * 100,
+            'right_hand_missing_rate': (self.disappearance_stats['right_hand'][
+                                            'total_missing_frames'] / total_frames) * 100
+        }
+
+
+class FaceTracker:
+    """Track face detection and disappearances"""
+
+    def __init__(self, confidence_threshold: float = 0.5, temporal_smoothing_frames: int = 3):
+        self.confidence_threshold = confidence_threshold
+        self.temporal_smoothing_frames = temporal_smoothing_frames
+        self.frame_count = 0
+
+        # Face detection history
+        self.face_history = deque(maxlen=temporal_smoothing_frames)
+        self.confidence_history = deque(maxlen=temporal_smoothing_frames)
+
+        # Previous frame data
+        self.previous_face = None
+
+        # Disappearance tracking
+        self.disappearance_stats = {
+            'total_missing_frames': 0,
+            'unexpected_disappearances': 0,
+            'current_missing_streak': 0,
+            'max_missing_streak': 0,
+            'last_seen_frame': None,
+            'disappearance_events': []
+        }
+
+        # Detection stats
+        self.detection_stats = {
+            'total_detections': 0,
+            'successful_detections': 0,
+            'filtered_detections': 0
+        }
+
+    def _get_face_center(self, face_landmarks) -> np.ndarray:
+        """Get center point of face (nose tip - landmark 1)"""
+        if not face_landmarks or len(face_landmarks.landmark) < 2:
+            return None
+
+        nose_tip = face_landmarks.landmark[1]  # Nose tip is landmark 1 in MediaPipe
+        return np.array([nose_tip.x, nose_tip.y, nose_tip.z])
+
+    def _analyze_face_disappearance(self, face_detected: bool, current_center: np.ndarray = None):
+        """
+        Analyze if face disappearance is expected or unexpected
+
+        Args:
+            face_detected: Whether face was detected in current frame
+            current_center: Current face center position (if detected)
+        """
+        stats = self.disappearance_stats
+
+        if face_detected and current_center is not None:
+            # Face is detected
+            if stats['current_missing_streak'] > 0:
+                # Face reappeared after being missing
+                stats['current_missing_streak'] = 0
+
+            stats['last_seen_frame'] = self.frame_count
+
+        else:
+            # Face not detected
+            stats['total_missing_frames'] += 1
+            stats['current_missing_streak'] += 1
+            stats['max_missing_streak'] = max(stats['max_missing_streak'], stats['current_missing_streak'])
+
+            # For faces, most disappearances are unexpected since faces shouldn't leave frame easily
+            if stats['current_missing_streak'] == 1:  # First frame of disappearance
+                # Create disappearance event
+                event = {
+                    'frame': self.frame_count,
+                    'type': 'unexpected',  # Most face disappearances are unexpected
+                    'streak_length': None  # Will be filled when face reappears
+                }
+
+                stats['unexpected_disappearances'] += 1
+                stats['disappearance_events'].append(event)
+
+            # Update the last event's streak length
+            if stats['disappearance_events']:
+                stats['disappearance_events'][-1]['streak_length'] = stats['current_missing_streak']
+
+    def process_face_detection(self, face_landmarks, confidence: float = 1.0) -> Dict:
+        """
+        Process face detection results for a frame
+
+        Args:
+            face_landmarks: MediaPipe face landmarks (or None if not detected)
+            confidence: Detection confidence score
+
+        Returns:
+            Dictionary with face detection info (or None if face rejected)
+        """
+        self.frame_count += 1
+
+        face_detected = face_landmarks is not None
+        current_center = None
+        result = None
+
+        if face_detected:
+            self.detection_stats['total_detections'] += 1
+            current_center = self._get_face_center(face_landmarks)
+
+            # Add to history
+            face_data = {
+                'landmarks': face_landmarks,
+                'confidence': confidence,
+                'center': current_center
+            }
+
+            self.face_history.append(face_data)
+            self.confidence_history.append(confidence)
+
+            # Check if detection should be accepted
+            avg_confidence = np.mean(list(self.confidence_history))
+
+            if avg_confidence >= self.confidence_threshold:
+                self.detection_stats['successful_detections'] += 1
+                result = face_data
+                face_detected = True  # Keep as detected
+            else:
+                self.detection_stats['filtered_detections'] += 1
+                face_detected = False  # Mark as not detected due to low confidence
+                result = None
+        else:
+            # No face detected
+            if self.confidence_history:
+                self.confidence_history.append(0.0)
+
+        # CRITICAL: Analyze disappearance regardless of confidence filtering
+        self._analyze_face_disappearance(face_detected, current_center)
+
+        # Update previous face
+        self.previous_face = result
+
+        return result
+
+    def get_disappearance_statistics(self) -> Dict:
+        """Get detailed face disappearance statistics matching hand statistics format"""
+        total_frames = max(1, self.frame_count)
+        successful_frames = total_frames - self.disappearance_stats['total_missing_frames']
+
+        return {
+            'face': {
+                'total_missing_frames': self.disappearance_stats['total_missing_frames'],
+                'unexpected_disappearances': self.disappearance_stats['unexpected_disappearances'],
+                'expected_disappearances': 0,  # Face disappearances are typically unexpected
+                'current_missing_streak': self.disappearance_stats['current_missing_streak'],
+                'max_missing_streak': self.disappearance_stats['max_missing_streak'],
+                'last_seen_frame': self.disappearance_stats['last_seen_frame'],
+                'disappearance_events': self.disappearance_stats['disappearance_events']
+            },
+            'summary': {
+                'total_frames_processed': self.frame_count,
+                'face_missing_rate': (self.disappearance_stats['total_missing_frames'] / total_frames) * 100,
+                'face_success_rate': (successful_frames / total_frames) * 100,
+                'total_unexpected_disappearances': self.disappearance_stats['unexpected_disappearances'],
+                'total_expected_disappearances': 0
+            },
+            'detection_stats': self.detection_stats.copy()
         }
 
 def apply_mirroring_to_frame_data_legacy(frame_data: Dict, pose_wrists: Dict, frame_shape: tuple) -> Dict:
@@ -1593,7 +1945,6 @@ def process_image(
     return image_data, annotated_image
 
 
-# MODIFIED: Updated process_video function with enhanced hand tracking
 def process_video(
         input_path: str,
         output_dir: str = './output_data/video',
@@ -1609,7 +1960,6 @@ def process_video(
 ) -> Optional[Dict[str, Any]]:
     """
     Process video or image sequence for sign language detection including hands, face, and pose landmarks.
-    NOW WITH ENHANCED HAND TRACKING!
     """
     # ... keep all your existing setup code unchanged until MediaPipe initialization ...
     input_path = Path(input_path)
@@ -1724,13 +2074,18 @@ def process_video(
     print(f"  - Use full mesh: {use_full_mesh}")
     print(f"  - Enhanced hand tracking: ENABLED")
 
-    # MODIFIED: Initialize enhanced hand tracker instead of regular MediaPipe
+    #Initialize enhanced hand tracker instead of regular MediaPipe
     enhanced_hand_tracker = EnhancedHandTracker(
         min_detection_confidence=0.7,
         temporal_smoothing_frames=5,
         confidence_threshold=0.6,
-        frame_border_margin=0.1  # NEW: 10% of frame width/height considered "near border"
+        frame_border_margin=0.1  # 10% of frame width/height considered "near border"
     )
+
+    face_tracker = FaceTracker(
+        confidence_threshold=0.5,
+        temporal_smoothing_frames=3
+    ) if extract_face else None
 
     # Initialize face and pose solutions (keep existing)
     with mp_face_mesh.FaceMesh(
@@ -1787,7 +2142,8 @@ def process_video(
                         save_all_frames=save_all_frames,
                         use_full_mesh=use_full_mesh,
                         use_enhancement=use_enhancement,
-                        disable_mirroring=disable_mirroring
+                        disable_mirroring=disable_mirroring,
+                        face_tracker=face_tracker
                     )
 
                     processed_frame_count += 1
@@ -1834,7 +2190,8 @@ def process_video(
                             save_all_frames=save_all_frames,
                             use_full_mesh=use_full_mesh,
                             use_enhancement=use_enhancement,
-                            disable_mirroring=disable_mirroring
+                            disable_mirroring=disable_mirroring,
+                            face_tracker=face_tracker
                         )
 
                         processed_frame_count += 1
@@ -1850,19 +2207,58 @@ def process_video(
                 # Clean up video capture
                 cap.release()
 
+        #TODO: cleanup
         finally:
-            # Clean up enhanced hand tracker
+            # Clean up trackers
             enhanced_hand_tracker.close()
+
+            # Get statistics
+            hand_stats = enhanced_hand_tracker.get_statistics()
+            disappearance_stats = enhanced_hand_tracker.get_disappearance_statistics()
+
+            face_stats = None
+            if face_tracker:
+                face_stats = face_tracker.get_disappearance_statistics()
 
             # Print enhanced tracking statistics
             stats = enhanced_hand_tracker.get_statistics()
-            print(f"\n=== Enhanced Hand Tracking Statistics ===")
-            print(f"Frames processed: {stats['frames_processed']}")
-            print(f"Total hand detections: {stats['total_detections']}")
+            # Print enhanced tracking statistics in unified format
+            print(f"\n=== Hand & Face Tracking Statistics ===")
             print(
-                f"False positives filtered: {stats['false_positives_filtered']} ({stats['false_positive_rate']:.1f}%)")
-            print(f"Low confidence filtered: {stats['filtered_detections']} ({stats['filter_rate']:.1f}%)")
-            print(f"Detections smoothed: {stats['smoothed_detections']} ({stats['smooth_rate']:.1f}%)")
+                f"{'Component':<12} {'Missing Frames':<15} {'Unexpected Disappearances':<25} {'Detection Success Rate':<22}")
+            print(f"{'-' * 12} {'-' * 15} {'-' * 25} {'-' * 22}")
+
+            # Left Hand
+            left_missing = disappearance_stats['left_hand']['total_missing_frames']
+            left_unexpected = disappearance_stats['left_hand']['unexpected_disappearances']
+            left_success_rate = f"{disappearance_stats['summary']['left_hand_success_rate']:.1f}%"
+            print(f"{'Left Hand':<12} {left_missing:<15} {left_unexpected:<25} {left_success_rate:<22}")
+
+            # Right Hand
+            right_missing = disappearance_stats['right_hand']['total_missing_frames']
+            right_unexpected = disappearance_stats['right_hand']['unexpected_disappearances']
+            right_success_rate = f"{disappearance_stats['summary']['right_hand_success_rate']:.1f}%"
+            print(f"{'Right Hand':<12} {right_missing:<15} {right_unexpected:<25} {right_success_rate:<22}")
+
+            # Face - now matching the same format as hands
+            if face_stats:
+                face_missing = face_stats['face']['total_missing_frames']
+                face_unexpected = face_stats['face']['unexpected_disappearances']
+                face_success_rate = f"{face_stats['summary']['face_success_rate']:.1f}%"
+                print(f"{'Face':<12} {face_missing:<15} {face_unexpected:<25} {face_success_rate:<22}")
+            else:
+                print(f"{'Face':<12} {'N/A':<15} {'N/A':<25} {'N/A (disabled)':<22}")
+
+            print(f"\n=== Detailed Rates ===")
+            print(f"Left hand missing rate: {disappearance_stats['summary']['left_hand_missing_rate']:.1f}%")
+            print(f"Right hand missing rate: {disappearance_stats['summary']['right_hand_missing_rate']:.1f}%")
+            if face_stats:
+                print(f"Face missing rate: {face_stats['summary']['face_missing_rate']:.1f}%")
+                # Optional: Add detection filtering success rate for face if needed
+                if 'detection_stats' in face_stats and face_stats['detection_stats']['total_detections'] > 0:
+                    detection_success = (face_stats['detection_stats']['successful_detections'] /
+                                         face_stats['detection_stats']['total_detections']) * 100
+                    print(f"Face detection filtering success: {detection_success:.1f}%")
 
     # Clean up video writer
     video_writer.release()
@@ -1888,9 +2284,12 @@ def process_video(
             "enhancement_applied": use_enhancement,
             "full_face_mesh": use_full_mesh,
             "save_all_frames": save_all_frames,
-            "enhanced_hand_tracking": True  # NEW: indicate enhanced tracking was used
+            "enhanced_hand_tracking": True,
+            "enhanced_face_tracking": face_tracker is not None
         },
-        "enhanced_hand_tracking_stats": stats  # NEW: include tracking statistics
+        "enhanced_hand_tracking_stats": hand_stats,
+        "hand_disappearance_stats": disappearance_stats,
+        "face_tracking_stats": face_stats  # This will now have the correct structure
     }
 
     # Save all frame data to JSON
@@ -2484,11 +2883,9 @@ def process_frame_enhanced(
         save_all_frames=False,
         use_full_mesh=False,
         use_enhancement=False,
-        disable_mirroring=False
+        disable_mirroring=False,
+        face_tracker=None
 ):
-    """
-    SIMPLIFIED Enhanced frame processing with proper calibration order
-    """
     try:
         # Apply enhancement if requested
         if use_enhancement:
@@ -2599,9 +2996,30 @@ def process_frame_enhanced(
         # STEP 4: Process face
         if extract_face:
             results_face = face_mesh.process(rgb_frame)
-            if results_face.multi_face_landmarks:
-                for face_landmarks in results_face.multi_face_landmarks:
-                    # Extract face data to JSON format first
+
+            face_landmarks = None
+            face_confidence = 1.0
+
+            # Always process through face tracker, even if no face detected
+            if results_face.multi_face_landmarks and len(results_face.multi_face_landmarks) > 0:
+                # Face detected by MediaPipe
+                face_landmarks = results_face.multi_face_landmarks[0]
+                # Calculate a simple confidence based on landmark visibility/quality
+                face_confidence = 0.9  # You could implement a more sophisticated confidence calculation
+            else:
+                # No face detected
+                face_landmarks = None
+                face_confidence = 0.0
+
+            # CRITICAL: Always process through face tracker for statistics
+            if face_tracker:
+                tracked_face_result = face_tracker.process_face_detection(face_landmarks, face_confidence)
+
+                if tracked_face_result and tracked_face_result['landmarks']:
+                    # Face was detected and passed tracking validation
+                    face_landmarks = tracked_face_result['landmarks']
+
+                    # Extract face data to JSON format
                     face_data = []
                     mouth_data = []
 
@@ -2626,6 +3044,8 @@ def process_frame_enhanced(
 
                     frame_data["face"]["all_landmarks"] = face_data
                     frame_data["face"]["mouth_landmarks"] = mouth_data
+                    frame_data["face"]["tracked"] = True
+                    frame_data["face"]["detected"] = True
 
                     # Draw face (use original MediaPipe object)
                     if use_full_mesh:
@@ -2636,9 +3056,15 @@ def process_frame_enhanced(
                             landmark_drawing_spec=None,
                             connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style()
                         )
-                    else:
-                        # Draw simplified face landmarks...
-                        pass  # Keep your existing simplified drawing code
+                    # Add your existing simplified face drawing code here if needed
+                else:
+                    # Face not detected or filtered out by tracker
+                    frame_data["face"]["tracked"] = True
+                    frame_data["face"]["detected"] = False
+                    frame_data["face"]["all_landmarks"] = []
+                    frame_data["face"]["mouth_landmarks"] = []
+            else:
+                frame_data["face"]["tracked"] = False
 
         # STEP 5: Apply mirroring AFTER calibration
         if not disable_mirroring:
@@ -3000,7 +3426,7 @@ def process_frame_enhanced_legacy_newer(
         import traceback
         traceback.print_exc()
 
-# Keep your existing process_frame function for backwards compatibility if needed
+
 def process_frame(
         frame, actual_frame_number, fps, hands, face_mesh, pose,
         extract_face, extract_pose, all_frames_data,

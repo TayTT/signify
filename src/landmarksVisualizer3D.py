@@ -67,11 +67,13 @@ class LandmarksVisualizer3D:
             stats = self.hand_tracker.get_path_statistics()
             print("\nHand Path Statistics:")
             print(f"  Left hand: {stats['left_hand']['total_points']} points, "
-                  f"distance: {stats['left_hand']['total_distance']:.3f}, "
-                  f"avg speed: {stats['left_hand']['avg_speed']:.3f}")
+                  # f"distance: {stats['left_hand']['total_distance']:.3f}, "
+                  # f"avg speed: {stats['left_hand']['avg_speed']:.3f}")
+                  )
             print(f"  Right hand: {stats['right_hand']['total_points']} points, "
-                  f"distance: {stats['right_hand']['total_distance']:.3f}, "
-                  f"avg speed: {stats['right_hand']['avg_speed']:.3f}")
+                  # f"distance: {stats['right_hand']['total_distance']:.3f}, "
+                  # f"avg speed: {stats['right_hand']['avg_speed']:.3f}")
+                  )
 
     def _load_data(self):
         """Load landmarks data from JSON file"""
@@ -1032,15 +1034,15 @@ class LandmarksVisualizer3D:
         print(f"  Detected in {stats['left_hand']['total_points']} frames")
         if stats['left_hand']['total_points'] > 0:
             print(f"  Total distance traveled: {stats['left_hand']['total_distance']:.3f} units")
-            print(f"  Average speed: {stats['left_hand']['avg_speed']:.3f} units/second")
-            print(f"  Maximum speed: {stats['left_hand']['max_speed']:.3f} units/second")
+            # print(f"  Average speed: {stats['left_hand']['avg_speed']:.3f} units/second")
+            # print(f"  Maximum speed: {stats['left_hand']['max_speed']:.3f} units/second")
 
         print(f"\nRight Hand Movement:")
         print(f"  Detected in {stats['right_hand']['total_points']} frames")
         if stats['right_hand']['total_points'] > 0:
             print(f"  Total distance traveled: {stats['right_hand']['total_distance']:.3f} units")
-            print(f"  Average speed: {stats['right_hand']['avg_speed']:.3f} units/second")
-            print(f"  Maximum speed: {stats['right_hand']['max_speed']:.3f} units/second")
+            # print(f"  Average speed: {stats['right_hand']['avg_speed']:.3f} units/second")
+            # print(f"  Maximum speed: {stats['right_hand']['max_speed']:.3f} units/second")
 
         print(f"\nMovement Analysis:")
         if self.hand_tracker.full_left_hand_path or self.hand_tracker.full_right_hand_path:
