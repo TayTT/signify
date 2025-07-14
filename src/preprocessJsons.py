@@ -649,5 +649,5 @@ def preprocess_single(json_path: str):
 
 if __name__ == "__main__":
     # Example usage
-    json_file = "../output/images_01Dec/video_landmarks.json"
+    json_file = "../output/images_sample/video_landmarks.json"
     preprocess_single(json_file)

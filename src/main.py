@@ -87,6 +87,9 @@ Examples:
     parser.add_argument('--disable-mirroring', action='store_true',
                         help='Disable coordinate mirroring during processing')
 
+    parser.add_argument('--delete-missing-threshold', type=float, default=None,
+                        help='Percentage threshold (0-100) for missing data. If percentage of frames with missing hands/face exceeds this threshold, those frames will be excluded from output. Example: --delete-missing-threshold 30')
+
     return parser.parse_args()
 
 
@@ -424,7 +427,8 @@ def process_batch(input_dir: Path, output_dir: Path, args) -> None:
                 save_all_frames=args.save_all_frames,
                 use_full_mesh=args.full_mesh,
                 use_enhancement=args.enhance,
-                disable_mirroring=args.disable_mirroring
+                disable_mirroring=args.disable_mirroring,
+                args = args
             )
 
             if result is None:
@@ -461,7 +465,8 @@ def process_batch(input_dir: Path, output_dir: Path, args) -> None:
                 save_all_frames=args.save_all_frames,
                 use_full_mesh=args.full_mesh,
                 use_enhancement=args.enhance,
-                disable_mirroring=args.disable_mirroring
+                disable_mirroring=args.disable_mirroring,
+                args=args
             )
 
             if result is None:
@@ -523,7 +528,8 @@ def process_single_video_file_with_calibration(video_path: Path, output_dir: Pat
             use_full_mesh=args.full_mesh,
             use_enhancement=args.enhance,
             enable_calibration=enable_calibration,
-            disable_mirroring=args.disable_mirroring
+            disable_mirroring=args.disable_mirroring,
+            args=args
         )
 
         if result is None:
@@ -554,7 +560,8 @@ def process_single_image_directory(image_dir: Path, output_dir: Path, args, imag
             save_all_frames=args.save_all_frames,
             use_full_mesh=args.full_mesh,
             use_enhancement=args.enhance,
-            disable_mirroring=args.disable_mirroring
+            disable_mirroring=args.disable_mirroring,
+            args=args
         )
 
         if result is None:
@@ -596,7 +603,8 @@ def process_multiple_videos_from_directory(video_files: list, output_dir: Path, 
                 save_all_frames=args.save_all_frames,
                 use_full_mesh=args.full_mesh,
                 use_enhancement=args.enhance,
-                disable_mirroring=args.disable_mirroring
+                disable_mirroring=args.disable_mirroring,
+                args=args
             )
 
             if result is None:
