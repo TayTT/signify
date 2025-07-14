@@ -11,8 +11,7 @@ from processing import process_image, process_video, enhance_image_for_hand_dete
 
 
 # TODO: visualise full mesh TODO: not all points present in all frames:
-#  1) count missing points frames (how?) and delete them if treshold is not exceeded
-#  2)  detect hand disappearing from frame and exclude that from missing points
+#  1) count missing points frames (how?) and delete them if treshold is not exceeded -> in processJsons, not processing
 
 
 # MediaPipe solution instances
@@ -86,9 +85,6 @@ Examples:
 
     parser.add_argument('--disable-mirroring', action='store_true',
                         help='Disable coordinate mirroring during processing')
-
-    parser.add_argument('--delete-missing-threshold', type=float, default=None,
-                        help='Percentage threshold (0-100) for missing data. If percentage of frames with missing hands/face exceeds this threshold, those frames will be excluded from output. Example: --delete-missing-threshold 30')
 
     return parser.parse_args()
 
