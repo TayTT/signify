@@ -777,6 +777,32 @@ def main_with_calibration():
     print(f"Results saved to: {output_dir.absolute()}")
 
 
+# Example calibration validation function:
+# def validate_calibration_results(json_path: str):
+#     """
+#     Validate calibration results in processed JSON data
+#     """
+#
+#
+#     with open(json_path, 'r') as f:
+#         data = json.load(f)
+#
+#     frames_data = data.get('frames', {})
+#     validation_results = []
+#
+#     for frame_key, frame_data in frames_data.items():
+#         if frame_data.get('calibration_applied', False):
+#             metrics = validate_hand_pose_alignment(frame_data)
+#             validation_results.append(metrics)
+#
+#     if validation_results:
+#         avg_error = np.mean(
+#             [m['average_alignment_error'] for m in validation_results if m['average_alignment_error'] != float('inf')])
+#         print(f"Average calibration alignment error: {avg_error:.4f}")
+#         print(f"Calibrated frames: {len(validation_results)}")
+#     else:
+#         print("No calibrated frames found in data")
+
 
 if __name__ == "__main__":
     main_with_calibration()

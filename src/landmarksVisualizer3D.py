@@ -12,15 +12,22 @@ Usage:
 import json
 import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.animation import FuncAnimation
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 import argparse
-from collections import defaultdict, deque
+from collections import deque
 import cv2
 
-#TODO coordinates for pose and hands are disconnected
+# TODO move hand-to-wrist and face-to-nose calibration to processing (with an option to not do it and leave it only for display if possible)
+# TODO make sure that visualization happens from json for video (% sure it does)
+# TODO when do we apply mirroring? before saving to json or at visualization? is it necessary or just viewing flavor?
+
+FACE_AMPLIFICATION = 7
+HANDS_AMPLIFICATION = 7
+BOX_ASPECT = [1, 1, 1]  # to squash/str ech axes by a factor
+DEBUG_HAND_DEPTH = False
+
 
 class LandmarksVisualizer3D:
     """3D visualizer for sign language landmarks"""
@@ -48,7 +55,7 @@ class LandmarksVisualizer3D:
         # Color scheme for different landmark types
         self.colors = {
             'hands': {'left_hand': 'red', 'right_hand': 'blue'},
-            'face': 'yellow',
+            'face': 'orange',
             'pose': 'green'
         }
 
@@ -95,7 +102,6 @@ class LandmarksVisualizer3D:
         except Exception as e:
             raise Exception(f"Error loading JSON file: {e}")
 
-
     def _setup_3d_plot(self):
         """Set up the 3D matplotlib plot"""
         self.fig = plt.figure(figsize=(12, 9))
@@ -110,14 +116,16 @@ class LandmarksVisualizer3D:
         # Set axis limits (normalized coordinates are 0-1)
         self.ax.set_xlim(0, 1)
         self.ax.set_ylim(0, 1)
-        self.ax.set_zlim(-0.5, 0.5)  # Z coordinates are typically smaller
-
+        self.ax.set_zlim(0, 1)
+        # self.ax.set_zlim(-0.5, 0.5)  # Z coordinates are typically smaller
+        # self.ax.set_zlim(-0.1, 0.1)
         # Invert Y axis to match image coordinates
-        self.ax.invert_yaxis()
+        # self.ax.invert_yaxis()
+
+        self.ax.set_box_aspect(BOX_ASPECT)
+        self.ax.view_init(elev=-90, azim=90)  #VIEWING ANGLE
 
         return self.ax
-
-
 
     def _draw_hand_connections(self, points: np.ndarray, color: str):
         """Draw connections between hand landmarks"""
@@ -170,13 +178,13 @@ class LandmarksVisualizer3D:
 
             # Left arm connections
             ('LEFT_SHOULDER', 'LEFT_ELBOW'), ('LEFT_ELBOW', 'LEFT_WRIST'),
-            ('LEFT_WRIST', 'LEFT_PINKY'), ('LEFT_WRIST', 'LEFT_INDEX'),
-            ('LEFT_WRIST', 'LEFT_THUMB'), ('LEFT_PINKY', 'LEFT_INDEX'),
+            # ('LEFT_WRIST', 'LEFT_PINKY'), ('LEFT_WRIST', 'LEFT_INDEX'),
+            # ('LEFT_WRIST', 'LEFT_THUMB'), ('LEFT_PINKY', 'LEFT_INDEX'),
 
             # Right arm connections
             ('RIGHT_SHOULDER', 'RIGHT_ELBOW'), ('RIGHT_ELBOW', 'RIGHT_WRIST'),
-            ('RIGHT_WRIST', 'RIGHT_PINKY'), ('RIGHT_WRIST', 'RIGHT_INDEX'),
-            ('RIGHT_WRIST', 'RIGHT_THUMB'), ('RIGHT_PINKY', 'RIGHT_INDEX'),
+            # ('RIGHT_WRIST', 'RIGHT_PINKY'), ('RIGHT_WRIST', 'RIGHT_INDEX'),
+            # ('RIGHT_WRIST', 'RIGHT_THUMB'), ('RIGHT_PINKY', 'RIGHT_INDEX'),
 
             # Left leg connections
             ('LEFT_HIP', 'LEFT_KNEE'), ('LEFT_KNEE', 'LEFT_ANKLE'),
@@ -248,66 +256,153 @@ class LandmarksVisualizer3D:
                                  [start_point[2], end_point[2]],
                                  color=color, alpha=0.7, linewidth=2)
 
+    def _apply_mirroring_to_landmarks(self, landmarks_3d: Dict) -> Dict:
+        """
+        Helper function to apply consistent horizontal mirroring to all landmark types
+
+        Args:
+            landmarks_3d: Dictionary containing landmarks for hands, face, and pose
+
+        Returns:
+            Dictionary with mirrored landmarks
+        """
+        mirrored_landmarks = {
+            'hands': {'left_hand': [], 'right_hand': []},
+            'face': [],
+            'pose': []
+        }
+
+        # Mirror hand landmarks
+        for hand_type in ['left_hand', 'right_hand']:
+            if len(landmarks_3d['hands'][hand_type]) > 0:
+                points = landmarks_3d['hands'][hand_type].copy()
+                # Mirror X coordinates (flip horizontally)
+                points[:, 0] = 1.0 - points[:, 0]
+                mirrored_landmarks['hands'][hand_type] = points
+            else:
+                mirrored_landmarks['hands'][hand_type] = landmarks_3d['hands'][hand_type]
+
+        # Mirror face landmarks
+        if len(landmarks_3d['face']) > 0:
+            points = landmarks_3d['face'].copy()
+            # Mirror X coordinates (flip horizontally)
+            points[:, 0] = 1.0 - points[:, 0]
+            mirrored_landmarks['face'] = points
+        else:
+            mirrored_landmarks['face'] = landmarks_3d['face']
+
+        # Mirror pose landmarks
+        if len(landmarks_3d['pose']) > 0:
+            points = landmarks_3d['pose'].copy()
+            # Mirror X coordinates (flip horizontally)
+            points[:, 0] = 1.0 - points[:, 0]
+            mirrored_landmarks['pose'] = points
+            # Copy pose names if they exist
+            if 'pose_names' in landmarks_3d:
+                mirrored_landmarks['pose_names'] = landmarks_3d['pose_names']
+        else:
+            mirrored_landmarks['pose'] = landmarks_3d['pose']
+            if 'pose_names' in landmarks_3d:
+                mirrored_landmarks['pose_names'] = landmarks_3d.get('pose_names', [])
+
+        return mirrored_landmarks
+
     def _extract_landmarks_for_frame(self, frame_key: str) -> Dict:
-        """Extract 3D coordinates for a specific frame"""
+        """Extract 3D coordinates for a specific frame WITH CORRECTED CALIBRATION AFTER MIRRORING"""
         frame_data = self.frames_data.get(frame_key, {})
+
         landmarks_3d = {
             'hands': {'left_hand': [], 'right_hand': []},
             'face': [],
             'pose': []
         }
 
-        # Extract hand landmarks
+
+        # First, extract pose landmarks to get wrist positions for calibration
+        pose_wrists = {"LEFT_WRIST": None, "RIGHT_WRIST": None}
+        pose_data = frame_data.get('pose', {})
+
+        if pose_data and "NOSE" in pose_data:
+            self._original_pose_nose = np.array([
+                pose_data["NOSE"]["x"],
+                pose_data["NOSE"]["y"],
+                pose_data["NOSE"]["z"]
+            ])
+
+        if pose_data:
+            # Use original pose data for calibration
+            if "LEFT_WRIST" in pose_data:
+                pose_wrists["LEFT_WRIST"] = np.array([
+                    pose_data["LEFT_WRIST"]["x"],
+                    pose_data["LEFT_WRIST"]["y"],
+                    pose_data["LEFT_WRIST"]["z"]
+                ])
+
+            if "RIGHT_WRIST" in pose_data:
+                pose_wrists["RIGHT_WRIST"] = np.array([
+                    pose_data["RIGHT_WRIST"]["x"],
+                    pose_data["RIGHT_WRIST"]["y"],
+                    pose_data["RIGHT_WRIST"]["z"]
+                ])
+
+        # Extract and calibrate hand landmarks
         hands_data = frame_data.get('hands', {})
+
+        # Use original mapping for calibration (before mirroring)
+        hand_to_wrist_mapping = {
+            'left_hand': 'LEFT_WRIST',
+            'right_hand': 'RIGHT_WRIST'
+        }
+
         for hand_type in ['left_hand', 'right_hand']:
             hand_info = hands_data.get(hand_type, {})
+            wrist_name = hand_to_wrist_mapping[hand_type]
+            pose_wrist_position = pose_wrists.get(wrist_name)
+
             if isinstance(hand_info, dict) and 'landmarks' in hand_info:
-                # New format with confidence
                 hand_landmarks = hand_info['landmarks']
             elif isinstance(hand_info, list):
-                # Old format - direct list
                 hand_landmarks = hand_info
             else:
                 hand_landmarks = []
 
             if hand_landmarks:
+                # Convert to numpy array for easier manipulation
                 points = np.array([[lm['x'], lm['y'], lm['z']] for lm in hand_landmarks])
+                points[:, 2] *= HANDS_AMPLIFICATION  # amplify to accommodate small z-range
+
+                # Calibrate hand position to pose wrist if both are available
+                if pose_wrist_position is not None and len(points) > 0:
+                    # Hand wrist is landmark 0
+                    hand_wrist_position = points[0]
+
+                    # Calculate translation offset
+                    translation_offset = pose_wrist_position - hand_wrist_position
+
+                    # Apply translation to all hand landmarks
+                    points = points + translation_offset
+
                 landmarks_3d['hands'][hand_type] = points
 
-        # Extract face landmarks (using all landmarks)
-        face_data = frame_data.get('face', {})
-        if 'all_landmarks' in face_data and face_data['all_landmarks']:
-            # Use a subset of face landmarks for better visualization
-            face_landmarks = face_data['all_landmarks']
-            # Take every 10th landmark to reduce clutter
-            sampled_landmarks = face_landmarks[::2]
-            points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
-            landmarks_3d['face'] = points
-
-        # Extract pose landmarks with proper ordering
-        pose_data = frame_data.get('pose', {})
+        # Extract pose landmarks
         if pose_data:
-            # Define the complete MediaPipe pose landmark order
             mediapipe_pose_landmarks = [
                 'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
                 'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
                 'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_PINKY', 'RIGHT_PINKY', 'LEFT_INDEX',
-                'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB', 'LEFT_HIP', 'RIGHT_HIP',
-                'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE', 'LEFT_HEEL',
-                'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
+                'LEFT_WRIST', 'RIGHT_WRIST',  # Removed: LEFT_PINKY, RIGHT_PINKY, LEFT_INDEX, RIGHT_INDEX, LEFT_THUMB, RIGHT_THUMB
+                'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
+                'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
             ]
 
-            # Extract landmarks in the correct order with visibility check
             pose_points = []
             pose_landmark_names = []
 
             for landmark_name in mediapipe_pose_landmarks:
                 if landmark_name in pose_data:
                     lm = pose_data[landmark_name]
-                    # Check visibility if available
                     visibility = lm.get('visibility', 1.0)
-                    if visibility > 0.5:  # Only include visible landmarks
+                    if visibility > 0.5:
                         pose_points.append([lm['x'], lm['y'], lm['z']])
                         pose_landmark_names.append(landmark_name)
 
@@ -315,10 +410,145 @@ class LandmarksVisualizer3D:
                 landmarks_3d['pose'] = np.array(pose_points)
                 landmarks_3d['pose_names'] = pose_landmark_names
 
-        return landmarks_3d
+        # Extract face landmarks
+        face_data = frame_data.get('face', {})
+        if 'all_landmarks' in face_data and face_data['all_landmarks']:
+            face_landmarks = face_data['all_landmarks']
+            sampled_landmarks = face_landmarks[::2]
+            points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
+            points[:, 2] *= FACE_AMPLIFICATION
+
+            # FIXED: Calibrate face to pose nose position if available
+            if pose_data and "NOSE" in pose_data and len(sampled_landmarks) > 1:
+                pose_nose_position = np.array([
+                    pose_data["NOSE"]["x"],
+                    pose_data["NOSE"]["y"],
+                    pose_data["NOSE"]["z"]
+                ])
+
+                face_nose_position = np.array([
+                    sampled_landmarks[0]['x'],
+                    sampled_landmarks[0]['y'],
+                    sampled_landmarks[0]['z']
+                ])
+                face_nose_position[2] *= FACE_AMPLIFICATION
+
+                translation_offset = pose_nose_position - face_nose_position
+
+                # Apply translation to all face landmarks
+                points = points + translation_offset
+
+            landmarks_3d['face'] = points
+
+        # Apply mirroring to all landmarks
+        mirrored_landmarks = self._apply_mirroring_to_landmarks(landmarks_3d)
+
+        # CRITICAL FIX: After mirroring, we need to recalibrate with swapped wrist mapping
+        # because now left_hand (on right side) should align with RIGHT_WRIST (also on right side)
+        mirrored_landmarks = self._recalibrate_after_mirroring(mirrored_landmarks, pose_wrists)
+
+        return mirrored_landmarks
+
+
+    def _recalibrate_after_mirroring(self, mirrored_landmarks: Dict, original_pose_wrists: Dict) -> Dict:
+        """
+        Recalibrate hand positions after mirroring to use the correct wrist mapping
+
+        After mirroring:
+        - left_hand landmarks are on the right side → should align with RIGHT_WRIST
+        - right_hand landmarks are on the left side → should align with LEFT_WRIST
+        """
+        # Check if we have any pose wrists to work with
+        if (original_pose_wrists.get("LEFT_WRIST") is None and
+                original_pose_wrists.get("RIGHT_WRIST") is None):
+            print("DEBUG: No pose wrists available for recalibration")
+            return mirrored_landmarks  # No calibration possible
+
+        # Mirror the pose wrists too (they follow the same mirroring as everything else)
+        mirrored_pose_wrists = {}
+
+        if original_pose_wrists.get("LEFT_WRIST") is not None:
+            mirrored_left_wrist = original_pose_wrists["LEFT_WRIST"].copy()
+            mirrored_left_wrist[0] = 1.0 - mirrored_left_wrist[0]  # Mirror X coordinate
+            mirrored_pose_wrists["LEFT_WRIST"] = mirrored_left_wrist
+
+        if original_pose_wrists.get("RIGHT_WRIST") is not None:
+            mirrored_right_wrist = original_pose_wrists["RIGHT_WRIST"].copy()
+            mirrored_right_wrist[0] = 1.0 - mirrored_right_wrist[0]  # Mirror X coordinate
+            mirrored_pose_wrists["RIGHT_WRIST"] = mirrored_right_wrist
+
+        # Now recalibrate with swapped mapping
+        corrected_hand_mapping = {
+            'left_hand': 'RIGHT_WRIST',  # After mirroring, left_hand should align with RIGHT_WRIST
+            'right_hand': 'LEFT_WRIST'  # After mirroring, right_hand should align with LEFT_WRIST
+        }
+
+        for hand_type in ['left_hand', 'right_hand']:
+            hand_landmarks = mirrored_landmarks['hands'].get(hand_type, [])
+
+            if len(hand_landmarks) > 0:
+                points = hand_landmarks
+                wrist_name = corrected_hand_mapping[hand_type]
+                target_wrist_position = mirrored_pose_wrists.get(wrist_name)
+
+                if target_wrist_position is not None:
+                    # Get current hand wrist position (landmark 0)
+                    current_hand_wrist = points[0]
+
+                    # Calculate new translation offset
+                    translation_offset = target_wrist_position - current_hand_wrist
+
+                    # Apply translation to all hand landmarks
+                    mirrored_landmarks['hands'][hand_type] = points + translation_offset
+                    print(f"DEBUG: Recalibrated {hand_type} to {wrist_name}")
+                else:
+                    print(f"DEBUG: No target wrist {wrist_name} for {hand_type}")
+
+        mirrored_pose_nose = None
+        if original_pose_wrists and hasattr(self, '_original_pose_nose'):
+            mirrored_pose_nose = self._original_pose_nose.copy()
+            mirrored_pose_nose[0] = 1.0 - mirrored_pose_nose[0]  # Mirror X coordinate
+
+        # Recalibrate face if we have both face landmarks and mirrored pose nose
+        if (mirrored_pose_nose is not None and
+                len(mirrored_landmarks['face']) > 0):
+            face_points = mirrored_landmarks['face']
+            # Use first point as face nose reference
+            current_face_nose = face_points[0]
+
+            # Calculate new translation offset
+            translation_offset = mirrored_pose_nose - current_face_nose
+
+            # Apply translation to all face landmarks
+            mirrored_landmarks['face'] = face_points + translation_offset
+            print(f"DEBUG: Recalibrated face to mirrored pose nose")
+
+            # Mirror the pose nose position
+            mirrored_pose_nose = None
+            if original_pose_wrists and hasattr(self, '_original_pose_nose'):
+                mirrored_pose_nose = self._original_pose_nose.copy()
+                mirrored_pose_nose[0] = 1.0 - mirrored_pose_nose[0]  # Mirror X coordinate
+
+            # Recalibrate face if we have both face landmarks and mirrored pose nose
+            if (mirrored_pose_nose is not None and
+                    len(mirrored_landmarks['face']) > 0):
+                face_points = mirrored_landmarks['face']
+                # Use first point as face nose reference
+                current_face_nose = face_points[0]
+
+                # Calculate new translation offset
+                translation_offset = mirrored_pose_nose - current_face_nose
+
+                # Apply translation to all face landmarks
+                mirrored_landmarks['face'] = face_points + translation_offset
+                print(f"DEBUG: Recalibrated face to mirrored pose nose")
+
+        return mirrored_landmarks
+
 
     def _extract_landmarks_for_frame_corrected(self, frame_key: str) -> Dict:
-        """Extract 3D coordinates for a specific frame using corrected hand data"""
+        """Extract 3D coordinates for a specific frame using corrected hand data WITH CORRECTED CALIBRATION AFTER MIRRORING"""
+        print("DEBUG: using the corrected extract_landmarks_for_frame WITH CORRECTED CALIBRATION")
         if self.hand_tracker and hasattr(self.hand_tracker, 'corrected_frames_data'):
             # Use corrected frame data if available
             frame_data = self.hand_tracker.get_corrected_frame_data(frame_key)
@@ -332,65 +562,243 @@ class LandmarksVisualizer3D:
             'pose': []
         }
 
-        # Extract hand landmarks (using corrected data if available)
+        # First, extract pose landmarks to get wrist positions for calibration
+        pose_wrists = {"LEFT_WRIST": None, "RIGHT_WRIST": None}
+        pose_data = frame_data.get('pose', {})
+
+        if pose_data and "NOSE" in pose_data:
+            self._original_pose_nose = np.array([
+                pose_data["NOSE"]["x"],
+                pose_data["NOSE"]["y"],
+                pose_data["NOSE"]["z"]
+            ])
+
+        if pose_data:
+            # Use original pose data for calibration
+            if "LEFT_WRIST" in pose_data:
+                pose_wrists["LEFT_WRIST"] = np.array([
+                    pose_data["LEFT_WRIST"]["x"],
+                    pose_data["LEFT_WRIST"]["y"],
+                    pose_data["LEFT_WRIST"]["z"]
+                ])
+
+            if "RIGHT_WRIST" in pose_data:
+                pose_wrists["RIGHT_WRIST"] = np.array([
+                    pose_data["RIGHT_WRIST"]["x"],
+                    pose_data["RIGHT_WRIST"]["y"],
+                    pose_data["RIGHT_WRIST"]["z"]
+                ])
+
+        # Extract and calibrate hand landmarks
         hands_data = frame_data.get('hands', {})
+        hand_to_wrist_mapping = {
+            'left_hand': 'LEFT_WRIST',
+            'right_hand': 'RIGHT_WRIST'
+        }
+
         for hand_type in ['left_hand', 'right_hand']:
             hand_info = hands_data.get(hand_type, {})
+            wrist_name = hand_to_wrist_mapping[hand_type]
+            pose_wrist_position = pose_wrists.get(wrist_name)
+
             if isinstance(hand_info, dict) and 'landmarks' in hand_info:
-                # New format with confidence
                 hand_landmarks = hand_info['landmarks']
             elif isinstance(hand_info, list):
-                # Old format - direct list
                 hand_landmarks = hand_info
             else:
                 hand_landmarks = []
 
             if hand_landmarks:
+                # Convert to numpy array for easier manipulation
                 points = np.array([[lm['x'], lm['y'], lm['z']] for lm in hand_landmarks])
+                points[:, 2] *= HANDS_AMPLIFICATION  # amplify to accommodate small z-range
+
+                # Calibrate hand position to pose wrist if both are available
+                if pose_wrist_position is not None and len(points) > 0:
+                    # Hand wrist is landmark 0
+                    hand_wrist_position = points[0]
+
+                    # Calculate translation offset
+                    translation_offset = pose_wrist_position - hand_wrist_position
+
+                    # Apply translation to all hand landmarks
+                    points = points + translation_offset
+
                 landmarks_3d['hands'][hand_type] = points
 
-        # Extract face landmarks (using original method since face doesn't have left/right issues)
-        face_data = frame_data.get('face', {})
-        if 'all_landmarks' in face_data and face_data['all_landmarks']:
-            face_landmarks = face_data['all_landmarks']
-            # Take every 2nd landmark to reduce clutter
-            sampled_landmarks = face_landmarks[::2]
-            points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
-            landmarks_3d['face'] = points
-
-        # Extract pose landmarks with proper ordering
-        pose_data = frame_data.get('pose', {})
+        # Extract pose landmarks
         if pose_data:
-            # Define the complete MediaPipe pose landmark order and connections
             mediapipe_pose_landmarks = [
                 'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
                 'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
                 'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                'LEFT_WRIST', 'RIGHT_WRIST', 'LEFT_PINKY', 'RIGHT_PINKY', 'LEFT_INDEX',
-                'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB', 'LEFT_HIP', 'RIGHT_HIP',
+                'LEFT_WRIST', 'RIGHT_WRIST',
+                # 'LEFT_PINKY', 'RIGHT_PINKY', 'LEFT_INDEX',  'RIGHT_INDEX', 'LEFT_THUMB', 'RIGHT_THUMB',
+                'LEFT_HIP', 'RIGHT_HIP',
                 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE', 'LEFT_HEEL',
                 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
             ]
 
-            # Extract landmarks in the correct order with visibility check
             pose_points = []
-            pose_landmark_names = []  # Keep track of which landmarks we actually have
+            pose_landmark_names = []
 
             for landmark_name in mediapipe_pose_landmarks:
                 if landmark_name in pose_data:
                     lm = pose_data[landmark_name]
-                    # Check visibility if available
                     visibility = lm.get('visibility', 1.0)
-                    if visibility > 0.5:  # Only include visible landmarks
+                    if visibility > 0.5:
                         pose_points.append([lm['x'], lm['y'], lm['z']])
                         pose_landmark_names.append(landmark_name)
 
             if pose_points:
                 landmarks_3d['pose'] = np.array(pose_points)
-                # Store the landmark names for connection drawing
                 landmarks_3d['pose_names'] = pose_landmark_names
 
-        return landmarks_3d
+        # Extract face landmarks
+        face_data = frame_data.get('face', {})
+        if 'all_landmarks' in face_data and face_data['all_landmarks']:
+            face_landmarks = face_data['all_landmarks']
+            sampled_landmarks = face_landmarks[::2]
+            points = np.array([[lm['x'], lm['y'], lm['z']] for lm in sampled_landmarks])
+            points[:, 2] *= FACE_AMPLIFICATION
+
+            # ADD MISSING FACE CALIBRATION
+            if pose_data and "NOSE" in pose_data and len(sampled_landmarks) > 1:
+                pose_nose_position = np.array([
+                    pose_data["NOSE"]["x"],
+                    pose_data["NOSE"]["y"],
+                    pose_data["NOSE"]["z"]
+                ])
+
+                # Use first sampled landmark as nose reference
+                face_nose_position = np.array([
+                    sampled_landmarks[0]['x'],
+                    sampled_landmarks[0]['y'],
+                    sampled_landmarks[0]['z']
+                ])
+                face_nose_position[2] *= FACE_AMPLIFICATION
+
+                # Calculate and apply translation offset
+                translation_offset = pose_nose_position - face_nose_position
+                points = points + translation_offset
+
+            landmarks_3d['face'] = points
+
+        # Apply mirroring to all landmarks
+        mirrored_landmarks = self._apply_mirroring_to_landmarks(landmarks_3d)
+
+        # CRITICAL FIX: After mirroring, recalibrate with corrected wrist mapping
+        mirrored_landmarks = self._recalibrate_after_mirroring(mirrored_landmarks, pose_wrists)
+
+        return mirrored_landmarks
+
+    def precompute_paths_from_json(self, frames_data: dict):
+        """Precompute all hand paths from JSON data WITHOUT hand swapping"""
+        print("Precomputing hand paths without hand swapping...")
+
+        # Sort frame keys numerically
+        sorted_frame_keys = sorted(frames_data.keys(), key=int)
+
+        # First pass: collect all hand data (no consistency correction needed)
+        corrected_frames_data = {}
+
+        print(f"Processing {len(sorted_frame_keys)} frames...")
+
+        for i, frame_key in enumerate(sorted_frame_keys):
+            frame_data = frames_data[frame_key].copy()
+            # No hand correction - use original data as-is
+            corrected_frames_data[frame_key] = frame_data
+
+            # Progress indicator
+            if (i + 1) % 50 == 0 or i == len(sorted_frame_keys) - 1:
+                print(f"  Processed {i + 1}/{len(sorted_frame_keys)} frames...")
+
+        print("Building hand movement paths from original data...")
+
+        # Second pass: build paths from original data with hand-wrist calibration
+        for frame_key in sorted_frame_keys:
+            frame_data = corrected_frames_data[frame_key]
+            hands_data = frame_data.get('hands', {})
+            pose_data = frame_data.get('pose', {})
+
+            # Extract pose wrist positions for calibration
+            pose_wrists = {"LEFT_WRIST": None, "RIGHT_WRIST": None}
+            if pose_data:
+                if "LEFT_WRIST" in pose_data:
+                    pose_wrists["LEFT_WRIST"] = np.array([
+                        pose_data["LEFT_WRIST"]["x"],
+                        pose_data["LEFT_WRIST"]["y"],
+                        pose_data["LEFT_WRIST"]["z"]
+                    ])
+
+                if "RIGHT_WRIST" in pose_data:
+                    pose_wrists["RIGHT_WRIST"] = np.array([
+                        pose_data["RIGHT_WRIST"]["x"],
+                        pose_data["RIGHT_WRIST"]["y"],
+                        pose_data["RIGHT_WRIST"]["z"]
+                    ])
+
+            # NO HAND SWAPPING - use original hand mapping
+            hand_to_wrist_mapping = {
+                'left_hand': 'LEFT_WRIST',
+                'right_hand': 'RIGHT_WRIST'
+            }
+
+            # Process both hands with calibration (no swapping)
+            for hand_type in ['left_hand', 'right_hand']:
+                hand_data = hands_data.get(hand_type, [])  # Use original hand data
+                wrist_name = hand_to_wrist_mapping[hand_type]
+                pose_wrist_position = pose_wrists.get(wrist_name)
+
+                if hand_data:
+                    # Handle both old and new JSON formats
+                    if isinstance(hand_data, dict) and 'landmarks' in hand_data:
+                        landmarks = hand_data['landmarks']
+                    else:
+                        landmarks = hand_data
+
+                    if landmarks and len(landmarks) > self.wrist_index:
+                        wrist_point = landmarks[self.wrist_index]
+                        hand_wrist_position = np.array([wrist_point['x'], wrist_point['y'], wrist_point['z']])
+
+                        # Apply calibration if pose wrist is available
+                        if pose_wrist_position is not None:
+                            # Use pose wrist position instead of detected hand wrist
+                            calibrated_position = pose_wrist_position
+                        else:
+                            # Fall back to detected hand wrist position
+                            calibrated_position = hand_wrist_position
+
+                        # Store the path point
+                        path_data = {
+                            'frame': int(frame_key),
+                            'point': calibrated_position.tolist(),
+                            'timestamp': frame_data.get('timestamp', int(frame_key) / 30.0),
+                            'calibrated': pose_wrist_position is not None
+                        }
+
+                        if hand_type == 'left_hand':
+                            self.full_left_hand_path.append(path_data)
+                        else:
+                            self.full_right_hand_path.append(path_data)
+
+        # Store corrected data for use in visualization
+        self.corrected_frames_data = corrected_frames_data
+
+        # Print statistics (no corrections since we're not swapping)
+        print(f"\nHand Path Results (No Swapping Applied):")
+        print(f"  Original data used as-is")
+        print(f"  Left hand: {len(self.full_left_hand_path)} points")
+        print(f"  Right hand: {len(self.full_right_hand_path)} points")
+
+        # Count calibrated frames
+        calibrated_left = sum(1 for p in self.full_left_hand_path if p.get('calibrated', False))
+        calibrated_right = sum(1 for p in self.full_right_hand_path if p.get('calibrated', False))
+
+        print(f"  Calibrated frames: Left {calibrated_left}, Right {calibrated_right}")
+
+        # Validate path consistency
+        self._validate_path_consistency()
 
     def _draw_pose_connections(self, points: np.ndarray, pose_names: list = None):
         """Draw connections between pose landmarks using MediaPipe's pose structure"""
@@ -414,13 +822,13 @@ class LandmarksVisualizer3D:
 
             # Left arm connections
             ('LEFT_SHOULDER', 'LEFT_ELBOW'), ('LEFT_ELBOW', 'LEFT_WRIST'),
-            ('LEFT_WRIST', 'LEFT_PINKY'), ('LEFT_WRIST', 'LEFT_INDEX'),
-            ('LEFT_WRIST', 'LEFT_THUMB'), ('LEFT_PINKY', 'LEFT_INDEX'),
+            # ('LEFT_WRIST', 'LEFT_PINKY'), ('LEFT_WRIST', 'LEFT_INDEX'),
+            # ('LEFT_WRIST', 'LEFT_THUMB'), ('LEFT_PINKY', 'LEFT_INDEX'),
 
             # Right arm connections
             ('RIGHT_SHOULDER', 'RIGHT_ELBOW'), ('RIGHT_ELBOW', 'RIGHT_WRIST'),
-            ('RIGHT_WRIST', 'RIGHT_PINKY'), ('RIGHT_WRIST', 'RIGHT_INDEX'),
-            ('RIGHT_WRIST', 'RIGHT_THUMB'), ('RIGHT_PINKY', 'RIGHT_INDEX'),
+            # ('RIGHT_WRIST', 'RIGHT_PINKY'), ('RIGHT_WRIST', 'RIGHT_INDEX'),
+            # ('RIGHT_WRIST', 'RIGHT_THUMB'), ('RIGHT_PINKY', 'RIGHT_INDEX'),
 
             # Left leg connections
             ('LEFT_HIP', 'LEFT_KNEE'), ('LEFT_KNEE', 'LEFT_ANKLE'),
@@ -502,7 +910,7 @@ class LandmarksVisualizer3D:
         self.ax.set_zlabel('Z')
         self.ax.set_xlim(0, 1)
         self.ax.set_ylim(0, 1)
-        self.ax.set_zlim(-0.5, 0.5)
+        self.ax.set_zlim(-2, 2)
         self.ax.invert_yaxis()
 
         # Get frame key
@@ -560,9 +968,10 @@ class LandmarksVisualizer3D:
         self.ax.legend(loc='upper left', bbox_to_anchor=(0, 1))
 
         return self.ax
+
     def visualize_static(self, frame_number: Optional[int] = None):
         """Display a static 3D visualization of landmarks for a specific frame"""
-        self._setup_3d_plot()
+        self._setup_3d_plot(initial_view=self.initial_view)  # Use stored initial view
 
         # Mark as not animating for full path display
         self._is_animating = False
@@ -578,13 +987,14 @@ class LandmarksVisualizer3D:
             correction_stats = self.hand_tracker.get_path_statistics()['consistency_corrections']
             instruction_text += f'\nShowing complete hand paths with {correction_stats["corrections_made"]} consistency corrections applied.'
 
-        plt.figtext(0.02, 0.02, instruction_text, fontsize=10, style='italic')
+        plt.figtext(0.02, 0.95, instruction_text, fontsize=10, style='italic')
 
         plt.tight_layout()
         plt.show()
 
     def visualize_animated(self, interval: float = 100):
         """Display an animated 3D visualization of landmarks across all frames"""
+        # Set up the 3D plot FIRST - this creates self.fig and self.ax
         self._setup_3d_plot()
 
         # Set animation flag for progressive path tracking
@@ -593,10 +1003,16 @@ class LandmarksVisualizer3D:
         frame_keys = sorted(self.frames_data.keys(), key=int)
         total_frames = len(frame_keys)
 
+        if DEBUG_HAND_DEPTH:
+            print("=== Debugging Hand Depth ===")
+            for i in range(min(10, len(frame_keys))):  # Debug first 3 frames
+                print(f"\nFrame {frame_keys[i]}:")
+                self.debug_hand_depth(frame_keys[i])
+
         def animate(frame):
             return self._draw_frame(frame)
 
-        # Create animation
+        # Create animation - now self.fig exists
         self.anim = FuncAnimation(self.fig, animate, frames=total_frames,
                                   interval=interval, blit=False, repeat=True)
 
@@ -682,184 +1098,255 @@ class LandmarksVisualizer3D:
 
         print("=" * 60)
 
+    def debug_hand_depth(self, frame_key: str):
+        """Debug function to check raw Z-coordinate values"""
+        frame_data = self.frames_data.get(frame_key, {})
+        hands_data = frame_data.get('hands', {})
+
+        for hand_type in ['left_hand', 'right_hand']:
+            hand_info = hands_data.get(hand_type, {})
+            if hand_info:
+                if isinstance(hand_info, dict) and 'landmarks' in hand_info:
+                    landmarks = hand_info['landmarks']
+                else:
+                    landmarks = hand_info
+
+                if landmarks:
+                    z_values = [lm['z'] for lm in landmarks]
+                    print(f"{hand_type} Z-coordinates:")
+                    print(f"  Min: {min(z_values):.4f}, Max: {max(z_values):.4f}")
+                    print(f"  Range: {max(z_values) - min(z_values):.4f}")
+                    print(f"  Sample values: {z_values[:5]}")
+
+
+# class HandConsistencyTracker:
+#     """Advanced hand tracking to fix left/right hand swapping issues"""
+#
+#     def __init__(self, json_path: str, frame_rate: float = 10.0, track_hands: bool = False,
+#                  initial_view: str = 'z_axis', distance_threshold=0.15, confidence_threshold=2):
+#         """
+#         Initialize the 3D visualizer
+#
+#         Args:
+#             json_path: Path to video_landmarks.json file
+#             frame_rate: Animation frame rate (frames per second)
+#             track_hands: Whether to enable hand path tracking with advanced consistency correction
+#             initial_view: Initial viewing angle ('z_axis', 'perspective', or tuple of (elev, azim))
+#         """
+#         self.json_path = Path(json_path)
+#         self.frame_rate = frame_rate
+#         self.track_hands = track_hands
+#         self.initial_view = initial_view  # Store initial view preference
+#         self.data = None
+#         self.frames_data = None
+#         self.metadata = None
+#         self.current_frame = 0
+#         self.distance_threshold = distance_threshold
+#         self.confidence_threshold = confidence_threshold
+#
+#         # Initialize hand path tracker if enabled
+#         self.hand_tracker = None
+#
+#         # Color scheme for different landmark types
+#         self.colors = {
+#             'hands': {'left_hand': 'red', 'right_hand': 'blue'},
+#             'face': 'orange',
+#             'pose': 'green'
+#         }
+#
+#         # Load data
+#         self._load_data()
+#
+#         # Initialize hand tracking after data is loaded
+#         if track_hands:
+#             self.hand_tracker = HandPathTracker()
+#             self.hand_tracker.precompute_paths_from_json(self.frames_data)
+#
+#             # Print path statistics
+#             stats = self.hand_tracker.get_path_statistics()
+#             correction_info = stats['consistency_corrections']
+#             print("\nHand Path Statistics (with advanced consistency correction):")
+#             print(f"  Advanced corrections applied: {correction_info['corrections_made']}")
+#             print(f"  Correction rate: {correction_info['correction_rate']:.1f}% of frames")
+#             print(f"  Left hand: {stats['left_hand']['total_points']} points, "
+#                   f"distance: {stats['left_hand']['total_distance']:.3f}, "
+#                   f"avg speed: {stats['left_hand']['avg_speed']:.3f}")
+#             print(f"  Right hand: {stats['right_hand']['total_points']} points, "
+#                   f"distance: {stats['right_hand']['total_distance']:.3f}, "
+#                   f"avg speed: {stats['right_hand']['avg_speed']:.3f}")
+#
+#     def _extract_hand_position(self, hand_data):
+#         """Extract wrist position from hand data"""
+#         if not hand_data:
+#             return None
+#
+#         if isinstance(hand_data, dict) and 'landmarks' in hand_data:
+#             landmarks = hand_data['landmarks']
+#         else:
+#             landmarks = hand_data
+#
+#         if landmarks and len(landmarks) > 0:
+#             wrist = landmarks[0]
+#             return np.array([wrist['x'], wrist['y'], wrist['z']])
+#         return None
+#
+#     def _get_average_position(self, hand_type):
+#         """Get average position from recent history"""
+#         if not self.hand_history[hand_type]:
+#             return None
+#
+#         positions = self.hand_history[hand_type][-3:]  # Use last 3 positions
+#         return np.mean(positions, axis=0)
+#
+#     def _should_swap_hands(self, current_left_pos, current_right_pos):
+#         """Determine if hands should be swapped based on multiple criteria"""
+#         if current_left_pos is None or current_right_pos is None:
+#             return False
+#
+#         # Get expected positions based on history
+#         expected_left = self._get_average_position('left_hand')
+#         expected_right = self._get_average_position('right_hand')
+#
+#         if expected_left is None or expected_right is None:
+#             return False
+#
+#         # Calculate distances
+#         left_to_expected_left = np.linalg.norm(current_left_pos - expected_left)
+#         left_to_expected_right = np.linalg.norm(current_left_pos - expected_right)
+#         right_to_expected_left = np.linalg.norm(current_right_pos - expected_left)
+#         right_to_expected_right = np.linalg.norm(current_right_pos - expected_right)
+#
+#         # Check if current labels are swapped
+#         current_assignment_cost = left_to_expected_left + right_to_expected_right
+#         swapped_assignment_cost = left_to_expected_right + right_to_expected_left
+#
+#         # Additional criteria: X-position consistency (left hand should generally be on the left side)
+#         x_position_consistent = current_left_pos[0] <= current_right_pos[0]  # Left should be more to the left
+#
+#         # Decide if swap is needed
+#         swap_needed = (
+#                 swapped_assignment_cost < current_assignment_cost and
+#                 swapped_assignment_cost < self.distance_threshold * 2 and
+#                 not x_position_consistent
+#         )
+#
+#         return swap_needed
+#
+#     def correct_hand_labels(self, hands_data: dict):
+#         """
+#         Correct hand labels using advanced tracking with confidence voting
+#
+#         Args:
+#             hands_data: Dictionary with 'left_hand' and 'right_hand' data
+#
+#         Returns:
+#             Corrected hands_data dictionary
+#         """
+#         self.frame_count += 1
+#
+#         # Extract current positions
+#         current_left_pos = self._extract_hand_position(hands_data.get('left_hand', []))
+#         current_right_pos = self._extract_hand_position(hands_data.get('right_hand', []))
+#
+#         # If we don't have both hands, just update history and return
+#         if current_left_pos is None or current_right_pos is None:
+#             # Update history for available hands
+#             if current_left_pos is not None:
+#                 self.hand_history['left_hand'].append(current_left_pos)
+#                 if len(self.hand_history['left_hand']) > self.max_history:
+#                     self.hand_history['left_hand'].pop(0)
+#
+#             if current_right_pos is not None:
+#                 self.hand_history['right_hand'].append(current_right_pos)
+#                 if len(self.hand_history['right_hand']) > self.max_history:
+#                     self.hand_history['right_hand'].pop(0)
+#
+#             # Reset swap confidence when we don't have both hands
+#             self.swap_confidence = 0
+#             self.pending_swap = False
+#             return hands_data
+#
+#         # For the first few frames, just build up history
+#         if len(self.hand_history['left_hand']) < 2:
+#             self.hand_history['left_hand'].append(current_left_pos)
+#             self.hand_history['right_hand'].append(current_right_pos)
+#             return hands_data
+#
+#         # Check if swap is needed
+#         swap_needed = self._should_swap_hands(current_left_pos, current_right_pos)
+#
+#         # Update confidence counter
+#         if swap_needed:
+#             self.swap_confidence += 1
+#         else:
+#             self.swap_confidence = max(0, self.swap_confidence - 1)
+#
+#         # Apply swap if confidence threshold is met
+#         if self.swap_confidence >= self.confidence_threshold:
+#             corrected_hands_data = {
+#                 'left_hand': hands_data.get('right_hand', []),
+#                 'right_hand': hands_data.get('left_hand', [])
+#             }
+#
+#             # Update history with swapped positions
+#             self.hand_history['left_hand'].append(current_right_pos)
+#             self.hand_history['right_hand'].append(current_left_pos)
+#
+#             self.correction_count += 1
+#             self.swap_confidence = 0  # Reset after correction
+#
+#             # Trim history
+#             if len(self.hand_history['left_hand']) > self.max_history:
+#                 self.hand_history['left_hand'].pop(0)
+#             if len(self.hand_history['right_hand']) > self.max_history:
+#                 self.hand_history['right_hand'].pop(0)
+#
+#             return corrected_hands_data
+#         else:
+#             # Update history with current positions
+#             self.hand_history['left_hand'].append(current_left_pos)
+#             self.hand_history['right_hand'].append(current_right_pos)
+#
+#             # Trim history
+#             if len(self.hand_history['left_hand']) > self.max_history:
+#                 self.hand_history['left_hand'].pop(0)
+#             if len(self.hand_history['right_hand']) > self.max_history:
+#                 self.hand_history['right_hand'].pop(0)
+#
+#             return hands_data
+#
+#     def get_correction_stats(self):
+#         """Get statistics about corrections made"""
+#         return {
+#             'corrections_made': self.correction_count,
+#             'total_frames': self.frame_count,
+#             'correction_rate': self.correction_count / max(1, self.frame_count) * 100,
+#             'distance_threshold': self.distance_threshold,
+#             'confidence_threshold': self.confidence_threshold
+#         }
+#
 
 class HandConsistencyTracker:
-    """Advanced hand tracking to fix left/right hand swapping issues"""
+    """Simple hand tracking to fix left/right hand swapping issues"""
 
-    def __init__(self, distance_threshold: float = 0.2, confidence_threshold: int = 3):
-        """
-        Initialize hand consistency tracker
-
-        Args:
-            distance_threshold: Maximum distance for hand to be considered the same hand
-            confidence_threshold: Number of consecutive frames needed to confirm a swap
-        """
+    def __init__(self, distance_threshold=0.15, confidence_threshold=2):
         self.distance_threshold = distance_threshold
         self.confidence_threshold = confidence_threshold
-
-        # Track hand positions over multiple frames
-        self.hand_history = {
-            'left_hand': [],
-            'right_hand': []
-        }
-
-        # Keep track of potential swaps
-        self.swap_confidence = 0
-        self.pending_swap = False
-
-        # Statistics
+        self.hand_history = {'left_hand': [], 'right_hand': []}
         self.correction_count = 0
         self.frame_count = 0
 
-        # Smoothing parameters
-        self.max_history = 5  # Keep last 5 positions for smoothing
-
-    def _extract_hand_position(self, hand_data):
-        """Extract wrist position from hand data"""
-        if not hand_data:
-            return None
-
-        if isinstance(hand_data, dict) and 'landmarks' in hand_data:
-            landmarks = hand_data['landmarks']
-        else:
-            landmarks = hand_data
-
-        if landmarks and len(landmarks) > 0:
-            wrist = landmarks[0]
-            return np.array([wrist['x'], wrist['y'], wrist['z']])
-        return None
-
-    def _get_average_position(self, hand_type):
-        """Get average position from recent history"""
-        if not self.hand_history[hand_type]:
-            return None
-
-        positions = self.hand_history[hand_type][-3:]  # Use last 3 positions
-        return np.mean(positions, axis=0)
-
-    def _should_swap_hands(self, current_left_pos, current_right_pos):
-        """Determine if hands should be swapped based on multiple criteria"""
-        if current_left_pos is None or current_right_pos is None:
-            return False
-
-        # Get expected positions based on history
-        expected_left = self._get_average_position('left_hand')
-        expected_right = self._get_average_position('right_hand')
-
-        if expected_left is None or expected_right is None:
-            return False
-
-        # Calculate distances
-        left_to_expected_left = np.linalg.norm(current_left_pos - expected_left)
-        left_to_expected_right = np.linalg.norm(current_left_pos - expected_right)
-        right_to_expected_left = np.linalg.norm(current_right_pos - expected_left)
-        right_to_expected_right = np.linalg.norm(current_right_pos - expected_right)
-
-        # Check if current labels are swapped
-        current_assignment_cost = left_to_expected_left + right_to_expected_right
-        swapped_assignment_cost = left_to_expected_right + right_to_expected_left
-
-        # Additional criteria: X-position consistency (left hand should generally be on the left side)
-        x_position_consistent = current_left_pos[0] <= current_right_pos[0]  # Left should be more to the left
-
-        # Decide if swap is needed
-        swap_needed = (
-                swapped_assignment_cost < current_assignment_cost and
-                swapped_assignment_cost < self.distance_threshold * 2 and
-                not x_position_consistent
-        )
-
-        return swap_needed
-
-    def correct_hand_labels(self, hands_data: dict):
-        """
-        Correct hand labels using advanced tracking with confidence voting
-
-        Args:
-            hands_data: Dictionary with 'left_hand' and 'right_hand' data
-
-        Returns:
-            Corrected hands_data dictionary
-        """
+    def correct_hand_labels(self, hands_data):
+        """Simple method to correct hand labels - placeholder for now"""
         self.frame_count += 1
-
-        # Extract current positions
-        current_left_pos = self._extract_hand_position(hands_data.get('left_hand', []))
-        current_right_pos = self._extract_hand_position(hands_data.get('right_hand', []))
-
-        # If we don't have both hands, just update history and return
-        if current_left_pos is None or current_right_pos is None:
-            # Update history for available hands
-            if current_left_pos is not None:
-                self.hand_history['left_hand'].append(current_left_pos)
-                if len(self.hand_history['left_hand']) > self.max_history:
-                    self.hand_history['left_hand'].pop(0)
-
-            if current_right_pos is not None:
-                self.hand_history['right_hand'].append(current_right_pos)
-                if len(self.hand_history['right_hand']) > self.max_history:
-                    self.hand_history['right_hand'].pop(0)
-
-            # Reset swap confidence when we don't have both hands
-            self.swap_confidence = 0
-            self.pending_swap = False
-            return hands_data
-
-        # For the first few frames, just build up history
-        if len(self.hand_history['left_hand']) < 2:
-            self.hand_history['left_hand'].append(current_left_pos)
-            self.hand_history['right_hand'].append(current_right_pos)
-            return hands_data
-
-        # Check if swap is needed
-        swap_needed = self._should_swap_hands(current_left_pos, current_right_pos)
-
-        # Update confidence counter
-        if swap_needed:
-            self.swap_confidence += 1
-        else:
-            self.swap_confidence = max(0, self.swap_confidence - 1)
-
-        # Apply swap if confidence threshold is met
-        if self.swap_confidence >= self.confidence_threshold:
-            corrected_hands_data = {
-                'left_hand': hands_data.get('right_hand', []),
-                'right_hand': hands_data.get('left_hand', [])
-            }
-
-            # Update history with swapped positions
-            self.hand_history['left_hand'].append(current_right_pos)
-            self.hand_history['right_hand'].append(current_left_pos)
-
-            self.correction_count += 1
-            self.swap_confidence = 0  # Reset after correction
-
-            # Trim history
-            if len(self.hand_history['left_hand']) > self.max_history:
-                self.hand_history['left_hand'].pop(0)
-            if len(self.hand_history['right_hand']) > self.max_history:
-                self.hand_history['right_hand'].pop(0)
-
-            return corrected_hands_data
-        else:
-            # Update history with current positions
-            self.hand_history['left_hand'].append(current_left_pos)
-            self.hand_history['right_hand'].append(current_right_pos)
-
-            # Trim history
-            if len(self.hand_history['left_hand']) > self.max_history:
-                self.hand_history['left_hand'].pop(0)
-            if len(self.hand_history['right_hand']) > self.max_history:
-                self.hand_history['right_hand'].pop(0)
-
-            return hands_data
+        return hands_data  # Just return unchanged for now
 
     def get_correction_stats(self):
         """Get statistics about corrections made"""
         return {
             'corrections_made': self.correction_count,
             'total_frames': self.frame_count,
-            'correction_rate': self.correction_count / max(1, self.frame_count) * 100,
+            'correction_rate': 0.0,
             'distance_threshold': self.distance_threshold,
             'confidence_threshold': self.confidence_threshold
         }
@@ -886,7 +1373,7 @@ class HandPathTracker:
         # Initialize advanced consistency tracker
         self.consistency_tracker = HandConsistencyTracker(
             distance_threshold=0.15,  # Stricter threshold
-            confidence_threshold=2  # Require 2 consecutive frames before swapping
+            confidence_threshold=10  # Require 2 consecutive frames before swapping
         )
 
         # Path colors (slightly transparent)
@@ -1052,25 +1539,65 @@ class HandPathTracker:
                 if start_frame <= point['frame'] <= end_frame]
 
     def draw_paths_3d(self, ax, current_frame: int = None, show_full_path: bool = False):
-        """Draw hand paths on 3D plot"""
-        if show_full_path or current_frame is None:
-            # Draw complete paths
-            left_points = [p['point'] for p in self.full_left_hand_path]
-            right_points = [p['point'] for p in self.full_right_hand_path]
-        else:
-            # Draw paths up to current frame
-            left_points = [p['point'] for p in self.full_left_hand_path if p['frame'] <= current_frame]
-            right_points = [p['point'] for p in self.full_right_hand_path if p['frame'] <= current_frame]
+        """Draw hand paths on 3D plot using calibrated 3D positions"""
 
-        # Draw left hand path
-        if len(left_points) > 1:
-            path_array = np.array(left_points)
+        # Get the parent visualizer instance to access landmark extraction methods
+        visualizer = None
+        # Find the visualizer instance that owns this tracker
+        import inspect
+        for frame_info in inspect.stack():
+            frame_locals = frame_info.frame.f_locals
+            if 'self' in frame_locals and hasattr(frame_locals['self'], '_extract_landmarks_for_frame'):
+                visualizer = frame_locals['self']
+                break
+
+        if visualizer is None:
+            print("Warning: Could not find visualizer instance for 3D calibration")
+            return
+
+        # Build 3D calibrated paths on-the-fly
+        left_points_3d = []
+        right_points_3d = []
+
+        # Sort frame keys numerically
+        sorted_frame_keys = sorted(visualizer.frames_data.keys(), key=int)
+
+        for frame_key in sorted_frame_keys:
+            frame_num = int(frame_key)
+            if not show_full_path and current_frame is not None and frame_num > current_frame:
+                break
+
+            # Extract calibrated 3D landmarks for this frame
+            if hasattr(self, 'corrected_frames_data') and self.corrected_frames_data:
+                # Use corrected method if we have corrected data
+                landmarks_3d = visualizer._extract_landmarks_for_frame_corrected(frame_key)
+            else:
+                # Use regular method
+                landmarks_3d = visualizer._extract_landmarks_for_frame(frame_key)
+
+            # Extract wrist positions from calibrated 3D landmarks
+            left_hand_landmarks = landmarks_3d['hands']['left_hand']
+            right_hand_landmarks = landmarks_3d['hands']['right_hand']
+
+            # Add left hand wrist (landmark 0) if available
+            if len(left_hand_landmarks) > 0:
+                wrist_3d = left_hand_landmarks[0]  # Wrist is landmark 0
+                left_points_3d.append(wrist_3d)
+
+            # Add right hand wrist (landmark 0) if available
+            if len(right_hand_landmarks) > 0:
+                wrist_3d = right_hand_landmarks[0]  # Wrist is landmark 0
+                right_points_3d.append(wrist_3d)
+
+        # Draw left hand path in 3D
+        if len(left_points_3d) > 1:
+            path_array = np.array(left_points_3d)
 
             # Draw main path line
             ax.plot(path_array[:, 0], path_array[:, 1], path_array[:, 2],
                     color=self.path_colors['left_hand'][:3],
                     alpha=self.path_colors['left_hand'][3],
-                    linewidth=3, label='Left Hand Path (Advanced Corrected)')
+                    linewidth=3, label='Left Hand Path (3D Calibrated)')
 
             # Add gradient effect by plotting segments with varying alpha
             num_segments = min(20, len(path_array) - 1)
@@ -1092,15 +1619,15 @@ class HandPathTracker:
                 ax.scatter([path_array[-1, 0]], [path_array[-1, 1]], [path_array[-1, 2]],
                            c='red', s=100, marker='s', alpha=0.8, label='Left Current')
 
-        # Draw right hand path
-        if len(right_points) > 1:
-            path_array = np.array(right_points)
+        # Draw right hand path in 3D
+        if len(right_points_3d) > 1:
+            path_array = np.array(right_points_3d)
 
             # Draw main path line
             ax.plot(path_array[:, 0], path_array[:, 1], path_array[:, 2],
                     color=self.path_colors['right_hand'][:3],
                     alpha=self.path_colors['right_hand'][3],
-                    linewidth=3, label='Right Hand Path (Advanced Corrected)')
+                    linewidth=3, label='Right Hand Path (3D Calibrated)')
 
             # Add gradient effect
             num_segments = min(20, len(path_array) - 1)
@@ -1281,7 +1808,8 @@ def generate_2d_path_overlay_from_json(json_path: str, output_video_path: str = 
 
 
 def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: Optional[int] = None,
-                           save_path: Optional[str] = None, track_hands: bool = False):
+                           save_path: Optional[str] = None, track_hands: bool = False,
+                           initial_view: str = 'z_axis'):
     """
     Visualize landmarks from video_landmarks.json in 3D space
 
@@ -1291,7 +1819,9 @@ def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: O
         frame_number: Specific frame to show (for static mode), None for first frame
         save_path: Path to save animation (optional, for animated mode)
         track_hands: Whether to enable hand path tracking with consistency correction
+        initial_view: Initial viewing angle ('z_axis', 'perspective', or tuple of (elev, azim))
     """
+
     try:
         visualizer = LandmarksVisualizer3D(json_path, track_hands=track_hands)
 
