@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 import numpy as np
 
 from processing import process_image, process_video, enhance_image_for_hand_detection
-from coordinate_calibrator import validate_hand_pose_alignment
+# from coordinate_calibrator import validate_hand_pose_alignment
 
 # TODO: visualise full mesh TODO: not all points present in all frames:
 #  1) count missing points frames (how?) and delete them if treshold is not exceeded
@@ -86,6 +86,9 @@ Examples:
 
     parser.add_argument('--disable-calibration', action='store_true',
                         help='Disable coordinate calibration (use raw MediaPipe coordinates)')
+
+    parser.add_argument('--process-phoenix', type=str,
+                        help='Process Phoenix weather forecast dataset from dev folder')
 
     return parser.parse_args()
 
@@ -227,6 +230,104 @@ def process_single_item(item_path: Path, output_dir: Path, args) -> None:
     else:
         print(f"ERROR: Path is neither a file nor a directory: {item_path}")
         return
+
+
+def process_phoenix_dataset(dev_folder: Path, output_dir: Path, args) -> None:
+    """Process Phoenix weather forecast dataset from dev folder - JSON only mode"""
+    print(f"\n=== Phoenix Dataset Processing (JSON-Only Mode) ===")
+    print(f"Dev folder: {dev_folder}")
+    print(f"Output directory: {output_dir}")
+    print(f"Optimizations: JSON files only, no frames/videos/comparisons, single output folder")
+
+    if not dev_folder.exists():
+        print(f"ERROR: Dev folder not found: {dev_folder}")
+        return
+
+    # Create single output directory for all JSONs
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Find all weather forecast directories
+    forecast_dirs = []
+    for item in dev_folder.iterdir():
+        if item.is_dir():
+            # Check if this directory contains frame subdirectories
+            frame_subdirs = [subdir for subdir in item.iterdir() if subdir.is_dir()]
+            if frame_subdirs:
+                # This looks like a forecast directory with frame subdirectories
+                forecast_dirs.append(item)
+
+    print(f"Found {len(forecast_dirs)} weather forecast directories")
+    print(f"All JSON files will be saved to: {output_dir}")
+
+    processed_count = 0
+    failed_count = 0
+
+    for idx, forecast_dir in enumerate(forecast_dirs):
+        forecast_name = forecast_dir.name  # e.g., "01April_2010_Thursday_heute_default-1"
+        print(f"\n=== Processing forecast {idx + 1}/{len(forecast_dirs)}: {forecast_name} ===")
+
+        try:
+            # Find frame directories within this forecast
+            frame_dirs = [subdir for subdir in forecast_dir.iterdir() if subdir.is_dir()]
+
+            if not frame_dirs:
+                print(f"No frame directories found in {forecast_name}")
+                failed_count += 1
+                continue
+
+            # Process each frame directory (usually just one, but could be multiple)
+            for frame_dir in frame_dirs:
+                # Check for PNG files in this directory
+                png_files = list(frame_dir.glob("*.png"))
+
+                if not png_files:
+                    print(f"No PNG files found in {frame_dir}")
+                    continue
+
+                print(f"Found {len(png_files)} PNG files in {frame_dir}")
+
+                # Process as image sequence with JSON-only Phoenix mode
+                print(f"Starting JSON-only processing...")
+
+                result = process_video(
+                    str(frame_dir),  # Path to directory containing PNG files
+                    output_dir=str(output_dir),  # Use main output dir, not subfolder
+                    skip_frames=args.skip_frames,
+                    extract_face=True,
+                    extract_pose=True,
+                    is_image_sequence=True,
+                    image_extension="png",  # Phoenix uses PNG
+                    save_all_frames=False,  # Force to False for Phoenix
+                    use_full_mesh=args.full_mesh,
+                    use_enhancement=args.enhance,
+                    phoenix_mode=True,  # Enable Phoenix optimizations
+                    phoenix_json_only=True,  # NEW: JSON-only mode
+                    phoenix_json_name=forecast_name  # NEW: Custom JSON filename
+                )
+
+                if result is None:
+                    print(f"WARNING: Processing failed for {forecast_name}")
+                    failed_count += 1
+                else:
+                    print(f"SUCCESS: Processed {forecast_name} -> {forecast_name}.json")
+                    processed_count += 1
+
+        except Exception as e:
+            print(f"ERROR: Exception processing {forecast_name}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            failed_count += 1
+
+    print(f"\n=== Phoenix Dataset Processing Summary ===")
+    print(f"Total forecasts: {len(forecast_dirs)}")
+    print(f"Successfully processed: {processed_count}")
+    print(f"Failed: {failed_count}")
+    print(f"JSON files saved to: {output_dir}")
+
+    # List the JSON files created
+    json_files = list(output_dir.glob("*.json"))
+    print(f"Total JSON files created: {len(json_files)}")
+
 
 
 def process_single_image_file(image_path: Path, output_dir: Path, args) -> None:
@@ -662,7 +763,10 @@ def main_with_calibration():
     print(f"Save all frames: {'Yes' if args.save_all_frames else 'No'}")
 
     # Process based on arguments
-    if args.process_single:
+    if args.process_phoenix:
+        dev_folder = Path(args.process_phoenix)
+        process_phoenix_dataset(dev_folder, output_dir, args)
+    elif args.process_single:
         item_path = Path(args.process_single)
         process_single_item(item_path, output_dir, args)
     else:
@@ -672,32 +776,6 @@ def main_with_calibration():
     print(f"\n=== Processing Complete ===")
     print(f"Results saved to: {output_dir.absolute()}")
 
-
-# Example calibration validation function:
-def validate_calibration_results(json_path: str):
-    """
-    Validate calibration results in processed JSON data
-    """
-
-
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-
-    frames_data = data.get('frames', {})
-    validation_results = []
-
-    for frame_key, frame_data in frames_data.items():
-        if frame_data.get('calibration_applied', False):
-            metrics = validate_hand_pose_alignment(frame_data)
-            validation_results.append(metrics)
-
-    if validation_results:
-        avg_error = np.mean(
-            [m['average_alignment_error'] for m in validation_results if m['average_alignment_error'] != float('inf')])
-        print(f"Average calibration alignment error: {avg_error:.4f}")
-        print(f"Calibrated frames: {len(validation_results)}")
-    else:
-        print("No calibrated frames found in data")
 
 
 if __name__ == "__main__":

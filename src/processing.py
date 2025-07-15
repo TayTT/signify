@@ -914,7 +914,6 @@ def process_image(
     return image_data, annotated_image
 
 
-# MODIFIED: Updated process_video function with enhanced hand tracking
 def process_video(
         input_path: str,
         output_dir: str = './output_data/video',
@@ -925,19 +924,32 @@ def process_video(
         image_extension: str = "png",
         save_all_frames: bool = False,
         use_full_mesh: bool = False,
-        use_enhancement: bool = False
+        use_enhancement: bool = False,
+        phoenix_mode: bool = False,  # Phoenix dataset optimization
+        phoenix_frame_sample_rate: int = 200,  # Save every Nth frame in Phoenix mode
+        phoenix_json_only: bool = False,  # NEW: JSON-only mode (no frames/videos)
+        phoenix_json_name: str = None  # NEW: Custom JSON filename
 ) -> Optional[Dict[str, Any]]:
     """
     Process video or image sequence for sign language detection including hands, face, and pose landmarks.
-    NOW WITH ENHANCED HAND TRACKING!
+    NOW WITH ENHANCED HAND TRACKING AND PHOENIX OPTIMIZATION!
+
+    Args:
+        phoenix_mode: If True, optimizes for Phoenix dataset processing
+        phoenix_json_only: If True, only saves JSON landmark data (no frames, videos, or comparisons)
+        phoenix_json_name: Custom name for the JSON file (without .json extension)
     """
-    # ... keep all your existing setup code unchanged until MediaPipe initialization ...
     input_path = Path(input_path)
 
-    # Always set up frames directory
-    frames_dir = Path(output_dir) / "frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Frames will be saved to: {frames_dir}")
+    # Set up frames directory (skip in JSON-only mode)
+    if phoenix_mode and phoenix_json_only:
+        print("Phoenix JSON-only mode: Skipping frames directory creation")
+        frames_dir = None
+    else:
+        # Always set up frames directory for normal processing
+        frames_dir = Path(output_dir) / "frames"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Frames will be saved to: {frames_dir}")
 
     if is_image_sequence:
         if not input_path.is_dir():
@@ -983,55 +995,59 @@ def process_video(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Set up output video writer
-    output_video_path = output_dir / "annotated_video.mp4"
-    print(f"Setting up video writer for: {output_video_path}")
+    # Set up output video writer (skip for Phoenix JSON-only mode)
+    video_writer = None
+    if not (phoenix_mode and phoenix_json_only):
+        output_video_path = output_dir / "annotated_video.mp4"
+        print(f"Setting up video writer for: {output_video_path}")
 
-    # Ensure file can be created
-    try:
-        # Try writing a test file to ensure directory is writable
-        test_path = output_dir / "test_write.txt"
-        with open(test_path, 'w') as f:
-            f.write("Test")
-        test_path.unlink()  # Remove test file
-        print(f"Directory is writable: {output_dir}")
-    except Exception as e:
-        print(f"ERROR: Directory is not writable: {output_dir}, error: {str(e)}")
-        return None
+        # Ensure file can be created
+        try:
+            # Try writing a test file to ensure directory is writable
+            test_path = output_dir / "test_write.txt"
+            with open(test_path, 'w') as f:
+                f.write("Test")
+            test_path.unlink()  # Remove test file
+            print(f"Directory is writable: {output_dir}")
+        except Exception as e:
+            print(f"ERROR: Directory is not writable: {output_dir}, error: {str(e)}")
+            return None
 
-    try:
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        # Adjust FPS for skipped frames
-        output_fps = fps / skip_frames if skip_frames > 1 else fps
-        video_writer = cv2.VideoWriter(
-            str(output_video_path),
-            fourcc,
-            output_fps,
-            (frame_width, frame_height)
-        )
-
-        if not video_writer.isOpened():
-            print(f"ERROR: Could not initialize video writer for {output_video_path}")
-            print(f"Video properties: codec=mp4v, fps={output_fps}, size={frame_width}x{frame_height}")
-
-            # Try with a different codec as fallback
-            print("Trying with XVID codec as fallback...")
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            # Adjust FPS for skipped frames
+            output_fps = fps / skip_frames if skip_frames > 1 else fps
             video_writer = cv2.VideoWriter(
-                str(output_dir / "annotated_video.avi"),  # Use .avi extension for XVID
+                str(output_video_path),
                 fourcc,
                 output_fps,
                 (frame_width, frame_height)
             )
 
             if not video_writer.isOpened():
-                print("ERROR: Could not initialize video writer with fallback codec either")
-                return None
-            else:
-                print("Successfully initialized video writer with fallback codec")
-    except Exception as e:
-        print(f"ERROR: Exception while initializing video writer: {str(e)}")
-        return None
+                print(f"ERROR: Could not initialize video writer for {output_video_path}")
+                print(f"Video properties: codec=mp4v, fps={output_fps}, size={frame_width}x{frame_height}")
+
+                # Try with a different codec as fallback
+                print("Trying with XVID codec as fallback...")
+                fourcc = cv2.VideoWriter_fourcc(*'XVID')
+                video_writer = cv2.VideoWriter(
+                    str(output_dir / "annotated_video.avi"),  # Use .avi extension for XVID
+                    fourcc,
+                    output_fps,
+                    (frame_width, frame_height)
+                )
+
+                if not video_writer.isOpened():
+                    print("ERROR: Could not initialize video writer with fallback codec either")
+                    return None
+                else:
+                    print("Successfully initialized video writer with fallback codec")
+        except Exception as e:
+            print(f"ERROR: Exception while initializing video writer: {str(e)}")
+            return None
+    else:
+        print("Phoenix JSON-only mode: Skipping video output generation")
 
     frame_count = 0  # Actual frame number (0-based from source)
     processed_frame_count = 0  # Number of frames we've actually processed
@@ -1043,22 +1059,27 @@ def process_video(
     print(f"  - Use enhancement: {use_enhancement}")
     print(f"  - Use full mesh: {use_full_mesh}")
     print(f"  - Enhanced hand tracking: ENABLED")
+    print(f"  - Phoenix mode: {'ENABLED' if phoenix_mode else 'DISABLED'}")
+    if phoenix_mode:
+        print(f"  - Phoenix JSON-only: {'ENABLED' if phoenix_json_only else 'DISABLED'}")
+        if phoenix_json_name:
+            print(f"  - Custom JSON name: {phoenix_json_name}.json")
 
-    # MODIFIED: Initialize enhanced hand tracker instead of regular MediaPipe
+    # Initialize enhanced hand tracker
     enhanced_hand_tracker = EnhancedHandTracker(
         min_detection_confidence=0.7,
         temporal_smoothing_frames=5,
         confidence_threshold=0.6,
-        frame_border_margin=0.1  # NEW: 10% of frame width/height considered "near border"
+        frame_border_margin=0.1
     )
 
-    # Initialize face and pose solutions (keep existing)
+    # Initialize face and pose solutions
     with mp_face_mesh.FaceMesh(
             static_image_mode=False,
             refine_landmarks=True,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
-            max_num_faces=1  # Assuming one face for sign language
+            max_num_faces=1
     ) as face_mesh, mp_pose.Pose(
         static_image_mode=False,
         model_complexity=1,
@@ -1081,20 +1102,28 @@ def process_video(
                         print(f"Could not read image: {img_path}")
                         continue
 
-                    # Determine if we should save this frame - save every processed frame or just samples
-                    if save_all_frames:
-                        # Save every processed frame
-                        current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png"
-                    else:
-                        # Save every 10th processed frame as a sample
-                        current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png" if (
-                                processed_frame_count % 10 == 0) else None
+                    # Determine frame saving path
+                    current_frame_path = None  # Default to no saving
+
+                    if phoenix_mode and phoenix_json_only:
+                        # JSON-only mode: Never save frames
+                        current_frame_path = None
+                    elif phoenix_mode and frames_dir is not None:
+                        # Regular Phoenix mode: Save frame only every phoenix_frame_sample_rate processed frames
+                        if processed_frame_count % phoenix_frame_sample_rate == 0:
+                            current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png"
+                    elif frames_dir is not None:
+                        # Original logic for non-Phoenix mode
+                        if save_all_frames:
+                            current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png"
+                        elif processed_frame_count % 10 == 0:
+                            current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png"
 
                     process_frame_enhanced(
                         frame,
                         current_frame_number,
                         fps,
-                        enhanced_hand_tracker,  # Use enhanced tracker
+                        enhanced_hand_tracker,
                         face_mesh,
                         pose,
                         extract_face,
@@ -1106,13 +1135,18 @@ def process_video(
                         skip_frames=skip_frames,
                         save_all_frames=save_all_frames,
                         use_full_mesh=use_full_mesh,
-                        use_enhancement=use_enhancement
+                        use_enhancement=use_enhancement,
+                        phoenix_mode=phoenix_mode,
+                        processed_frame_count=processed_frame_count,
+                        phoenix_frame_sample_rate=phoenix_frame_sample_rate,
+                        phoenix_json_only=phoenix_json_only
                     )
 
                     processed_frame_count += 1
 
-                    # Print progress every 10 processed frames
-                    if processed_frame_count % 10 == 0:
+                    # Progress reporting
+                    progress_interval = 50 if phoenix_mode else 10
+                    if processed_frame_count % progress_interval == 0:
                         progress_percent = (current_frame_number / total_frames) * 100 if total_frames > 0 else 0
                         print(
                             f"Processed {processed_frame_count} frames (current frame: {current_frame_number}/{total_frames}, {progress_percent:.1f}%)")
@@ -1126,20 +1160,28 @@ def process_video(
 
                     # Process every nth frame to improve performance
                     if frame_count % skip_frames == 0:
-                        # Determine if we should save this frame - save every processed frame or just samples
-                        if save_all_frames:
-                            # Save every processed frame
-                            current_frame_path = frames_dir / f"frame_{frame_count:04d}.png"
-                        else:
-                            # Save every 10th processed frame as a sample
-                            current_frame_path = frames_dir / f"frame_{frame_count:04d}.png" if (
-                                    processed_frame_count % 10 == 0) else None
+                        # Determine frame saving path
+                        current_frame_path = None  # Default to no saving
+
+                        if phoenix_mode and phoenix_json_only:
+                            # JSON-only mode: Never save frames
+                            current_frame_path = None
+                        elif phoenix_mode and frames_dir is not None:
+                            # Regular Phoenix mode: Save frame only every phoenix_frame_sample_rate processed frames
+                            if processed_frame_count % phoenix_frame_sample_rate == 0:
+                                current_frame_path = frames_dir / f"frame_{frame_count:04d}.png"
+                        elif frames_dir is not None:
+                            # Original logic for non-Phoenix mode
+                            if save_all_frames:
+                                current_frame_path = frames_dir / f"frame_{frame_count:04d}.png"
+                            elif processed_frame_count % 10 == 0:
+                                current_frame_path = frames_dir / f"frame_{frame_count:04d}.png"
 
                         process_frame_enhanced(
                             frame,
                             frame_count,
                             fps,
-                            enhanced_hand_tracker,  # Use enhanced tracker
+                            enhanced_hand_tracker,
                             face_mesh,
                             pose,
                             extract_face,
@@ -1151,13 +1193,18 @@ def process_video(
                             skip_frames=skip_frames,
                             save_all_frames=save_all_frames,
                             use_full_mesh=use_full_mesh,
-                            use_enhancement=use_enhancement
+                            use_enhancement=use_enhancement,
+                            phoenix_mode=phoenix_mode,
+                            processed_frame_count=processed_frame_count,
+                            phoenix_frame_sample_rate=phoenix_frame_sample_rate,
+                            phoenix_json_only=phoenix_json_only
                         )
 
                         processed_frame_count += 1
 
-                        # Print progress every 10 processed frames
-                        if processed_frame_count % 10 == 0:
+                        # Progress reporting
+                        progress_interval = 50 if phoenix_mode else 10
+                        if processed_frame_count % progress_interval == 0:
                             progress_percent = (frame_count / total_frames) * 100 if total_frames > 0 else 0
                             print(
                                 f"Processed {processed_frame_count} frames (current frame: {frame_count}/{total_frames}, {progress_percent:.1f}%)")
@@ -1181,10 +1228,16 @@ def process_video(
             print(f"Low confidence filtered: {stats['filtered_detections']} ({stats['filter_rate']:.1f}%)")
             print(f"Detections smoothed: {stats['smoothed_detections']} ({stats['smooth_rate']:.1f}%)")
 
-    # Clean up video writer
-    video_writer.release()
+    # Clean up video writer (only if it was created)
+    if video_writer is not None:
+        video_writer.release()
 
-    # Save metadata
+    # Save metadata - make sure stats is defined
+    try:
+        stats = enhanced_hand_tracker.get_statistics()
+    except:
+        stats = {}  # Fallback if tracker is already closed
+
     input_name = input_path.name if not is_image_sequence else input_path.name
     metadata = {
         "input_source": input_name,
@@ -1205,31 +1258,52 @@ def process_video(
             "enhancement_applied": use_enhancement,
             "full_face_mesh": use_full_mesh,
             "save_all_frames": save_all_frames,
-            "enhanced_hand_tracking": True  # NEW: indicate enhanced tracking was used
+            "enhanced_hand_tracking": True,
+            "phoenix_mode": phoenix_mode,
+            "phoenix_json_only": phoenix_json_only if phoenix_mode else False
         },
-        "enhanced_hand_tracking_stats": stats  # NEW: include tracking statistics
+        "enhanced_hand_tracking_stats": stats
     }
 
-    # Save all frame data to JSON
-    json_path = output_dir / "video_landmarks.json"
+    # Save all frame data to JSON with custom filename
+    if phoenix_json_only and phoenix_json_name:
+        json_filename = f"{phoenix_json_name}.json"
+    else:
+        json_filename = "video_landmarks.json"
+
+    json_path = output_dir / json_filename
+
     try:
+        print(f"Saving JSON data to: {json_path}")
+        print(f"Number of frames in data: {len(all_frames_data)}")
+
         with open(json_path, "w") as f:
             json.dump({"metadata": metadata, "frames": all_frames_data}, f, indent=4)
+
         print(f"Processing complete. Data saved to {json_path}")
+        print(f"JSON file size: {json_path.stat().st_size} bytes")
         print(f"Total frames in source: {total_frames}")
         print(f"Total frames processed: {processed_frame_count}")
-        print(f"Frames saved to disk: {len(list(frames_dir.glob('frame_*.png')))}")
 
-        # Verify output files exist
-        expected_video_file = output_video_path
-        if not expected_video_file.exists():
-            # Check for fallback .avi file
-            expected_video_file = output_dir / "annotated_video.avi"
-
-        if expected_video_file.exists():
-            print(f"Output video: {expected_video_file} ({expected_video_file.stat().st_size} bytes)")
+        # Count saved frames only if frames directory exists
+        if frames_dir and frames_dir.exists():
+            frames_saved = len(list(frames_dir.glob('frame_*.png')))
+            print(f"Frames saved to disk: {frames_saved}")
         else:
-            print(f"WARNING: No output video file found")
+            print(f"Frames saved to disk: 0 (JSON-only mode)")
+
+        # Verify output files exist (only if not in Phoenix JSON-only mode)
+        if not (phoenix_mode and phoenix_json_only):
+            expected_video_file = output_dir / "annotated_video.mp4"
+            if not expected_video_file.exists():
+                # Check for fallback .avi file
+                expected_video_file = output_dir / "annotated_video.avi"
+            if expected_video_file.exists():
+                print(f"Output video: {expected_video_file} ({expected_video_file.stat().st_size} bytes)")
+            else:
+                print(f"WARNING: No output video file found")
+        else:
+            print("Phoenix JSON-only mode: Video output was skipped")
 
         return all_frames_data
 
@@ -1239,8 +1313,6 @@ def process_video(
         traceback.print_exc()
         return None
 
-
-# NEW: Enhanced process_frame function
 def process_frame_enhanced(
         frame, actual_frame_number, fps, enhanced_hand_tracker, face_mesh, pose,
         extract_face, extract_pose, all_frames_data,
@@ -1248,7 +1320,11 @@ def process_frame_enhanced(
         total_frames=0, skip_frames=1,
         save_all_frames=False,
         use_full_mesh=False,
-        use_enhancement=False
+        use_enhancement=False,
+        phoenix_mode=False,
+        processed_frame_count=0,
+        phoenix_frame_sample_rate=50,
+        phoenix_json_only=False  # NEW: JSON-only mode
 ):
     """
     Enhanced frame processing function that uses the new hand tracker
@@ -1260,13 +1336,13 @@ def process_frame_enhanced(
             comparison_save_path = None
             if annotated_frame_path:
                 # Create comparisons directory alongside frames directory, not inside it
-                frames_dir = annotated_frame_path.parent  # This is the "frames" directory
-                output_dir = frames_dir.parent  # Go up one level to the main output directory
-                comparisons_dir = output_dir / "comparisons"
-                comparisons_dir.mkdir(parents=True, exist_ok=True)
-
-                # Set comparison save path (without extension)
-                comparison_save_path = str(comparisons_dir / f"frame_{actual_frame_number:04d}")
+                frames_dir = annotated_frame_path.parent if annotated_frame_path else Path("temp")
+                if annotated_frame_path:
+                    output_dir = frames_dir.parent  # Go up one level to the main output directory
+                    comparisons_dir = output_dir / "comparisons"
+                    comparisons_dir.mkdir(parents=True, exist_ok=True)
+                    # Set comparison save path (without extension)
+                    comparison_save_path = str(comparisons_dir / f"frame_{actual_frame_number:04d}")
 
             # Apply enhancement with comparison saving
             processing_frame = enhance_image_for_hand_detection(
@@ -1475,61 +1551,55 @@ def process_frame_enhanced(
                     connection_drawing_spec=pose_connection_spec
                 )
 
-        # Save frame data using actual frame number as key
+            # Save frame data using actual frame number as key
         all_frames_data[str(actual_frame_number)] = frame_data
 
         # Add frame info to image - show actual frame number and enhancement status
-        progress_percent = (actual_frame_number / total_frames) * 100 if total_frames > 0 else 0
-        enhancement_text = " (Enhanced)" if use_enhancement else ""
-        tracking_text = " | Enhanced Hand Tracking"
-        cv2.putText(
-            annotated_frame,
-            f"Frame: {actual_frame_number} | {progress_percent:.1f}%{enhancement_text}{tracking_text}",
-            (10, 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 255),
-            1
-        )
+        if not (phoenix_mode and phoenix_json_only):
+            # Add frame info to image - show actual frame number and enhancement status
+            if not phoenix_mode:  # Skip detailed frame info in Phoenix mode for speed
+                progress_percent = (actual_frame_number / total_frames) * 100 if total_frames > 0 else 0
+                enhancement_text = " (Enhanced)" if use_enhancement else ""
+                tracking_text = " | Enhanced Hand Tracking"
+                cv2.putText(
+                    annotated_frame,
+                    f"Frame: {actual_frame_number} | {progress_percent:.1f}%{enhancement_text}{tracking_text}",
+                    (10, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 255),
+                    1
+                )
 
-        # Save annotated frame image (only if path is provided)
-        if annotated_frame_path:
-            success = cv2.imwrite(str(annotated_frame_path), annotated_frame)
-            if not success:
-                print(f"Error: Could not save annotated frame to {annotated_frame_path}")
+            # Save annotated frame image (only if path is provided)
+            if annotated_frame_path:
+                success = cv2.imwrite(str(annotated_frame_path), annotated_frame)
+                if not success:
+                    print(f"Error: Could not save annotated frame to {annotated_frame_path}")
 
-        # Write frame to video
-        if video_writer:
-            video_writer.write(annotated_frame)
+            # Write frame to video (skip in Phoenix mode)
+            if video_writer and not phoenix_mode:
+                video_writer.write(annotated_frame)
 
     except Exception as e:
         print(f"Error processing frame {actual_frame_number}: {e}")
         import traceback
         traceback.print_exc()
-
-
-# Keep your existing process_frame function for backwards compatibility if needed
-def process_frame(
-        frame, actual_frame_number, fps, hands, face_mesh, pose,
-        extract_face, extract_pose, all_frames_data,
-        annotated_frame_path=None, video_writer=None,
-        total_frames=0, skip_frames=1,
-        save_all_frames=False,
-        use_full_mesh=False,
-        use_enhancement=False
-):
-    """
-    LEGACY: Original process_frame function (kept for compatibility)
-    NOTE: This is now replaced by process_frame_enhanced for better hand tracking
-    """
-    # ... keep your existing implementation for backwards compatibility ...
-    # This won't be used in the main processing pipeline anymore
-    pass
+        return None
 
 
 def natural_sort_key(s):
     """
     Sort strings with embedded numbers in natural order.
     For example: frame1.jpg, frame2.jpg, frame10.jpg (instead of frame1.jpg, frame10.jpg, frame2.jpg)
+    Enhanced to handle Phoenix dataset frame naming patterns.
     """
+    # Handle Phoenix-style frame names like "images-000001.png"
+    if 'images-' in s:
+        # Extract the number part after 'images-'
+        match = re.search(r'images-(\d+)', s)
+        if match:
+            return int(match.group(1))
+
+    # Original logic for other naming patterns
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
