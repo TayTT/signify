@@ -18,7 +18,7 @@ mp_face_mesh = mp.solutions.face_mesh
 
 # Mouth landmark indices from MediaPipe FaceMesh
 MOUTH_LANDMARKS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
-DEBUG = False
+DEBUG = True
 CORE_POSE_LANDMARKS = [
     'NOSE',
     'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
@@ -636,66 +636,6 @@ class EnhancedHandTracker:
 
         return smoothed_hands
 
-    def calibrate_hands_to_wrists(hands_data: Dict, pose_wrists: Dict) -> Dict:
-        """
-        Calibrate hand positions to align with pose model wrist positions
-
-        Args:
-            hands_data: Hand data from enhanced hand tracker
-            pose_wrists: Dictionary with LEFT_WRIST and RIGHT_WRIST positions from pose model
-
-        Returns:
-            Calibrated hands data with adjusted positions
-        """
-        calibrated_hands = {'left_hand': None, 'right_hand': None}
-
-        # Mapping between hand types and pose wrist names
-        hand_to_wrist_mapping = {
-            'left_hand': 'LEFT_WRIST',
-            'right_hand': 'RIGHT_WRIST'
-        }
-
-        for hand_type in ['left_hand', 'right_hand']:
-            hand_data = hands_data.get(hand_type)
-            wrist_name = hand_to_wrist_mapping[hand_type]
-            pose_wrist_position = pose_wrists.get(wrist_name)
-
-            if hand_data is not None and pose_wrist_position is not None:
-                # Get the current hand wrist position (landmark 0)
-                hand_landmarks = hand_data['landmarks']
-                hand_wrist = hand_landmarks.landmark[0]  # Wrist is landmark 0 in MediaPipe hands
-
-                current_hand_wrist = np.array([hand_wrist.x, hand_wrist.y, hand_wrist.z])
-
-                # Calculate the translation offset needed
-                translation_offset = pose_wrist_position - current_hand_wrist
-
-                # Create new landmarks structure with calibrated positions
-                calibrated_landmarks = type(hand_landmarks)()
-                calibrated_landmarks.CopyFrom(hand_landmarks)
-
-                # Apply translation to all hand landmarks
-                for i, landmark in enumerate(calibrated_landmarks.landmark):
-                    landmark.x += translation_offset[0]
-                    landmark.y += translation_offset[1]
-                    landmark.z += translation_offset[2]
-
-                # Create calibrated hand data
-                calibrated_hands[hand_type] = {
-                    'landmarks': calibrated_landmarks,
-                    'confidence': hand_data['confidence'],
-                    'center': hand_data['center'] + translation_offset,  # Update center too
-                    'smoothed': hand_data.get('smoothed', False),
-                    'calibrated': True  # Mark as calibrated
-                }
-            elif hand_data is not None:
-                # Keep original hand data if no pose wrist available
-                calibrated_hands[hand_type] = hand_data
-
-        return calibrated_hands
-
-
-
     def process_frame_enhanced(
             frame, actual_frame_number, fps, enhanced_hand_tracker, face_mesh, pose,
             extract_face, extract_pose, all_frames_data,
@@ -816,12 +756,15 @@ class EnhancedHandTracker:
             # Step 2: Process hands with ENHANCED TRACKING and CALIBRATION
             hands_data = enhanced_hand_tracker.process_frame(rgb_frame)
 
-            # Calibrate hands to pose wrists
-            calibrated_hands_data = frame.calibrate_hands_to_wrists(hands_data, pose_wrists)
+            # STEP 3: Calibrate hands at MediaPipe object level (BEFORE JSON conversion)
+            if pose_wrists["LEFT_WRIST"] is not None or pose_wrists["RIGHT_WRIST"] is not None:
+                # Use the existing calibrate_hands_to_wrists function that works with MediaPipe objects
+                calibrated_hands_data = calibrate_hands_to_wrists(hands_data, pose_wrists)
+            else:
+                calibrated_hands_data = hands_data
 
+            # Convert calibrated MediaPipe objects to JSON format
             json_hands_data = enhanced_hand_tracker.get_landmarks_for_json(calibrated_hands_data, frame.shape)
-
-            # Update frame data with calibrated hand tracking results
             frame_data["hands"] = json_hands_data
 
             # Draw calibrated hands on annotated frame
@@ -1329,17 +1272,23 @@ class FaceTracker:
             'detection_stats': self.detection_stats.copy()
         }
 
+
 def apply_mirroring_to_frame_data(frame_data: Dict, pose_wrists: Dict, frame_shape: tuple) -> Dict:
     """
-    Apply mirroring to already-calibrated frame data
+    Apply mirroring to already-calibrated frame data with correct hand semantics
+
+    CORRECT APPROACH: Mirror coordinates AND swap hand labels
+    - Signer's left hand (viewer's right) → becomes viewer's left hand after mirroring
+    - Signer's right hand (viewer's left) → becomes viewer's right hand after mirroring
+    - This maintains semantic consistency where left_hand always represents viewer's left
 
     Args:
         frame_data: Complete frame data (already calibrated)
-        pose_wrists: Original pose wrist positions (not used, kept for compatibility)
+        pose_wrists: Original pose wrist positions (kept for compatibility)
         frame_shape: (height, width) for pixel coordinate conversion
 
     Returns:
-        Mirrored frame data (calibration relationships preserved)
+        Mirrored frame data with swapped hand labels and mirrored coordinates
     """
     h, w = frame_shape[:2]
     mirrored_frame_data = frame_data.copy()
@@ -1357,7 +1306,7 @@ def apply_mirroring_to_frame_data(frame_data: Dict, pose_wrists: Dict, frame_sha
             mirrored_pose[landmark_name] = mirrored_lm
         mirrored_frame_data['pose'] = mirrored_pose
 
-    # Mirror face landmarks (preserving calibration)
+    # Mirror face landmarks (preserving calibration) - this was working correctly
     if 'face' in frame_data:
         mirrored_face = frame_data['face'].copy()
 
@@ -1381,79 +1330,171 @@ def apply_mirroring_to_frame_data(frame_data: Dict, pose_wrists: Dict, frame_sha
 
         mirrored_frame_data['face'] = mirrored_face
 
-    # Mirror hands (preserving calibration relationships by swapping left/right)
+    # CORRECTED: Mirror hands with LABEL SWAPPING
     if 'hands' in frame_data:
-        original_left = frame_data['hands'].get('left_hand', [])
-        original_right = frame_data['hands'].get('right_hand', [])
-
-        # Mirror and swap hands
+        original_hands = frame_data['hands']
         mirrored_hands = {'left_hand': [], 'right_hand': []}
 
-        # What was right_hand becomes left_hand (mirrored)
-        if original_right:
-            if isinstance(original_right, dict) and 'landmarks' in original_right:
-                mirrored_landmarks = []
-                for lm in original_right['landmarks']:
-                    mirrored_lm = lm.copy()
-                    mirrored_lm['x'] = 1.0 - lm['x']
-                    mirrored_lm['px'] = int(mirrored_lm['x'] * w)
-                    mirrored_landmarks.append(mirrored_lm)
-                mirrored_hands['left_hand'] = {
-                    'landmarks': mirrored_landmarks,
-                    'confidence': original_right.get('confidence', 1.0),
-                    'calibrated': original_right.get('calibrated', False)
-                }
-            elif isinstance(original_right, list):
-                mirrored_landmarks = []
-                for lm in original_right:
-                    mirrored_lm = lm.copy()
-                    mirrored_lm['x'] = 1.0 - lm['x']
-                    mirrored_lm['px'] = int(mirrored_lm['x'] * w)
-                    mirrored_landmarks.append(mirrored_lm)
-                mirrored_hands['left_hand'] = mirrored_landmarks
+        # Get original hand data
+        original_left_hand = original_hands.get('left_hand', [])
+        original_right_hand = original_hands.get('right_hand', [])
 
-        # What was left_hand becomes right_hand (mirrored)
-        if original_left:
-            if isinstance(original_left, dict) and 'landmarks' in original_left:
-                mirrored_landmarks = []
-                for lm in original_left['landmarks']:
-                    mirrored_lm = lm.copy()
-                    mirrored_lm['x'] = 1.0 - lm['x']
-                    mirrored_lm['px'] = int(mirrored_lm['x'] * w)
-                    mirrored_landmarks.append(mirrored_lm)
-                mirrored_hands['right_hand'] = {
-                    'landmarks': mirrored_landmarks,
-                    'confidence': original_left.get('confidence', 1.0),
-                    'calibrated': original_left.get('calibrated', False)
-                }
-            elif isinstance(original_left, list):
-                mirrored_landmarks = []
-                for lm in original_left:
-                    mirrored_lm = lm.copy()
-                    mirrored_lm['x'] = 1.0 - lm['x']
-                    mirrored_lm['px'] = int(mirrored_lm['x'] * w)
-                    mirrored_landmarks.append(mirrored_lm)
-                mirrored_hands['right_hand'] = mirrored_landmarks
+        # SWAP AND MIRROR: Left becomes right, right becomes left
+        # Process original LEFT hand -> becomes mirrored RIGHT hand
+        if original_left_hand:
+            mirrored_hands['right_hand'] = mirror_single_hand_data(original_left_hand, w)
+
+        # Process original RIGHT hand -> becomes mirrored LEFT hand
+        if original_right_hand:
+            mirrored_hands['left_hand'] = mirror_single_hand_data(original_right_hand, w)
 
         mirrored_frame_data['hands'] = mirrored_hands
 
-    # IMPORTANT: Update missing_data to reflect the hand swapping
-    if 'missing_data' in missing_data:
+        if DEBUG:
+            print(f"DEBUG HAND MIRRORING:")
+            print(f"  BEFORE mirroring:")
+            if original_left_hand:
+                if isinstance(original_left_hand, dict) and 'landmarks' in original_left_hand:
+                    wrist = original_left_hand['landmarks'][0]
+                    print(f"    original LEFT hand wrist: x={wrist['x']:.3f}")
+                elif isinstance(original_left_hand, list) and len(original_left_hand) > 0:
+                    wrist = original_left_hand[0]
+                    print(f"    original LEFT hand wrist: x={wrist['x']:.3f}")
+
+            if original_right_hand:
+                if isinstance(original_right_hand, dict) and 'landmarks' in original_right_hand:
+                    wrist = original_right_hand['landmarks'][0]
+                    print(f"    original RIGHT hand wrist: x={wrist['x']:.3f}")
+                elif isinstance(original_right_hand, list) and len(original_right_hand) > 0:
+                    wrist = original_right_hand[0]
+                    print(f"    original RIGHT hand wrist: x={wrist['x']:.3f}")
+
+            print(f"  AFTER mirroring (with label swapping):")
+            for hand_type in ['left_hand', 'right_hand']:
+                hand_data = mirrored_hands.get(hand_type, [])
+                if hand_data:
+                    if isinstance(hand_data, dict) and 'landmarks' in hand_data:
+                        wrist = hand_data['landmarks'][0]
+                        print(f"    mirrored {hand_type} wrist: x={wrist['x']:.3f}")
+                    elif isinstance(hand_data, list) and len(hand_data) > 0:
+                        wrist = hand_data[0]
+                        print(f"    mirrored {hand_type} wrist: x={wrist['x']:.3f}")
+
+    # UPDATE: Swap missing_data hand labels to match the hand swapping
+    if missing_data:
         mirrored_missing_data = missing_data.copy()
-        # Swap left and right hand missing flags since hands are swapped
+        # Swap the missing data flags since we swapped the hands
         mirrored_missing_data['left_hand_missing'] = missing_data.get('right_hand_missing', True)
         mirrored_missing_data['right_hand_missing'] = missing_data.get('left_hand_missing', True)
-        # Face missing stays the same
-        # any_missing stays the same
+        # Keep face_missing and any_missing unchanged
         mirrored_frame_data['missing_data'] = mirrored_missing_data
-    else:
-        mirrored_frame_data['missing_data'] = missing_data
 
     # Mark as mirrored
     mirrored_frame_data['mirrored'] = True
     mirrored_frame_data['calibration_preserved'] = True
+    mirrored_frame_data['semantic_labels_correct'] = True  # NEW: indicates proper hand swapping
+    mirrored_frame_data['hand_labels_swapped'] = True  # NEW: explicit flag for hand swapping
 
     return mirrored_frame_data
+
+
+def mirror_single_hand_data(hand_data, frame_width: int):
+    """
+    Mirror a single hand's data (coordinates only)
+
+    Args:
+        hand_data: Hand landmarks data (list or dict format)
+        frame_width: Frame width for pixel coordinate conversion
+
+    Returns:
+        Mirrored hand data in the same format
+    """
+    if not hand_data:
+        return []
+
+    if isinstance(hand_data, dict) and 'landmarks' in hand_data:
+        # Handle new format with confidence
+        mirrored_landmarks = []
+        for lm in hand_data['landmarks']:
+            mirrored_lm = lm.copy()
+            mirrored_lm['x'] = 1.0 - lm['x']
+            mirrored_lm['px'] = int(mirrored_lm['x'] * frame_width)
+            mirrored_landmarks.append(mirrored_lm)
+
+        mirrored_hand = hand_data.copy()
+        mirrored_hand['landmarks'] = mirrored_landmarks
+        return mirrored_hand
+
+    elif isinstance(hand_data, list):
+        # Handle old format - direct list of landmarks
+        mirrored_landmarks = []
+        for lm in hand_data:
+            mirrored_lm = lm.copy()
+            mirrored_lm['x'] = 1.0 - lm['x']
+            mirrored_lm['px'] = int(mirrored_lm['x'] * frame_width)
+            mirrored_landmarks.append(mirrored_lm)
+        return mirrored_landmarks
+
+    return []
+
+def calibrate_hands_to_wrists(hands_data: Dict, pose_wrists: Dict) -> Dict:
+    """
+    Calibrate hand positions to align with pose model wrist positions
+
+    Args:
+        hands_data: Hand data from enhanced hand tracker
+        pose_wrists: Dictionary with LEFT_WRIST and RIGHT_WRIST positions from pose model
+
+    Returns:
+        Calibrated hands data with adjusted positions
+    """
+    calibrated_hands = {'left_hand': None, 'right_hand': None}
+
+    # Mapping between hand types and pose wrist names
+    hand_to_wrist_mapping = {
+        'left_hand': 'LEFT_WRIST',
+        'right_hand': 'RIGHT_WRIST'
+    }
+
+    for hand_type in ['left_hand', 'right_hand']:
+        hand_data = hands_data.get(hand_type)
+        wrist_name = hand_to_wrist_mapping[hand_type]
+        pose_wrist_position = pose_wrists.get(wrist_name)
+
+        if hand_data is not None and pose_wrist_position is not None:
+            # Get the current hand wrist position (landmark 0)
+            hand_landmarks = hand_data['landmarks']
+            hand_wrist = hand_landmarks.landmark[0]  # Wrist is landmark 0 in MediaPipe hands
+
+            current_hand_wrist = np.array([hand_wrist.x, hand_wrist.y, hand_wrist.z])
+
+            # Calculate the translation offset needed
+            translation_offset = pose_wrist_position - current_hand_wrist
+
+            # Create new landmarks structure with calibrated positions
+            calibrated_landmarks = type(hand_landmarks)()
+            calibrated_landmarks.CopyFrom(hand_landmarks)
+
+            # Apply translation to all hand landmarks
+            for i, landmark in enumerate(calibrated_landmarks.landmark):
+                landmark.x += translation_offset[0]
+                landmark.y += translation_offset[1]
+                landmark.z += translation_offset[2]
+
+            # Create calibrated hand data
+            calibrated_hands[hand_type] = {
+                'landmarks': calibrated_landmarks,
+                'confidence': hand_data['confidence'],
+                'center': hand_data['center'] + translation_offset,  # Update center too
+                'smoothed': hand_data.get('smoothed', False),
+                'calibrated': True  # Mark as calibrated
+            }
+        elif hand_data is not None:
+            # Keep original hand data if no pose wrist available
+            calibrated_hands[hand_type] = hand_data
+
+    return calibrated_hands
+
 
 
 def calibrate_face_to_nose(face_landmarks, pose_nose_position):
@@ -2411,13 +2452,15 @@ def process_frame_enhanced(
         # STEP 2: Process hands with enhanced tracker
         hands_data = enhanced_hand_tracker.process_frame(rgb_frame)
 
-        # Convert to JSON format WITHOUT calibration first
-        json_hands_data = enhanced_hand_tracker.get_landmarks_for_json(hands_data, frame.shape)
-
-        # STEP 3: Apply hand calibration directly to JSON data
+        # STEP 3: Calibrate hands at MediaPipe object level (BEFORE JSON conversion)
         if pose_wrists["LEFT_WRIST"] is not None or pose_wrists["RIGHT_WRIST"] is not None:
-            json_hands_data = calibrate_hands_in_json_format(json_hands_data, pose_wrists, w, h)
+            # Use the existing calibrate_hands_to_wrists function that works with MediaPipe objects
+            calibrated_hands_data = calibrate_hands_to_wrists(hands_data, pose_wrists)
+        else:
+            calibrated_hands_data = hands_data
 
+        # Convert calibrated MediaPipe objects to JSON format
+        json_hands_data = enhanced_hand_tracker.get_landmarks_for_json(calibrated_hands_data, frame.shape)
         frame_data["hands"] = json_hands_data
 
         # UPDATE: Track missing hand data
@@ -2440,7 +2483,7 @@ def process_frame_enhanced(
         frame_data["missing_data"]["right_hand_missing"] = is_hand_data_missing(right_hand_data)
 
         # Draw hands (use original MediaPipe objects for drawing)
-        enhanced_hand_tracker.draw_hands_on_frame(annotated_frame, hands_data)
+        enhanced_hand_tracker.draw_hands_on_frame(annotated_frame, calibrated_hands_data)
 
         # STEP 4: Process face
         face_detected = False
@@ -2455,6 +2498,10 @@ def process_frame_enhanced(
                 # Face detected by MediaPipe
                 face_landmarks = results_face.multi_face_landmarks[0]
                 face_confidence = 0.9
+
+                # Apply calibration to MediaPipe object BEFORE processing through tracker
+                if pose_nose_position is not None:
+                    face_landmarks = calibrate_face_to_nose(face_landmarks, pose_nose_position)
             else:
                 # No face detected
                 face_landmarks = None
@@ -2466,10 +2513,10 @@ def process_frame_enhanced(
 
                 if tracked_face_result and tracked_face_result['landmarks']:
                     # Face was detected and passed tracking validation
-                    face_landmarks = tracked_face_result['landmarks']
+                    face_landmarks = tracked_face_result['landmarks']  # This is already calibrated
                     face_detected = True
 
-                    # Extract face data to JSON format
+                    # Extract face data to JSON format from calibrated MediaPipe object
                     face_data = []
                     mouth_data = []
 
@@ -2486,16 +2533,11 @@ def process_frame_enhanced(
                         if i in MOUTH_LANDMARKS:
                             mouth_data.append(point)
 
-                    # Apply face calibration directly to JSON data
-                    if pose_nose_position is not None:
-                        face_data = calibrate_face_in_json_format(face_data, pose_nose_position, w, h)
-                        mouth_data = [face_data[i] for i in range(len(face_data)) if i in MOUTH_LANDMARKS]
-                        frame_data["face"]["calibrated"] = True
-
                     frame_data["face"]["all_landmarks"] = face_data
                     frame_data["face"]["mouth_landmarks"] = mouth_data
                     frame_data["face"]["tracked"] = True
                     frame_data["face"]["detected"] = True
+                    frame_data["face"]["calibrated"] = pose_nose_position is not None
 
                     # Draw face (use original MediaPipe object)
                     if use_full_mesh:
@@ -2530,24 +2572,26 @@ def process_frame_enhanced(
                 frame_data["missing_data"]["face_missing"]
         )
 
+        for hand_type in ['left_hand', 'right_hand']:
+            hand_data = frame_data["hands"].get(hand_type)
+            if hand_data and isinstance(hand_data, dict) and 'landmarks' in hand_data:
+                wrist = hand_data['landmarks'][0]
+                print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
+            elif hand_data and isinstance(hand_data, list) and len(hand_data) > 0:
+                wrist = hand_data[0]
+                print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
+
         # STEP 5: Apply mirroring AFTER calibration
         if not disable_mirroring:
             frame_data = apply_mirroring_to_frame_data(frame_data, pose_wrists, frame.shape)
 
-                if results_pose.pose_landmarks:
-                    # Create a subset of landmarks to draw
-                    core_landmarks_to_draw = []
-                    for landmark_name in CORE_POSE_LANDMARKS:
-                        try:
-                            landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
-                            lm = results_pose.pose_landmarks.landmark[landmark_enum]
-                            h, w, _ = frame.shape
-                            x, y = int(lm.x * w), int(lm.y * h)
-                            cv2.circle(annotated_frame, (x, y), 2, (0, 0, 255), -1)  # Blue dots
-                        except AttributeError:
-                            continue
+            for hand_type in ['left_hand', 'right_hand']:
+                hand_data = frame_data["hands"].get(hand_type)
+                if hand_data and isinstance(hand_data, dict) and 'landmarks' in hand_data:
+                    wrist = hand_data['landmarks'][0]
+                    print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
 
-            # Save frame data using actual frame number as key
+        # Save frame data using actual frame number as key
         all_frames_data[str(actual_frame_number)] = frame_data
 
         # Add frame info to image - show actual frame number and enhancement status
@@ -2581,8 +2625,17 @@ def process_frame_enhanced(
         print(f"Error processing frame {actual_frame_number}: {e}")
         import traceback
         traceback.print_exc()
-        return None
-
+        # Add error frame data to maintain sequence continuity
+        error_frame_data = {
+            "frame": actual_frame_number,
+            "timestamp": actual_frame_number / fps,
+            "hands": {"left_hand": [], "right_hand": []},
+            "face": {"all_landmarks": [], "mouth_landmarks": []},
+            "pose": {},
+            "error": True,
+            "error_message": str(e)
+        }
+        all_frames_data[str(actual_frame_number)] = error_frame_data
 
 
 def natural_sort_key(s):

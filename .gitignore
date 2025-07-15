@@ -5,3 +5,4 @@ docs/changelog.txt
 data/
 output/
 output_data/
+*.xml

@@ -69,10 +69,7 @@ class LandmarksVisualizer3D:
 
             # Print path statistics
             stats = self.hand_tracker.get_path_statistics()
-            correction_info = stats['consistency_corrections']
-            print("\nHand Path Statistics (with advanced consistency correction):")
-            print(f"  Advanced corrections applied: {correction_info['corrections_made']}")
-            print(f"  Correction rate: {correction_info['correction_rate']:.1f}% of frames")
+            print("\nHand Path Statistics:")
             print(f"  Left hand: {stats['left_hand']['total_points']} points, "
                   f"distance: {stats['left_hand']['total_distance']:.3f}, "
                   f"avg speed: {stats['left_hand']['avg_speed']:.3f}")
@@ -564,7 +561,8 @@ class LandmarksVisualizer3D:
             'pose': []
         }
 
-        # Extract hands - data is already processed and calibrated
+        # Extract hands - data is already processed, calibrated, and mirrored correctly
+        # After mirroring: left_hand label = viewer's left hand, right_hand label = viewer's right hand
         hands_data = frame_data.get('hands', {})
         for hand_type in ['left_hand', 'right_hand']:
             hand_info = hands_data.get(hand_type, [])
