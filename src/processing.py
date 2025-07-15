@@ -1335,13 +1335,16 @@ def process_image(
                 image_data["pose"] = pose_data
 
                 # Draw pose landmarks on original image
-                mp_drawing.draw_landmarks(
-                    annotated_image,
-                    results_pose.pose_landmarks,
-                    mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
-                )
-
+                if results_pose.pose_landmarks:
+                    # Create a subset of landmarks to draw
+                    for landmark_name in CORE_POSE_LANDMARKS:
+                        try:
+                            landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
+                            lm = results_pose.pose_landmarks.landmark[landmark_enum]
+                            x, y = int(lm.x * image_width), int(lm.y * image_height)
+                            cv2.circle(annotated_image, (x, y), 2, (0, 0, 255), -1)  # Blue dots
+                        except AttributeError:
+                            continue
     return image_data, annotated_image
 
 
@@ -1993,13 +1996,18 @@ def process_frame_enhanced(
                     circle_radius=1
                 )
 
-                mp_drawing.draw_landmarks(
-                    annotated_frame,
-                    results_pose.pose_landmarks,
-                    mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec=pose_landmark_spec,
-                    connection_drawing_spec=pose_connection_spec
-                )
+                if results_pose.pose_landmarks:
+                    # Create a subset of landmarks to draw
+                    core_landmarks_to_draw = []
+                    for landmark_name in CORE_POSE_LANDMARKS:
+                        try:
+                            landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
+                            lm = results_pose.pose_landmarks.landmark[landmark_enum]
+                            h, w, _ = frame.shape
+                            x, y = int(lm.x * w), int(lm.y * h)
+                            cv2.circle(annotated_frame, (x, y), 2, (0, 0, 255), -1)  # Blue dots
+                        except AttributeError:
+                            continue
 
             # Save frame data using actual frame number as key
         all_frames_data[str(actual_frame_number)] = frame_data
