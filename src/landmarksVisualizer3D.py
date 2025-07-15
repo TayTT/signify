@@ -19,10 +19,14 @@ import argparse
 from collections import deque
 import cv2
 
+# TODO move hand-to-wrist and face-to-nose calibration to processing (with an option to not do it and leave it only for display if possible)
+# TODO make sure that visualization happens from json for video (% sure it does)
+# TODO when do we apply mirroring? before saving to json or at visualization? is it necessary or just viewing flavor?
 
 FACE_AMPLIFICATION = 6
 HANDS_AMPLIFICATION = 7
 BOX_ASPECT = [1, 1, 1]  # to squash/str ech axes by a factor
+DEBUG_HAND_DEPTH = False
 
 
 class LandmarksVisualizer3D:
@@ -65,15 +69,16 @@ class LandmarksVisualizer3D:
 
             # Print path statistics
             stats = self.hand_tracker.get_path_statistics()
-            print("\nHand Path Statistics:")
+            correction_info = stats['consistency_corrections']
+            print("\nHand Path Statistics (with advanced consistency correction):")
+            print(f"  Advanced corrections applied: {correction_info['corrections_made']}")
+            print(f"  Correction rate: {correction_info['correction_rate']:.1f}% of frames")
             print(f"  Left hand: {stats['left_hand']['total_points']} points, "
-                  # f"distance: {stats['left_hand']['total_distance']:.3f}, "
-                  # f"avg speed: {stats['left_hand']['avg_speed']:.3f}")
-                  )
+                  f"distance: {stats['left_hand']['total_distance']:.3f}, "
+                  f"avg speed: {stats['left_hand']['avg_speed']:.3f}")
             print(f"  Right hand: {stats['right_hand']['total_points']} points, "
-                  # f"distance: {stats['right_hand']['total_distance']:.3f}, "
-                  # f"avg speed: {stats['right_hand']['avg_speed']:.3f}")
-                  )
+                  f"distance: {stats['right_hand']['total_distance']:.3f}, "
+                  f"avg speed: {stats['right_hand']['avg_speed']:.3f}")
 
     def _load_data(self):
         """Load landmarks data from JSON file"""
@@ -720,11 +725,11 @@ class LandmarksVisualizer3D:
         # These are the standard connections used by MediaPipe
         mediapipe_pose_connections = [
             # Face connections
-            ('NOSE', 'LEFT_EYE_INNER'), ('LEFT_EYE_INNER', 'LEFT_EYE'),
-            ('LEFT_EYE', 'LEFT_EYE_OUTER'), ('LEFT_EYE_OUTER', 'LEFT_EAR'),
-            ('NOSE', 'RIGHT_EYE_INNER'), ('RIGHT_EYE_INNER', 'RIGHT_EYE'),
-            ('RIGHT_EYE', 'RIGHT_EYE_OUTER'), ('RIGHT_EYE_OUTER', 'RIGHT_EAR'),
-            ('MOUTH_LEFT', 'MOUTH_RIGHT'),
+            # ('NOSE', 'LEFT_EYE_INNER'), ('LEFT_EYE_INNER', 'LEFT_EYE'),
+            # ('LEFT_EYE', 'LEFT_EYE_OUTER'), ('LEFT_EYE_OUTER', 'LEFT_EAR'),
+            # ('NOSE', 'RIGHT_EYE_INNER'), ('RIGHT_EYE_INNER', 'RIGHT_EYE'),
+            # ('RIGHT_EYE', 'RIGHT_EYE_OUTER'), ('RIGHT_EYE_OUTER', 'RIGHT_EAR'),
+            # ('MOUTH_LEFT', 'MOUTH_RIGHT'),
 
             # Torso connections
             ('LEFT_SHOULDER', 'RIGHT_SHOULDER'),
@@ -1044,6 +1049,7 @@ class LandmarksVisualizer3D:
             # print(f"  Average speed: {stats['right_hand']['avg_speed']:.3f} units/second")
             # print(f"  Maximum speed: {stats['right_hand']['max_speed']:.3f} units/second")
 
+        # Detect periods of high activity
         print(f"\nMovement Analysis:")
         if self.hand_tracker.full_left_hand_path or self.hand_tracker.full_right_hand_path:
             print("  Use the 3D visualization to see detailed movement patterns.")

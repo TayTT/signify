@@ -457,6 +457,69 @@ class EnhancedHandTracker:
             return fingertips_valid
         except:
             return True  # If validation fails, accept the detection
+        """Get center point of hand (average of all landmarks)"""
+        if not landmarks:
+            return None
+
+        x_coords = [lm.x for lm in landmarks.landmark]
+        y_coords = [lm.y for lm in landmarks.landmark]
+        z_coords = [lm.z for lm in landmarks.landmark]
+
+        return np.array([
+            np.mean(x_coords),
+            np.mean(y_coords),
+            np.mean(z_coords)
+        ])
+
+    def _calculate_hand_size(self, landmarks) -> float:
+        """Calculate hand size based on distance between key points"""
+        if not landmarks or len(landmarks.landmark) < 21:
+            return 0.0
+
+        # Use distance between wrist and middle finger tip as size measure
+        wrist = landmarks.landmark[0]
+        middle_tip = landmarks.landmark[12]
+
+        distance = math.sqrt(
+            (wrist.x - middle_tip.x) ** 2 +
+            (wrist.y - middle_tip.y) ** 2
+        )
+
+        return distance
+
+    def _is_valid_hand_size(self, landmarks, min_size: float = 0.05, max_size: float = 0.5) -> bool:
+        """Check if detected hand has reasonable size"""
+        hand_size = self._calculate_hand_size(landmarks)
+        return min_size <= hand_size <= max_size
+
+    def _is_hand_shape_valid(self, landmarks) -> bool:
+        """Basic hand shape validation to filter false positives"""
+        if not landmarks or len(landmarks.landmark) < 21:
+            return False
+
+        # Check if landmarks form a reasonable hand shape
+        wrist = landmarks.landmark[0]
+        thumb_tip = landmarks.landmark[4]
+        index_tip = landmarks.landmark[8]
+        middle_tip = landmarks.landmark[12]
+        ring_tip = landmarks.landmark[16]
+        pinky_tip = landmarks.landmark[20]
+
+        # All fingertips should be further from wrist than palm
+        palm_center_y = np.mean([landmarks.landmark[i].y for i in [5, 9, 13, 17]])
+
+        # Basic validation: check if fingertips are in reasonable positions relative to palm
+        try:
+            fingertips_valid = True
+            for tip in [thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip]:
+                # Basic sanity check - fingertips shouldn't be exactly at wrist position
+                if abs(tip.x - wrist.x) < 0.01 and abs(tip.y - wrist.y) < 0.01:
+                    fingertips_valid = False
+                    break
+
+            return fingertips_valid
+        except:
+            return True  # If validation fails, accept the detection
 
     def _assign_hand_labels(self, detected_hands: list, handedness_list: list) -> Dict:
         """Improved hand label assignment using spatial consistency"""
@@ -572,6 +635,375 @@ class EnhancedHandTracker:
                     self.confidence_history[hand_type].append(0.0)
 
         return smoothed_hands
+
+    def calibrate_hands_to_wrists(hands_data: Dict, pose_wrists: Dict) -> Dict:
+        """
+        Calibrate hand positions to align with pose model wrist positions
+
+        Args:
+            hands_data: Hand data from enhanced hand tracker
+            pose_wrists: Dictionary with LEFT_WRIST and RIGHT_WRIST positions from pose model
+
+        Returns:
+            Calibrated hands data with adjusted positions
+        """
+        calibrated_hands = {'left_hand': None, 'right_hand': None}
+
+        # Mapping between hand types and pose wrist names
+        hand_to_wrist_mapping = {
+            'left_hand': 'LEFT_WRIST',
+            'right_hand': 'RIGHT_WRIST'
+        }
+
+        for hand_type in ['left_hand', 'right_hand']:
+            hand_data = hands_data.get(hand_type)
+            wrist_name = hand_to_wrist_mapping[hand_type]
+            pose_wrist_position = pose_wrists.get(wrist_name)
+
+            if hand_data is not None and pose_wrist_position is not None:
+                # Get the current hand wrist position (landmark 0)
+                hand_landmarks = hand_data['landmarks']
+                hand_wrist = hand_landmarks.landmark[0]  # Wrist is landmark 0 in MediaPipe hands
+
+                current_hand_wrist = np.array([hand_wrist.x, hand_wrist.y, hand_wrist.z])
+
+                # Calculate the translation offset needed
+                translation_offset = pose_wrist_position - current_hand_wrist
+
+                # Create new landmarks structure with calibrated positions
+                calibrated_landmarks = type(hand_landmarks)()
+                calibrated_landmarks.CopyFrom(hand_landmarks)
+
+                # Apply translation to all hand landmarks
+                for i, landmark in enumerate(calibrated_landmarks.landmark):
+                    landmark.x += translation_offset[0]
+                    landmark.y += translation_offset[1]
+                    landmark.z += translation_offset[2]
+
+                # Create calibrated hand data
+                calibrated_hands[hand_type] = {
+                    'landmarks': calibrated_landmarks,
+                    'confidence': hand_data['confidence'],
+                    'center': hand_data['center'] + translation_offset,  # Update center too
+                    'smoothed': hand_data.get('smoothed', False),
+                    'calibrated': True  # Mark as calibrated
+                }
+            elif hand_data is not None:
+                # Keep original hand data if no pose wrist available
+                calibrated_hands[hand_type] = hand_data
+
+        return calibrated_hands
+
+
+
+    def process_frame_enhanced(
+            frame, actual_frame_number, fps, enhanced_hand_tracker, face_mesh, pose,
+            extract_face, extract_pose, all_frames_data,
+            annotated_frame_path=None, video_writer=None,
+            total_frames=0, skip_frames=1,
+            save_all_frames=False,
+            use_full_mesh=False,
+            use_enhancement=False
+    ):
+        """
+        Enhanced frame processing function that uses the new hand tracker with hand-wrist calibration
+        """
+        try:
+            # Apply enhancement if requested
+            if use_enhancement:
+                # Create comparison save path if we're saving frames
+                comparison_save_path = None
+                if annotated_frame_path:
+                    # Create comparisons directory alongside frames directory, not inside it
+                    frames_dir = annotated_frame_path.parent  # This is the "frames" directory
+                    output_dir = frames_dir.parent  # Go up one level to the main output directory
+                    comparisons_dir = output_dir / "comparisons"
+                    comparisons_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Set comparison save path (without extension)
+                    comparison_save_path = str(comparisons_dir / f"frame_{actual_frame_number:04d}")
+
+                # Apply enhancement with comparison saving
+                processing_frame = enhance_image_for_hand_detection(
+                    frame,
+                    visualize=False,
+                    save_comparison=(annotated_frame_path is not None),
+                    comparison_save_path=comparison_save_path
+                )
+            else:
+                processing_frame = frame
+
+            # Convert to RGB for MediaPipe - use the processing frame (enhanced or original)
+            rgb_frame = cv2.cvtColor(processing_frame, cv2.COLOR_BGR2RGB)
+
+            # Make a copy for annotations - always use original frame for annotations
+            annotated_frame = frame.copy()
+
+            # Initialize frame data structure - use actual frame number
+            frame_data = {
+                "frame": actual_frame_number,
+                "timestamp": actual_frame_number / fps,
+                "hands": {"left_hand": [], "right_hand": []},
+                "face": {"all_landmarks": [], "mouth_landmarks": []},
+                "pose": {},
+                "enhancement_applied": use_enhancement  # Track if enhancement was used
+            }
+
+            # Step 1: Process pose landmarks first (needed for hand calibration)
+            pose_wrists = {"LEFT_WRIST": None, "RIGHT_WRIST": None}
+
+            if extract_pose:
+                results_pose = pose.process(rgb_frame)
+
+                if results_pose.pose_landmarks:
+                    # Extract pose landmarks
+                    pose_data = {}
+                    h, w, _ = frame.shape
+
+                    for landmark_name in CORE_POSE_LANDMARKS:
+                        try:
+                            landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
+                            lm = results_pose.pose_landmarks.landmark[landmark_enum]
+                            pose_data[landmark_name] = {
+                                "x": lm.x,
+                                "y": lm.y,
+                                "z": lm.z,
+                                "px": int(lm.x * w),
+                                "py": int(lm.y * h),
+                                "visibility": float(lm.visibility)
+                            }
+                        except AttributeError:
+                            continue
+
+                    # Store wrist positions for hand calibration
+                    if "LEFT_WRIST" in pose_data:
+                        pose_wrists["LEFT_WRIST"] = np.array([
+                            pose_data["LEFT_WRIST"]["x"],
+                            pose_data["LEFT_WRIST"]["y"],
+                            pose_data["LEFT_WRIST"]["z"]
+                        ])
+
+                    if "RIGHT_WRIST" in pose_data:
+                        pose_wrists["RIGHT_WRIST"] = np.array([
+                            pose_data["RIGHT_WRIST"]["x"],
+                            pose_data["RIGHT_WRIST"]["y"],
+                            pose_data["RIGHT_WRIST"]["z"]
+                        ])
+
+                    frame_data["pose"] = pose_data
+
+                    # Draw pose landmarks on original frame
+                    pose_landmark_spec = mp_drawing.DrawingSpec(
+                        color=(0, 0, 255),  # Blue
+                        thickness=1,
+                        circle_radius=1
+                    )
+
+                    pose_connection_spec = mp_drawing.DrawingSpec(
+                        color=(255, 255, 0),  # Cyan
+                        thickness=1,
+                        circle_radius=1
+                    )
+
+                    mp_drawing.draw_landmarks(
+                        annotated_frame,
+                        results_pose.pose_landmarks,
+                        mp_pose.POSE_CONNECTIONS,
+                        landmark_drawing_spec=pose_landmark_spec,
+                        connection_drawing_spec=pose_connection_spec
+                    )
+
+            # Step 2: Process hands with ENHANCED TRACKING and CALIBRATION
+            hands_data = enhanced_hand_tracker.process_frame(rgb_frame)
+
+            # Calibrate hands to pose wrists
+            calibrated_hands_data = frame.calibrate_hands_to_wrists(hands_data, pose_wrists)
+
+            json_hands_data = enhanced_hand_tracker.get_landmarks_for_json(calibrated_hands_data, frame.shape)
+
+            # Update frame data with calibrated hand tracking results
+            frame_data["hands"] = json_hands_data
+
+            # Draw calibrated hands on annotated frame
+            enhanced_hand_tracker.draw_hands_on_frame(annotated_frame, calibrated_hands_data)
+
+            # Step 3: Process face landmarks if requested (keep existing implementation)
+            if extract_face:
+                results_face = face_mesh.process(rgb_frame)
+
+                if results_face.multi_face_landmarks:
+                    for face_landmarks in results_face.multi_face_landmarks:
+                        # CALIBRATE face landmarks to pose nose (following hands pattern)
+                        pose_nose_position = None
+                        if frame_data["pose"] and "NOSE" in frame_data["pose"]:
+                            pose_nose_position = np.array([
+                                frame_data["pose"]["NOSE"]["x"],
+                                frame_data["pose"]["NOSE"]["y"],
+                                frame_data["pose"]["NOSE"]["z"]
+                            ])
+
+                        # Calibrate the MediaPipe face landmarks object (same as hands)
+                        calibrated_face_landmarks = calibrate_face_to_nose(face_landmarks, pose_nose_position)
+
+                        # Extract calibrated face landmarks for JSON data
+                        face_data = []
+                        mouth_data = []
+                        h, w, _ = frame.shape
+
+                        # Use CALIBRATED landmarks for JSON extraction
+                        for i, lm in enumerate(calibrated_face_landmarks.landmark):
+                            point = {
+                                "x": lm.x,
+                                "y": lm.y,
+                                "z": lm.z,
+                                "px": int(lm.x * w),
+                                "py": int(lm.y * h)
+                            }
+                            face_data.append(point)
+
+                            if i in MOUTH_LANDMARKS:
+                                mouth_data.append(point)
+
+                        frame_data["face"]["all_landmarks"] = face_data
+                        frame_data["face"]["mouth_landmarks"] = mouth_data
+
+                        # Mark as calibrated if pose nose was available
+                        if pose_nose_position is not None:
+                            frame_data["face"]["calibrated"] = True
+
+                        # Draw face landmarks using CALIBRATED MediaPipe object (same as hands)
+                        if use_full_mesh:
+                            mp_drawing.draw_landmarks(
+                                annotated_frame,
+                                calibrated_face_landmarks,  # ← NOW using calibrated landmarks like hands
+                                mp_face_mesh.FACEMESH_TESSELATION,
+                                landmark_drawing_spec=None,
+                                connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style()
+                            )
+                        else:
+                            # Draw simplified key landmarks (keep your existing implementation)
+                            KEY_FACE_LANDMARKS = {
+                                'silhouette': [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+                                               397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+                                               172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109],
+                                'eyebrows': [70, 63, 105, 66, 107, 336, 296, 334, 293, 300],
+                                'eyes': [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7,
+                                         362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381,
+                                         382],
+                                'nose': [168, 6, 197, 195, 5, 4, 1, 19, 94, 2],
+                                'lips': [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191,
+                                         80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178],
+                            }
+
+                            color_map = {
+                                'silhouette': (200, 200, 200),
+                                'eyebrows': (0, 150, 255),
+                                'eyes': (255, 0, 0),
+                                'nose': (0, 255, 255),
+                                'lips': (0, 0, 255)
+                            }
+
+                            # Draw face outline (silhouette)
+                            silhouette_points = []
+                            for idx in KEY_FACE_LANDMARKS['silhouette']:
+                                lm = face_landmarks.landmark[idx]
+                                x, y = int(lm.x * w), int(lm.y * h)
+                                silhouette_points.append((x, y))
+
+                            if silhouette_points:
+                                cv2.polylines(annotated_frame, [np.array(silhouette_points)], True,
+                                              color_map['silhouette'], 1)
+
+                            # Draw eyebrows
+                            for idx in KEY_FACE_LANDMARKS['eyebrows']:
+                                lm = face_landmarks.landmark[idx]
+                                x, y = int(lm.x * w), int(lm.y * h)
+                                cv2.circle(annotated_frame, (x, y), 1, color_map['eyebrows'], -1)
+
+                            # Draw eyes
+                            left_eye_points = []
+                            left_eye_indices = KEY_FACE_LANDMARKS['eyes'][:16]
+                            for idx in left_eye_indices:
+                                lm = face_landmarks.landmark[idx]
+                                x, y = int(lm.x * w), int(lm.y * h)
+                                left_eye_points.append((x, y))
+
+                            right_eye_points = []
+                            right_eye_indices = KEY_FACE_LANDMARKS['eyes'][16:]
+                            for idx in right_eye_indices:
+                                lm = face_landmarks.landmark[idx]
+                                x, y = int(lm.x * w), int(lm.y * h)
+                                right_eye_points.append((x, y))
+
+                            if left_eye_points:
+                                cv2.polylines(annotated_frame, [np.array(left_eye_points)], True,
+                                              color_map['eyes'], 1)
+                            if right_eye_points:
+                                cv2.polylines(annotated_frame, [np.array(right_eye_points)], True,
+                                              color_map['eyes'], 1)
+
+                            # Draw nose
+                            nose_points = []
+                            for idx in KEY_FACE_LANDMARKS['nose']:
+                                lm = face_landmarks.landmark[idx]
+                                x, y = int(lm.x * w), int(lm.y * h)
+                                nose_points.append((x, y))
+                                cv2.circle(annotated_frame, (x, y), 1, color_map['nose'], -1)
+
+                            # Draw lips
+                            outer_lip_points = []
+                            outer_lip_indices = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
+                            for idx in outer_lip_indices:
+                                lm = face_landmarks.landmark[idx]
+                                x, y = int(lm.x * w), int(lm.y * h)
+                                outer_lip_points.append((x, y))
+
+                            if outer_lip_points:
+                                cv2.polylines(annotated_frame, [np.array(outer_lip_points)], True,
+                                              color_map['lips'], 1)
+
+                            inner_lip_points = []
+                            inner_lip_indices = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 191]
+                            for idx in inner_lip_indices:
+                                lm = face_landmarks.landmark[idx]
+                                x, y = int(lm.x * w), int(lm.y * h)
+                                inner_lip_points.append((x, y))
+
+                            if inner_lip_points:
+                                cv2.polylines(annotated_frame, [np.array(inner_lip_points)], True,
+                                              color_map['lips'], 1)
+
+            # Save frame data using actual frame number as key
+            all_frames_data[str(actual_frame_number)] = frame_data
+
+            # Add frame info to image - show actual frame number and enhancement status
+            progress_percent = (actual_frame_number / total_frames) * 100 if total_frames > 0 else 0
+            enhancement_text = " (Enhanced)" if use_enhancement else ""
+            tracking_text = "  | Enhanced Hand + Face Calibration"
+            cv2.putText(
+                annotated_frame,
+                f"Frame: {actual_frame_number} | {progress_percent:.1f}%{enhancement_text}{tracking_text}",
+                (10, 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 255),
+                1
+            )
+
+            # Save annotated frame image (only if path is provided)
+            if annotated_frame_path:
+                success = cv2.imwrite(str(annotated_frame_path), annotated_frame)
+                if not success:
+                    print(f"Error: Could not save annotated frame to {annotated_frame_path}")
+
+            # Write frame to video
+            if video_writer:
+                video_writer.write(annotated_frame)
+
+        except Exception as e:
+            print(f"Error processing frame {actual_frame_number}: {e}")
+            import traceback
+            traceback.print_exc()
 
     def process_frame(self, rgb_frame: np.ndarray) -> Dict:
         """
@@ -719,9 +1151,8 @@ class EnhancedHandTracker:
             self.hands.close()
 
     def get_statistics(self) -> Dict:
-        """Get essential tracking statistics"""
+        """Get tracking statistics"""
         total = max(1, self.stats['total_detections'])
-
         return {
             'frames_processed': self.frame_count,
             'total_detections': self.stats['total_detections'],
@@ -1328,6 +1759,7 @@ def process_image(
                     for i, lm in enumerate(calibrated_face_landmarks.landmark):
                         point = {"x": lm.x, "y": lm.y, "z": lm.z}
                         face_data.append(point)
+
                         if i in MOUTH_LANDMARKS:
                             mouth_data.append(point)
 
@@ -1354,6 +1786,11 @@ def process_image(
 
             if results_pose.pose_landmarks:
                 pose_data = {}
+                for landmark in mp_pose.PoseLandmark:
+                    lm = results_pose.pose_landmarks.landmark[landmark]
+                    pose_data[landmark.name] = {"x": lm.x, "y": lm.y, "z": lm.z}
+
+
                 for landmark_name in CORE_POSE_LANDMARKS:
                     try:
                         landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
@@ -1370,13 +1807,16 @@ def process_image(
                 image_data["pose"] = pose_data
 
                 # Draw pose landmarks on original image
-                mp_drawing.draw_landmarks(
-                    annotated_image,
-                    results_pose.pose_landmarks,
-                    mp_pose.POSE_CONNECTIONS,
-                    landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
-                )
-
+                if results_pose.pose_landmarks:
+                    # Create a subset of landmarks to draw
+                    for landmark_name in CORE_POSE_LANDMARKS:
+                        try:
+                            landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
+                            lm = results_pose.pose_landmarks.landmark[landmark_enum]
+                            x, y = int(lm.x * image_width), int(lm.y * image_height)
+                            cv2.circle(annotated_image, (x, y), 2, (0, 0, 255), -1)  # Blue dots
+                        except AttributeError:
+                            continue
     return image_data, annotated_image
 
 
@@ -1391,19 +1831,33 @@ def process_video(
         save_all_frames: bool = False,
         use_full_mesh: bool = False,
         use_enhancement: bool = False,
+        phoenix_mode: bool = False,  # Phoenix dataset optimization
+        phoenix_frame_sample_rate: int = 200,  # Save every Nth frame in Phoenix mode
+        phoenix_json_only: bool = False,  # NEW: JSON-only mode (no frames/videos)
+        phoenix_json_name: str = None,  # NEW: Custom JSON filename
         disable_mirroring: bool = False,
         args=None
 ) -> Optional[Dict[str, Any]]:
     """
     Process video or image sequence for sign language detection including hands, face, and pose landmarks.
+
+    Args:
+        phoenix_mode: If True, optimizes for Phoenix dataset processing
+        phoenix_json_only: If True, only saves JSON landmark data (no frames, videos, or comparisons)
+        phoenix_json_name: Custom name for the JSON file (without .json extension)
     """
-    # ... keep all your existing setup code unchanged until MediaPipe initialization ...
+
     input_path = Path(input_path)
 
-    # Always set up frames directory
-    frames_dir = Path(output_dir) / "frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Frames will be saved to: {frames_dir}")
+    # Set up frames directory (skip in JSON-only mode)
+    if phoenix_mode and phoenix_json_only:
+        print("Phoenix JSON-only mode: Skipping frames directory creation")
+        frames_dir = None
+    else:
+        # Always set up frames directory for normal processing
+        frames_dir = Path(output_dir) / "frames"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Frames will be saved to: {frames_dir}")
 
     if is_image_sequence:
         if not input_path.is_dir():
@@ -1449,55 +1903,59 @@ def process_video(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Set up output video writer
-    output_video_path = output_dir / "annotated_video.mp4"
-    print(f"Setting up video writer for: {output_video_path}")
+    # Set up output video writer (skip for Phoenix JSON-only mode)
+    video_writer = None
+    if not (phoenix_mode and phoenix_json_only):
+        output_video_path = output_dir / "annotated_video.mp4"
+        print(f"Setting up video writer for: {output_video_path}")
 
-    # Ensure file can be created
-    try:
-        # Try writing a test file to ensure directory is writable
-        test_path = output_dir / "test_write.txt"
-        with open(test_path, 'w') as f:
-            f.write("Test")
-        test_path.unlink()  # Remove test file
-        print(f"Directory is writable: {output_dir}")
-    except Exception as e:
-        print(f"ERROR: Directory is not writable: {output_dir}, error: {str(e)}")
-        return None
+        # Ensure file can be created
+        try:
+            # Try writing a test file to ensure directory is writable
+            test_path = output_dir / "test_write.txt"
+            with open(test_path, 'w') as f:
+                f.write("Test")
+            test_path.unlink()  # Remove test file
+            print(f"Directory is writable: {output_dir}")
+        except Exception as e:
+            print(f"ERROR: Directory is not writable: {output_dir}, error: {str(e)}")
+            return None
 
-    try:
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        # Adjust FPS for skipped frames
-        output_fps = fps / skip_frames if skip_frames > 1 else fps
-        video_writer = cv2.VideoWriter(
-            str(output_video_path),
-            fourcc,
-            output_fps,
-            (frame_width, frame_height)
-        )
-
-        if not video_writer.isOpened():
-            print(f"ERROR: Could not initialize video writer for {output_video_path}")
-            print(f"Video properties: codec=mp4v, fps={output_fps}, size={frame_width}x{frame_height}")
-
-            # Try with a different codec as fallback
-            print("Trying with XVID codec as fallback...")
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            # Adjust FPS for skipped frames
+            output_fps = fps / skip_frames if skip_frames > 1 else fps
             video_writer = cv2.VideoWriter(
-                str(output_dir / "annotated_video.avi"),  # Use .avi extension for XVID
+                str(output_video_path),
                 fourcc,
                 output_fps,
                 (frame_width, frame_height)
             )
 
             if not video_writer.isOpened():
-                print("ERROR: Could not initialize video writer with fallback codec either")
-                return None
-            else:
-                print("Successfully initialized video writer with fallback codec")
-    except Exception as e:
-        print(f"ERROR: Exception while initializing video writer: {str(e)}")
-        return None
+                print(f"ERROR: Could not initialize video writer for {output_video_path}")
+                print(f"Video properties: codec=mp4v, fps={output_fps}, size={frame_width}x{frame_height}")
+
+                # Try with a different codec as fallback
+                print("Trying with XVID codec as fallback...")
+                fourcc = cv2.VideoWriter_fourcc(*'XVID')
+                video_writer = cv2.VideoWriter(
+                    str(output_dir / "annotated_video.avi"),  # Use .avi extension for XVID
+                    fourcc,
+                    output_fps,
+                    (frame_width, frame_height)
+                )
+
+                if not video_writer.isOpened():
+                    print("ERROR: Could not initialize video writer with fallback codec either")
+                    return None
+                else:
+                    print("Successfully initialized video writer with fallback codec")
+        except Exception as e:
+            print(f"ERROR: Exception while initializing video writer: {str(e)}")
+            return None
+    else:
+        print("Phoenix JSON-only mode: Skipping video output generation")
 
     frame_count = 0  # Actual frame number (0-based from source)
     processed_frame_count = 0  # Number of frames we've actually processed
@@ -1509,6 +1967,11 @@ def process_video(
     print(f"  - Use enhancement: {use_enhancement}")
     print(f"  - Use full mesh: {use_full_mesh}")
     print(f"  - Enhanced hand tracking: ENABLED")
+    print(f"  - Phoenix mode: {'ENABLED' if phoenix_mode else 'DISABLED'}")
+    if phoenix_mode:
+        print(f"  - Phoenix JSON-only: {'ENABLED' if phoenix_json_only else 'DISABLED'}")
+        if phoenix_json_name:
+            print(f"  - Custom JSON name: {phoenix_json_name}.json")
 
     #Initialize enhanced hand tracker instead of regular MediaPipe
     enhanced_hand_tracker = EnhancedHandTracker(
@@ -1523,7 +1986,7 @@ def process_video(
         temporal_smoothing_frames=3
     ) if extract_face else None
 
-    # Initialize face and pose solutions (keep existing)
+    # Initialize face and pose solutions
     with mp_face_mesh.FaceMesh(
             static_image_mode=False,
             refine_landmarks=True,
@@ -1552,15 +2015,23 @@ def process_video(
                         print(f"Could not read image: {img_path}")
                         continue
 
-                    # Determine if we should save this frame - save every processed frame or just samples
-                    if save_all_frames:
-                        # Save every processed frame
-                        current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png"
-                    else:
-                        # Save every 10th processed frame as a sample
-                        current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png" if (
-                            # processed_frame_count % 10 == 0) else None
-                                processed_frame_count == 10) else None
+                    # Determine frame saving path
+                    current_frame_path = None  # Default to no saving
+
+                    if phoenix_mode and phoenix_json_only:
+                        # JSON-only mode: Never save frames
+                        current_frame_path = None
+                    elif phoenix_mode and frames_dir is not None:
+                        # Regular Phoenix mode: Save frame only every phoenix_frame_sample_rate processed frames
+                        if processed_frame_count % phoenix_frame_sample_rate == 0:
+                            current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png"
+                    elif frames_dir is not None:
+                        # Original logic for non-Phoenix mode
+                        if save_all_frames:
+                            current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png"
+                        elif processed_frame_count % 10 == 0:
+                            current_frame_path = frames_dir / f"frame_{current_frame_number:04d}.png"
+
                     process_frame_enhanced(
                         frame,
                         current_frame_number,
@@ -1578,14 +2049,19 @@ def process_video(
                         save_all_frames=save_all_frames,
                         use_full_mesh=use_full_mesh,
                         use_enhancement=use_enhancement,
+                        phoenix_mode=phoenix_mode,
+                        processed_frame_count=processed_frame_count,
+                        phoenix_frame_sample_rate=phoenix_frame_sample_rate,
+                        phoenix_json_only=phoenix_json_only,
                         disable_mirroring=disable_mirroring,
                         face_tracker=face_tracker
                     )
 
                     processed_frame_count += 1
 
-                    # Print progress every 10 processed frames
-                    if processed_frame_count % 10 == 0:
+                    # Progress reporting
+                    progress_interval = 50 if phoenix_mode else 10
+                    if processed_frame_count % progress_interval == 0:
                         progress_percent = (current_frame_number / total_frames) * 100 if total_frames > 0 else 0
                         print(
                             f"Processed {processed_frame_count} frames (current frame: {current_frame_number}/{total_frames}, {progress_percent:.1f}%)")
@@ -1599,21 +2075,28 @@ def process_video(
 
                     # Process every nth frame to improve performance
                     if frame_count % skip_frames == 0:
-                        # Determine if we should save this frame - save every processed frame or just samples
-                        if save_all_frames:
-                            # Save every processed frame
-                            current_frame_path = frames_dir / f"frame_{frame_count:04d}.png"
-                        else:
-                            # Save only 10th processed frame as a sample
-                            current_frame_path = frames_dir / f"frame_{frame_count:04d}.png" if (
-                                # processed_frame_count % 10 == 0) else None
-                                    processed_frame_count == 10) else None
+                        # Determine frame saving path
+                        current_frame_path = None  # Default to no saving
+
+                        if phoenix_mode and phoenix_json_only:
+                            # JSON-only mode: Never save frames
+                            current_frame_path = None
+                        elif phoenix_mode and frames_dir is not None:
+                            # Regular Phoenix mode: Save frame only every phoenix_frame_sample_rate processed frames
+                            if processed_frame_count % phoenix_frame_sample_rate == 0:
+                                current_frame_path = frames_dir / f"frame_{frame_count:04d}.png"
+                        elif frames_dir is not None:
+                            # Original logic for non-Phoenix mode
+                            if save_all_frames:
+                                current_frame_path = frames_dir / f"frame_{frame_count:04d}.png"
+                            elif processed_frame_count % 10 == 0:
+                                current_frame_path = frames_dir / f"frame_{frame_count:04d}.png"
 
                         process_frame_enhanced(
                             frame,
                             frame_count,
                             fps,
-                            enhanced_hand_tracker,  # Use enhanced tracker
+                            enhanced_hand_tracker,
                             face_mesh,
                             pose,
                             extract_face,
@@ -1626,14 +2109,19 @@ def process_video(
                             save_all_frames=save_all_frames,
                             use_full_mesh=use_full_mesh,
                             use_enhancement=use_enhancement,
+                            phoenix_mode=phoenix_mode,
+                            processed_frame_count=processed_frame_count,
+                            phoenix_frame_sample_rate=phoenix_frame_sample_rate,
+                            phoenix_json_only=phoenix_json_only,
                             disable_mirroring=disable_mirroring,
                             face_tracker=face_tracker
                         )
 
                         processed_frame_count += 1
 
-                        # Print progress every 10 processed frames
-                        if processed_frame_count % 10 == 0:
+                        # Progress reporting
+                        progress_interval = 50 if phoenix_mode else 10
+                        if processed_frame_count % progress_interval == 0:
                             progress_percent = (frame_count / total_frames) * 100 if total_frames > 0 else 0
                             print(
                                 f"Processed {processed_frame_count} frames (current frame: {frame_count}/{total_frames}, {progress_percent:.1f}%)")
@@ -1696,10 +2184,16 @@ def process_video(
                                          face_stats['detection_stats']['total_detections']) * 100
                     print(f"Face detection filtering success: {detection_success:.1f}%")
 
-    # Clean up video writer
-    video_writer.release()
+    # Clean up video writer (only if it was created)
+    if video_writer is not None:
+        video_writer.release()
 
-    # Save metadata
+    # Save metadata - make sure stats is defined
+    try:
+        stats = enhanced_hand_tracker.get_statistics()
+    except:
+        stats = {}  # Fallback if tracker is already closed
+
     input_name = input_path.name if not is_image_sequence else input_path.name
     metadata = {
         "input_source": input_name,
@@ -1721,41 +2215,54 @@ def process_video(
             "full_face_mesh": use_full_mesh,
             "save_all_frames": save_all_frames,
             "enhanced_hand_tracking": True,
-            "enhanced_face_tracking": face_tracker is not None
+            "enhanced_face_tracking": face_tracker is not None,
+            "phoenix_mode": phoenix_mode,
+            "phoenix_json_only": phoenix_json_only if phoenix_mode else False
         },
         "enhanced_hand_tracking_stats": hand_stats,
         "hand_disappearance_stats": disappearance_stats,
         "face_tracking_stats": face_stats  # This will now have the correct structure
     }
 
-    # Save all frame data to JSON
-    json_path = output_dir / "video_landmarks.json"
+    # Save all frame data to JSON with custom filename
+    if phoenix_json_only and phoenix_json_name:
+        json_filename = f"{phoenix_json_name}.json"
+    else:
+        json_filename = "video_landmarks.json"
+
+    json_path = output_dir / json_filename
+
     try:
-        if hasattr(args, 'delete_missing_threshold') and args.delete_missing_threshold is not None:
-            all_frames_data = filter_frames_by_missing_data(
-                all_frames_data,
-                hand_stats,
-                disappearance_stats,
-                args.delete_missing_threshold
-            )
+        print(f"Saving JSON data to: {json_path}")
+        print(f"Number of frames in data: {len(all_frames_data)}")
+
         with open(json_path, "w") as f:
             json.dump({"metadata": metadata, "frames": all_frames_data}, f, indent=4)
         print(f"Processing complete. Data saved to {json_path}")
+        print(f"JSON file size: {json_path.stat().st_size} bytes")
         print(f"Total frames in source: {total_frames}")
         print(f"Total frames processed: {processed_frame_count}")
-        print(f"Final frames in output: {len(all_frames_data)}")
         print(f"Frames saved to disk: {len(list(frames_dir.glob('frame_*.png')))}")
 
-        # Verify output files exist
-        expected_video_file = output_video_path
-        if not expected_video_file.exists():
-            # Check for fallback .avi file
-            expected_video_file = output_dir / "annotated_video.avi"
-
-        if expected_video_file.exists():
-            print(f"Output video: {expected_video_file} ({expected_video_file.stat().st_size} bytes)")
+        # Count saved frames only if frames directory exists
+        if frames_dir and frames_dir.exists():
+            frames_saved = len(list(frames_dir.glob('frame_*.png')))
+            print(f"Frames saved to disk: {frames_saved}")
         else:
-            print(f"WARNING: No output video file found")
+            print(f"Frames saved to disk: 0 (JSON-only mode)")
+
+        # Verify output files exist (only if not in Phoenix JSON-only mode)
+        if not (phoenix_mode and phoenix_json_only):
+            expected_video_file = output_dir / "annotated_video.mp4"
+            if not expected_video_file.exists():
+                # Check for fallback .avi file
+                expected_video_file = output_dir / "annotated_video.avi"
+            if expected_video_file.exists():
+                print(f"Output video: {expected_video_file} ({expected_video_file.stat().st_size} bytes)")
+            else:
+                print(f"WARNING: No output video file found")
+        else:
+            print("Phoenix JSON-only mode: Video output was skipped")
 
         return all_frames_data
 
@@ -1764,113 +2271,6 @@ def process_video(
         import traceback
         traceback.print_exc()
         return None
-
-
-def filter_frames_by_missing_data(all_frames_data: Dict, hand_stats: Dict, face_stats: Dict,
-                                  threshold_percent: float) -> Dict:
-    """
-    Filter out frames with missing data if threshold is exceeded
-
-    Args:
-        all_frames_data: Dictionary of all frame data
-        hand_stats: Hand tracking statistics
-        face_stats: Face tracking statistics (can be None if face tracking disabled)
-        threshold_percent: Percentage threshold (0-100)
-
-    Returns:
-        Filtered frame data dictionary
-    """
-    if threshold_percent is None:
-        return all_frames_data
-
-    print(f"\n=== Applying Missing Data Filter (Threshold: {threshold_percent}%) ===")
-
-    # Get missing rates from statistics - handle missing keys gracefully
-    left_hand_missing_rate = hand_stats.get('left_hand_missing_rate', 0)
-    right_hand_missing_rate = hand_stats.get('right_hand_missing_rate', 0)
-
-    # Handle face statistics - could be None or missing keys
-    face_missing_rate = 0
-    if face_stats and 'summary' in face_stats:
-        face_missing_rate = face_stats['summary'].get('face_missing_rate', 0)
-
-    # Calculate overall missing rate
-    # For hands, use the maximum of left/right (worst case)
-    hand_missing_rate = max(left_hand_missing_rate, right_hand_missing_rate)
-
-    # Overall missing rate is the maximum of hand and face missing rates
-    overall_missing_rate = max(hand_missing_rate, face_missing_rate)
-
-    print(f"Left hand missing rate: {left_hand_missing_rate:.1f}%")
-    print(f"Right hand missing rate: {right_hand_missing_rate:.1f}%")
-    print(f"Face missing rate: {face_missing_rate:.1f}%")
-    print(f"Overall missing rate: {overall_missing_rate:.1f}%")
-
-    if overall_missing_rate <= threshold_percent:
-        print(
-            f"Missing rate ({overall_missing_rate:.1f}%) is within threshold ({threshold_percent}%). No filtering applied.")
-        return all_frames_data
-
-    print(f"Missing rate ({overall_missing_rate:.1f}%) exceeds threshold ({threshold_percent}%). Filtering frames...")
-
-    # Filter out frames with missing data
-    filtered_frames = {}
-    original_count = len(all_frames_data)
-
-    for frame_key, frame_data in all_frames_data.items():
-        has_missing_data = False
-
-        # Check for missing hands
-        hands_data = frame_data.get('hands', {})
-        left_hand = hands_data.get('left_hand', [])
-        right_hand = hands_data.get('right_hand', [])
-
-        # Handle both dict and list formats for hand data
-        left_hand_empty = False
-        right_hand_empty = False
-
-        if isinstance(left_hand, dict):
-            left_hand_empty = not left_hand.get('landmarks', [])
-        elif isinstance(left_hand, list):
-            left_hand_empty = not left_hand
-        else:
-            left_hand_empty = True
-
-        if isinstance(right_hand, dict):
-            right_hand_empty = not right_hand.get('landmarks', [])
-        elif isinstance(right_hand, list):
-            right_hand_empty = not right_hand
-        else:
-            right_hand_empty = True
-
-        # Consider frame as having missing hand data if both hands are empty
-        if left_hand_empty and right_hand_empty:
-            has_missing_data = True
-
-        # Check for missing face data (only if face tracking was enabled)
-        if face_stats is not None:
-            face_data = frame_data.get('face', {})
-            face_landmarks = face_data.get('all_landmarks', [])
-
-            # Consider frame as having missing face data if no face landmarks
-            if not face_landmarks:
-                has_missing_data = True
-
-        # Keep frame if it doesn't have missing data
-        if not has_missing_data:
-            filtered_frames[frame_key] = frame_data
-
-    filtered_count = len(filtered_frames)
-    removed_count = original_count - filtered_count
-
-    print(f"Filtered results:")
-    print(f"  Original frames: {original_count}")
-    print(f"  Filtered frames: {filtered_count}")
-    print(f"  Removed frames: {removed_count}")
-    removal_rate = (removed_count / original_count) * 100 if original_count > 0 else 0
-    print(f"  Removal rate: {removal_rate:.1f}%")
-
-    return filtered_frames
 
 
 def create_calibrated_face_landmarks(original_landmarks, translation_offset):
@@ -1887,236 +2287,6 @@ def create_calibrated_face_landmarks(original_landmarks, translation_offset):
 
     return calibrated_landmarks
 
-
-def calibrate_hands_to_wrists(hands_data: Dict, pose_wrists: Dict) -> Dict:
-    """
-    Calibrate hand positions to align with pose model wrist positions
-
-    Args:
-        hands_data: Hand data from enhanced hand tracker
-        pose_wrists: Dictionary with LEFT_WRIST and RIGHT_WRIST positions from pose model
-
-    Returns:
-        Calibrated hands data with adjusted positions
-    """
-    calibrated_hands = {'left_hand': None, 'right_hand': None}
-
-    # Mapping between hand types and pose wrist names
-    hand_to_wrist_mapping = {
-        'left_hand': 'LEFT_WRIST',
-        'right_hand': 'RIGHT_WRIST'
-    }
-
-    for hand_type in ['left_hand', 'right_hand']:
-        hand_data = hands_data.get(hand_type)
-        wrist_name = hand_to_wrist_mapping[hand_type]
-        pose_wrist_position = pose_wrists.get(wrist_name)
-
-        if hand_data is not None and pose_wrist_position is not None:
-            # Get the current hand wrist position (landmark 0)
-            hand_landmarks = hand_data['landmarks']
-            hand_wrist = hand_landmarks.landmark[0]  # Wrist is landmark 0 in MediaPipe hands
-
-            current_hand_wrist = np.array([hand_wrist.x, hand_wrist.y, hand_wrist.z])
-
-            # Calculate the translation offset needed
-            translation_offset = pose_wrist_position - current_hand_wrist
-
-            # Create new landmarks structure with calibrated positions
-            calibrated_landmarks = type(hand_landmarks)()
-            calibrated_landmarks.CopyFrom(hand_landmarks)
-
-            # Apply translation to all hand landmarks
-            for i, landmark in enumerate(calibrated_landmarks.landmark):
-                landmark.x += translation_offset[0]
-                landmark.y += translation_offset[1]
-                landmark.z += translation_offset[2]
-
-            # Create calibrated hand data
-            calibrated_hands[hand_type] = {
-                'landmarks': calibrated_landmarks,
-                'confidence': hand_data['confidence'],
-                'center': hand_data['center'] + translation_offset,  # Update center too
-                'smoothed': hand_data.get('smoothed', False),
-                'calibrated': True  # Mark as calibrated
-            }
-        elif hand_data is not None:
-            # Keep original hand data if no pose wrist available
-            calibrated_hands[hand_type] = hand_data
-
-    return calibrated_hands
-
-
-def calibrate_face_to_nose(face_landmarks, pose_nose_position):
-    """
-    Calibrate face landmarks to align with pose nose position
-    Following the same pattern as calibrate_hands_to_wrists
-    """
-    if face_landmarks is None or pose_nose_position is None:
-        return face_landmarks
-
-    # Get face nose position (MediaPipe face landmark 1 is nose tip)
-    face_nose = face_landmarks.landmark[1]  # Nose tip
-    face_nose_position = np.array([face_nose.x, face_nose.y, face_nose.z])
-
-    # Calculate translation offset (same as hands)
-    translation_offset = pose_nose_position - face_nose_position
-
-    # Create calibrated landmarks structure (same as hands approach)
-    calibrated_landmarks = type(face_landmarks)()
-    calibrated_landmarks.CopyFrom(face_landmarks)
-
-    # Apply translation to all face landmarks (same as hands approach)
-    for landmark in calibrated_landmarks.landmark:
-        landmark.x += translation_offset[0]
-        landmark.y += translation_offset[1]
-        landmark.z += translation_offset[2]
-
-    return calibrated_landmarks
-
-
-def debug_calibration_alignment(frame_data: Dict, frame_number: int):
-    """Debug function to check alignment between hands/face and pose"""
-    print(f"\n=== DEBUG Frame {frame_number} Calibration ===")
-
-    # Check pose wrists
-    pose_data = frame_data.get('pose', {})
-    if 'LEFT_WRIST' in pose_data:
-        left_wrist = pose_data['LEFT_WRIST']
-        print(f"Pose LEFT_WRIST: x={left_wrist['x']:.3f}, y={left_wrist['y']:.3f}, z={left_wrist['z']:.3f}")
-
-    if 'RIGHT_WRIST' in pose_data:
-        right_wrist = pose_data['RIGHT_WRIST']
-        print(f"Pose RIGHT_WRIST: x={right_wrist['x']:.3f}, y={right_wrist['y']:.3f}, z={right_wrist['z']:.3f}")
-
-    # Check hand wrists (landmark 0)
-    hands_data = frame_data.get('hands', {})
-    for hand_type in ['left_hand', 'right_hand']:
-        hand_info = hands_data.get(hand_type, [])
-        if isinstance(hand_info, dict) and 'landmarks' in hand_info:
-            landmarks = hand_info['landmarks']
-            if landmarks:
-                wrist = landmarks[0]  # Wrist is landmark 0
-                print(f"Hand {hand_type} wrist: x={wrist['x']:.3f}, y={wrist['y']:.3f}, z={wrist['z']:.3f}")
-        elif isinstance(hand_info, list) and hand_info:
-            wrist = hand_info[0]
-            print(f"Hand {hand_type} wrist: x={wrist['x']:.3f}, y={wrist['y']:.3f}, z={wrist['z']:.3f}")
-
-    # Check pose nose
-    if 'NOSE' in pose_data:
-        nose = pose_data['NOSE']
-        print(f"Pose NOSE: x={nose['x']:.3f}, y={nose['y']:.3f}, z={nose['z']:.3f}")
-
-    # Check face nose (landmark 1)
-    face_data = frame_data.get('face', {})
-    if 'all_landmarks' in face_data and face_data['all_landmarks']:
-        face_landmarks = face_data['all_landmarks']
-        if len(face_landmarks) > 1:
-            face_nose = face_landmarks[1]  # Nose tip is landmark 1
-            print(f"Face nose: x={face_nose['x']:.3f}, y={face_nose['y']:.3f}, z={face_nose['z']:.3f}")
-
-def calibrate_hands_in_json_format(json_hands_data: Dict, pose_wrists: Dict, frame_width: int,
-                                   frame_height: int) -> Dict:
-    """
-    Calibrate hand landmarks in JSON format to align with pose wrists
-
-    Args:
-        json_hands_data: Hand data in JSON format
-        pose_wrists: Dict with LEFT_WRIST and RIGHT_WRIST positions
-        frame_width, frame_height: Frame dimensions for pixel coordinate updates
-
-    Returns:
-        Calibrated hand data in JSON format
-    """
-    hand_to_wrist_mapping = {
-        'left_hand': 'RIGHT_WRIST',
-        'right_hand': 'LEFT_WRIST'
-    }
-
-    calibrated_data = json_hands_data.copy()
-
-    for hand_type in ['left_hand', 'right_hand']:
-        hand_info = json_hands_data.get(hand_type, [])
-        wrist_name = hand_to_wrist_mapping[hand_type]
-        pose_wrist_position = pose_wrists.get(wrist_name)
-
-        if pose_wrist_position is not None:
-            if isinstance(hand_info, dict) and 'landmarks' in hand_info:
-                landmarks = hand_info['landmarks']
-            elif isinstance(hand_info, list):
-                landmarks = hand_info
-            else:
-                continue
-
-            if landmarks and len(landmarks) > 0:
-                # Get current hand wrist position (landmark 0)
-                current_wrist = landmarks[0]
-                current_wrist_pos = np.array([current_wrist['x'], current_wrist['y'], current_wrist['z']])
-
-                # Calculate offset
-                offset = pose_wrist_position - current_wrist_pos
-
-                # Apply offset to all landmarks
-                calibrated_landmarks = []
-                for lm in landmarks:
-                    calibrated_lm = lm.copy()
-                    calibrated_lm['x'] += offset[0]
-                    calibrated_lm['y'] += offset[1]
-                    calibrated_lm['z'] += offset[2]
-                    calibrated_lm['px'] = int(calibrated_lm['x'] * frame_width)
-                    calibrated_lm['py'] = int(calibrated_lm['y'] * frame_height)
-                    calibrated_landmarks.append(calibrated_lm)
-
-                # Update the data structure
-                if isinstance(hand_info, dict):
-                    calibrated_data[hand_type] = {
-                        'landmarks': calibrated_landmarks,
-                        'confidence': hand_info.get('confidence', 1.0),
-                        'calibrated': True
-                    }
-                else:
-                    calibrated_data[hand_type] = calibrated_landmarks
-
-    return calibrated_data
-
-
-def calibrate_face_in_json_format(face_landmarks: list, pose_nose_position: np.ndarray, frame_width: int,
-                                  frame_height: int) -> list:
-    """
-    Calibrate face landmarks in JSON format to align with pose nose
-
-    Args:
-        face_landmarks: List of face landmark dicts
-        pose_nose_position: Pose nose position as numpy array
-        frame_width, frame_height: Frame dimensions
-
-    Returns:
-        Calibrated face landmarks list
-    """
-    if not face_landmarks or len(face_landmarks) < 2:
-        return face_landmarks
-
-    # Get current face nose position (landmark 1 is nose tip)
-    current_nose = face_landmarks[1]
-    current_nose_pos = np.array([current_nose['x'], current_nose['y'], current_nose['z']])
-
-    # Calculate offset
-    offset = pose_nose_position - current_nose_pos
-
-    # Apply offset to all face landmarks
-    calibrated_landmarks = []
-    for lm in face_landmarks:
-        calibrated_lm = lm.copy()
-        calibrated_lm['x'] += offset[0]
-        calibrated_lm['y'] += offset[1]
-        calibrated_lm['z'] += offset[2]
-        calibrated_lm['px'] = int(calibrated_lm['x'] * frame_width)
-        calibrated_lm['py'] = int(calibrated_lm['y'] * frame_height)
-        calibrated_landmarks.append(calibrated_lm)
-
-    return calibrated_landmarks
-
-
 def process_frame_enhanced(
         frame, actual_frame_number, fps, enhanced_hand_tracker, face_mesh, pose,
         extract_face, extract_pose, all_frames_data,
@@ -2125,20 +2295,32 @@ def process_frame_enhanced(
         save_all_frames=False,
         use_full_mesh=False,
         use_enhancement=False,
+        phoenix_mode=False,
+        processed_frame_count=0,
+        phoenix_frame_sample_rate=50,
+        phoenix_json_only=False,  # NEW: JSON-only mode
         disable_mirroring=False,
         face_tracker=None
 ):
+    """
+    Enhanced frame processing function that uses the new hand tracker
+    """
     try:
         # Apply enhancement if requested
         if use_enhancement:
+            # Create comparison save path if we're saving frames
             comparison_save_path = None
             if annotated_frame_path:
-                frames_dir = annotated_frame_path.parent
-                output_dir = frames_dir.parent
-                comparisons_dir = output_dir / "comparisons"
-                comparisons_dir.mkdir(parents=True, exist_ok=True)
-                comparison_save_path = str(comparisons_dir / f"frame_{actual_frame_number:04d}")
+                # Create comparisons directory alongside frames directory, not inside it
+                frames_dir = annotated_frame_path.parent if annotated_frame_path else Path("temp")
+                if annotated_frame_path:
+                    output_dir = frames_dir.parent  # Go up one level to the main output directory
+                    comparisons_dir = output_dir / "comparisons"
+                    comparisons_dir.mkdir(parents=True, exist_ok=True)
+                    # Set comparison save path (without extension)
+                    comparison_save_path = str(comparisons_dir / f"frame_{actual_frame_number:04d}")
 
+            # Apply enhancement with comparison saving
             processing_frame = enhance_image_for_hand_detection(
                 frame,
                 visualize=False,
@@ -2153,7 +2335,7 @@ def process_frame_enhanced(
         annotated_frame = frame.copy()
         h, w, _ = frame.shape
 
-        # Initialize frame data
+        # Initialize frame data structure - use actual frame number
         frame_data = {
             "frame": actual_frame_number,
             "timestamp": actual_frame_number / fps,
@@ -2163,7 +2345,6 @@ def process_frame_enhanced(
             "enhancement_applied": use_enhancement,
             "width": w,
             "height": h,
-            # ADD: Missing data tracking
             "missing_data": {
                 "left_hand_missing": True,  # Will be updated below
                 "right_hand_missing": True,  # Will be updated below
@@ -2353,76 +2534,69 @@ def process_frame_enhanced(
         if not disable_mirroring:
             frame_data = apply_mirroring_to_frame_data(frame_data, pose_wrists, frame.shape)
 
-        if DEBUG:
-            # Add debug output for first few frames
-            if actual_frame_number < 5:
-                debug_calibration_alignment(frame_data, actual_frame_number)
+                if results_pose.pose_landmarks:
+                    # Create a subset of landmarks to draw
+                    core_landmarks_to_draw = []
+                    for landmark_name in CORE_POSE_LANDMARKS:
+                        try:
+                            landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
+                            lm = results_pose.pose_landmarks.landmark[landmark_enum]
+                            h, w, _ = frame.shape
+                            x, y = int(lm.x * w), int(lm.y * h)
+                            cv2.circle(annotated_frame, (x, y), 2, (0, 0, 255), -1)  # Blue dots
+                        except AttributeError:
+                            continue
 
-        # Save frame data
+            # Save frame data using actual frame number as key
         all_frames_data[str(actual_frame_number)] = frame_data
 
-        # Add frame info
-        progress_percent = (actual_frame_number / total_frames) * 100 if total_frames > 0 else 0
-        enhancement_text = " (Enhanced)" if use_enhancement else ""
-        tracking_text = " | JSON Calibration"
+        # Add frame info to image - show actual frame number and enhancement status
+        if not (phoenix_mode and phoenix_json_only):
+            # Add frame info to image - show actual frame number and enhancement status
+            if not phoenix_mode:  # Skip detailed frame info in Phoenix mode for speed
+                progress_percent = (actual_frame_number / total_frames) * 100 if total_frames > 0 else 0
+                enhancement_text = " (Enhanced)" if use_enhancement else ""
+                tracking_text = " | Enhanced Hand Tracking"
+                cv2.putText(
+                    annotated_frame,
+                    f"Frame: {actual_frame_number} | {progress_percent:.1f}%{enhancement_text}{tracking_text}",
+                    (10, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 255),
+                    1
+                )
 
-        # ADD: Show missing data info in frame text
-        missing_info = []
-        if frame_data["missing_data"]["left_hand_missing"]:
-            missing_info.append("L")
-        if frame_data["missing_data"]["right_hand_missing"]:
-            missing_info.append("R")
-        if frame_data["missing_data"]["face_missing"]:
-            missing_info.append("F")
+            # Save annotated frame image (only if path is provided)
+            if annotated_frame_path:
+                success = cv2.imwrite(str(annotated_frame_path), annotated_frame)
+                if not success:
+                    print(f"Error: Could not save annotated frame to {annotated_frame_path}")
 
-        missing_text = f" | Missing: {','.join(missing_info)}" if missing_info else ""
-
-        cv2.putText(
-            annotated_frame,
-            f"Frame: {actual_frame_number} | {progress_percent:.1f}%{enhancement_text}{tracking_text}{missing_text}",
-            (10, 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 255),
-            1
-        )
-
-        # Save annotated frame
-        if annotated_frame_path:
-            success = cv2.imwrite(str(annotated_frame_path), annotated_frame)
-            if not success:
-                print(f"Error: Could not save annotated frame to {annotated_frame_path}")
-
-        # Write to video
-        if video_writer:
-            video_writer.write(annotated_frame)
+            # Write frame to video (skip in Phoenix mode)
+            if video_writer and not phoenix_mode:
+                video_writer.write(annotated_frame)
 
     except Exception as e:
         print(f"Error processing frame {actual_frame_number}: {e}")
         import traceback
         traceback.print_exc()
+        return None
 
-def process_frame(
-        frame, actual_frame_number, fps, hands, face_mesh, pose,
-        extract_face, extract_pose, all_frames_data,
-        annotated_frame_path=None, video_writer=None,
-        total_frames=0, skip_frames=1,
-        save_all_frames=False,
-        use_full_mesh=False,
-        use_enhancement=False
-):
-    """
-    LEGACY: Original process_frame function (kept for compatibility)
-    NOTE: This is now replaced by process_frame_enhanced for better hand tracking
-    """
-    # ... keep your existing implementation for backwards compatibility ...
-    # This won't be used in the main processing pipeline anymore
-    pass
 
 
 def natural_sort_key(s):
     """
     Sort strings with embedded numbers in natural order.
     For example: frame1.jpg, frame2.jpg, frame10.jpg (instead of frame1.jpg, frame10.jpg, frame2.jpg)
+    Enhanced to handle Phoenix dataset frame naming patterns.
     """
+    # Handle Phoenix-style frame names like "images-000001.png"
+    if 'images-' in s:
+        # Extract the number part after 'images-'
+        match = re.search(r'images-(\d+)', s)
+        if match:
+            return int(match.group(1))
+
+    # Original logic for other naming patterns
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
