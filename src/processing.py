@@ -19,6 +19,21 @@ mp_face_mesh = mp.solutions.face_mesh
 # Mouth landmark indices from MediaPipe FaceMesh
 MOUTH_LANDMARKS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
 
+CORE_POSE_LANDMARKS = [
+                        'NOSE', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
+                        'LEFT_WRIST', 'RIGHT_WRIST',
+                        'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
+                        'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
+                    ]
+# CORE_POSE_LANDMARKS_WITH_FACE = [
+#                         'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
+#                         'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
+#                         'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
+#                         'LEFT_WRIST', 'RIGHT_WRIST',
+#                         'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
+#                         'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
+#                     ]
+
 
 class EnhancedHandTracker:
     """Enhanced hand tracker with flickering reduction and false positive filtering"""
@@ -566,14 +581,6 @@ class EnhancedHandTracker:
                     # Extract pose landmarks
                     pose_data = {}
                     h, w, _ = frame.shape
-                    CORE_POSE_LANDMARKS = [
-                        'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
-                        'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
-                        'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                        'LEFT_WRIST', 'RIGHT_WRIST',
-                        'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
-                        'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
-                    ]
 
                     for landmark_name in CORE_POSE_LANDMARKS:
                         try:
@@ -1316,15 +1323,6 @@ def process_image(
                     lm = results_pose.pose_landmarks.landmark[landmark]
                     pose_data[landmark.name] = {"x": lm.x, "y": lm.y, "z": lm.z}
 
-                # WITH this filtered loop:
-                CORE_POSE_LANDMARKS = [
-                    'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
-                    'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT',
-                    'MOUTH_RIGHT', 'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
-                    'LEFT_WRIST', 'RIGHT_WRIST',
-                    'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
-                    'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
-                ]
 
                 for landmark_name in CORE_POSE_LANDMARKS:
                     try:
