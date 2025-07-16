@@ -27,6 +27,7 @@ MOUTH_LANDMARKS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
 # Default settings
 DEFAULT_OUTPUT_DIR = Path("./output")
 DEFAULT_INPUT_DIR = Path("./data")
+DEBUG = False
 
 
 def parse_arguments():
@@ -332,10 +333,11 @@ def process_phoenix_dataset(dev_folder: Path, output_dir: Path, args) -> None:
 
 def process_single_image_file(image_path: Path, output_dir: Path, args) -> None:
     """Process a single image file"""
-    print(f"=== DEBUG: Processing single image ===")
-    print(f"Image path: {image_path}")
-    print(f"Output dir: {output_dir}")
-    print(f"Enhancement enabled: {args.enhance}")
+    if DEBUG:
+        print(f"=== DEBUG: Processing single image ===")
+        print(f"Image path: {image_path}")
+        print(f"Output dir: {output_dir}")
+        print(f"Enhancement enabled: {args.enhance}")
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -426,7 +428,7 @@ def process_single_image_file(image_path: Path, output_dir: Path, args) -> None:
         except Exception as e:
             print(f"ERROR saving JSON: {e}")
 
-        print(f"=== DEBUG: Successfully processed single image: {image_path} ===")
+        if DEBUG: print(f"=== DEBUG: Successfully processed single image: {image_path} ===")
 
     except Exception as e:
         print(f"ERROR: Failed to process single image {image_path}: {str(e)}")
@@ -436,12 +438,13 @@ def process_single_image_file(image_path: Path, output_dir: Path, args) -> None:
 
 def process_batch(input_dir: Path, output_dir: Path, args) -> None:
     """Process all items found in the input directory"""
-    print(f"\n=== DEBUG: Batch Processing ===")
-    print(f"Input directory: {input_dir}")
-    print(f"Output directory: {output_dir}")
-    print(f"Enhancement enabled: {args.enhance}")
-    print(f"Skip frames: {args.skip_frames}")
-    print(f"Save all frames: {args.save_all_frames}")
+    if DEBUG:
+        print(f"\n=== DEBUG: Batch Processing ===")
+        print(f"Input directory: {input_dir}")
+        print(f"Output directory: {output_dir}")
+        print(f"Enhancement enabled: {args.enhance}")
+        print(f"Skip frames: {args.skip_frames}")
+        print(f"Save all frames: {args.save_all_frames}")
 
     if not input_dir.exists():
         print(f"ERROR: Input directory not found: {input_dir}")

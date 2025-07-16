@@ -882,11 +882,7 @@ class LandmarksVisualizer3D:
         """
         Apply Z-amplification to hands and face while keeping them anchored to pose reference points
 
-        Args:
-            landmarks_3d: Dictionary with hands, face, and pose landmarks
-
-        Returns:
-            Dictionary with amplified but anchored landmarks
+        FIXED: Use the same mapping as the calibration function
         """
         amplified_landmarks = landmarks_3d.copy()
 
@@ -900,13 +896,20 @@ class LandmarksVisualizer3D:
         # Create pose name-to-index mapping
         pose_name_to_idx = {name: i for i, name in enumerate(pose_names)}
 
+        # FIXED: Use the same wrist mapping as calibration (swapped for mirrored data)
+        # This must match the mapping in calibrate_hands_to_wrists()
+        hand_to_wrist_mapping = {
+            'left_hand': 'RIGHT_WRIST',  # left_hand anchors to RIGHT_WRIST
+            'right_hand': 'LEFT_WRIST'  # right_hand anchors to LEFT_WRIST
+        }
+
         # Amplify hands relative to their corresponding wrist anchors
         for hand_type in ['left_hand', 'right_hand']:
             hand_points = landmarks_3d['hands'].get(hand_type, [])
 
             if len(hand_points) > 0:
-                # Determine which wrist to use as anchor
-                wrist_name = 'LEFT_WRIST' if hand_type == 'left_hand' else 'RIGHT_WRIST'
+                # Use the corrected mapping
+                wrist_name = hand_to_wrist_mapping[hand_type]
 
                 if wrist_name in pose_name_to_idx:
                     wrist_idx = pose_name_to_idx[wrist_name]
@@ -923,8 +926,7 @@ class LandmarksVisualizer3D:
 
                     amplified_landmarks['hands'][hand_type] = amplified_hand_points
 
-
-        # Amplify face relative to pose nose anchor
+        # Face amplification logic remains the same (this was working correctly)
         face_points = landmarks_3d.get('face', [])
         if len(face_points) > 0 and 'NOSE' in pose_name_to_idx:
             nose_idx = pose_name_to_idx['NOSE']

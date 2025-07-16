@@ -18,7 +18,7 @@ mp_face_mesh = mp.solutions.face_mesh
 
 # Mouth landmark indices from MediaPipe FaceMesh
 MOUTH_LANDMARKS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
-DEBUG = True
+DEBUG = False
 CORE_POSE_LANDMARKS = [
     'NOSE',
     'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW',
@@ -1275,26 +1275,12 @@ class FaceTracker:
 
 def apply_mirroring_to_frame_data(frame_data: Dict, pose_wrists: Dict, frame_shape: tuple) -> Dict:
     """
-    Apply mirroring to already-calibrated frame data with correct hand semantics
+    Apply mirroring to already-calibrated frame data - SIMPLE VERSION that works
 
-    CORRECT APPROACH: Mirror coordinates AND swap hand labels
-    - Signer's left hand (viewer's right) → becomes viewer's left hand after mirroring
-    - Signer's right hand (viewer's left) → becomes viewer's right hand after mirroring
-    - This maintains semantic consistency where left_hand always represents viewer's left
-
-    Args:
-        frame_data: Complete frame data (already calibrated)
-        pose_wrists: Original pose wrist positions (kept for compatibility)
-        frame_shape: (height, width) for pixel coordinate conversion
-
-    Returns:
-        Mirrored frame data with swapped hand labels and mirrored coordinates
+    Just mirror coordinates like face does - no complex hand swapping needed!
     """
     h, w = frame_shape[:2]
     mirrored_frame_data = frame_data.copy()
-
-    # PRESERVE: Keep missing_data information during mirroring
-    missing_data = frame_data.get('missing_data', {})
 
     # Mirror pose landmarks
     if 'pose' in frame_data:
@@ -1306,7 +1292,7 @@ def apply_mirroring_to_frame_data(frame_data: Dict, pose_wrists: Dict, frame_sha
             mirrored_pose[landmark_name] = mirrored_lm
         mirrored_frame_data['pose'] = mirrored_pose
 
-    # Mirror face landmarks (preserving calibration) - this was working correctly
+    # Mirror face landmarks (this was working correctly)
     if 'face' in frame_data:
         mirrored_face = frame_data['face'].copy()
 
@@ -1330,73 +1316,47 @@ def apply_mirroring_to_frame_data(frame_data: Dict, pose_wrists: Dict, frame_sha
 
         mirrored_frame_data['face'] = mirrored_face
 
-    # CORRECTED: Mirror hands with LABEL SWAPPING
+    # Mirror hands EXACTLY like face - simple coordinate mirroring, no swapping
     if 'hands' in frame_data:
-        original_hands = frame_data['hands']
-        mirrored_hands = {'left_hand': [], 'right_hand': []}
+        mirrored_hands = frame_data['hands'].copy()
 
-        # Get original hand data
-        original_left_hand = original_hands.get('left_hand', [])
-        original_right_hand = original_hands.get('right_hand', [])
+        for hand_type in ['left_hand', 'right_hand']:
+            hand_data = frame_data['hands'].get(hand_type, [])
 
-        # SWAP AND MIRROR: Left becomes right, right becomes left
-        # Process original LEFT hand -> becomes mirrored RIGHT hand
-        if original_left_hand:
-            mirrored_hands['right_hand'] = mirror_single_hand_data(original_left_hand, w)
+            if hand_data:
+                if isinstance(hand_data, dict) and 'landmarks' in hand_data:
+                    # Handle new format with confidence
+                    mirrored_landmarks = []
+                    for lm in hand_data['landmarks']:
+                        mirrored_lm = lm.copy()
+                        mirrored_lm['x'] = 1.0 - lm['x']
+                        mirrored_lm['px'] = int(mirrored_lm['x'] * w)
+                        mirrored_landmarks.append(mirrored_lm)
 
-        # Process original RIGHT hand -> becomes mirrored LEFT hand
-        if original_right_hand:
-            mirrored_hands['left_hand'] = mirror_single_hand_data(original_right_hand, w)
+                    mirrored_hands[hand_type] = hand_data.copy()
+                    mirrored_hands[hand_type]['landmarks'] = mirrored_landmarks
+
+                elif isinstance(hand_data, list):
+                    # Handle old format - direct list of landmarks
+                    mirrored_landmarks = []
+                    for lm in hand_data:
+                        mirrored_lm = lm.copy()
+                        mirrored_lm['x'] = 1.0 - lm['x']
+                        mirrored_lm['px'] = int(mirrored_lm['x'] * w)
+                        mirrored_landmarks.append(mirrored_lm)
+
+                    mirrored_hands[hand_type] = mirrored_landmarks
 
         mirrored_frame_data['hands'] = mirrored_hands
 
-        if DEBUG:
-            print(f"DEBUG HAND MIRRORING:")
-            print(f"  BEFORE mirroring:")
-            if original_left_hand:
-                if isinstance(original_left_hand, dict) and 'landmarks' in original_left_hand:
-                    wrist = original_left_hand['landmarks'][0]
-                    print(f"    original LEFT hand wrist: x={wrist['x']:.3f}")
-                elif isinstance(original_left_hand, list) and len(original_left_hand) > 0:
-                    wrist = original_left_hand[0]
-                    print(f"    original LEFT hand wrist: x={wrist['x']:.3f}")
-
-            if original_right_hand:
-                if isinstance(original_right_hand, dict) and 'landmarks' in original_right_hand:
-                    wrist = original_right_hand['landmarks'][0]
-                    print(f"    original RIGHT hand wrist: x={wrist['x']:.3f}")
-                elif isinstance(original_right_hand, list) and len(original_right_hand) > 0:
-                    wrist = original_right_hand[0]
-                    print(f"    original RIGHT hand wrist: x={wrist['x']:.3f}")
-
-            print(f"  AFTER mirroring (with label swapping):")
-            for hand_type in ['left_hand', 'right_hand']:
-                hand_data = mirrored_hands.get(hand_type, [])
-                if hand_data:
-                    if isinstance(hand_data, dict) and 'landmarks' in hand_data:
-                        wrist = hand_data['landmarks'][0]
-                        print(f"    mirrored {hand_type} wrist: x={wrist['x']:.3f}")
-                    elif isinstance(hand_data, list) and len(hand_data) > 0:
-                        wrist = hand_data[0]
-                        print(f"    mirrored {hand_type} wrist: x={wrist['x']:.3f}")
-
-    # UPDATE: Swap missing_data hand labels to match the hand swapping
-    if missing_data:
-        mirrored_missing_data = missing_data.copy()
-        # Swap the missing data flags since we swapped the hands
-        mirrored_missing_data['left_hand_missing'] = missing_data.get('right_hand_missing', True)
-        mirrored_missing_data['right_hand_missing'] = missing_data.get('left_hand_missing', True)
-        # Keep face_missing and any_missing unchanged
-        mirrored_frame_data['missing_data'] = mirrored_missing_data
+    # Keep missing_data as-is (no swapping needed with simple approach)
+    if 'missing_data' in frame_data:
+        mirrored_frame_data['missing_data'] = frame_data['missing_data'].copy()
 
     # Mark as mirrored
     mirrored_frame_data['mirrored'] = True
-    mirrored_frame_data['calibration_preserved'] = True
-    mirrored_frame_data['semantic_labels_correct'] = True  # NEW: indicates proper hand swapping
-    mirrored_frame_data['hand_labels_swapped'] = True  # NEW: explicit flag for hand swapping
 
     return mirrored_frame_data
-
 
 def mirror_single_hand_data(hand_data, frame_width: int):
     """
@@ -1452,8 +1412,8 @@ def calibrate_hands_to_wrists(hands_data: Dict, pose_wrists: Dict) -> Dict:
 
     # Mapping between hand types and pose wrist names
     hand_to_wrist_mapping = {
-        'left_hand': 'LEFT_WRIST',
-        'right_hand': 'RIGHT_WRIST'
+        'left_hand': 'RIGHT_WRIST',
+        'right_hand': 'LEFT_WRIST'
     }
 
     for hand_type in ['left_hand', 'right_hand']:
@@ -1672,14 +1632,12 @@ def process_image(
     Process a single image and extract all landmarks.
     [Keep existing implementation but can optionally integrate enhanced hand tracking]
     """
-    # ... keep your existing implementation unchanged for now ...
-    # This function is mainly for single images, so enhanced tracking is less critical
-    if DEBUG:
-        print(f"=== DEBUG process_image called ===")
-        print(f"File path: {file_path}")
-        print(f"Use enhancement: {use_enhancement}")
-        print(f"Detect faces: {detect_faces}")
-        print(f"Detect pose: {detect_pose}")
+    # if DEBUG:
+    #     print(f"=== DEBUG process_image called ===")
+    #     print(f"File path: {file_path}")
+    #     print(f"Use enhancement: {use_enhancement}")
+    #     print(f"Detect faces: {detect_faces}")
+    #     print(f"Detect pose: {detect_pose}")
 
     if not os.path.exists(file_path):
         print(f"ERROR: File not found: {file_path}")
@@ -2576,10 +2534,10 @@ def process_frame_enhanced(
             hand_data = frame_data["hands"].get(hand_type)
             if hand_data and isinstance(hand_data, dict) and 'landmarks' in hand_data:
                 wrist = hand_data['landmarks'][0]
-                print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
+                if DEBUG: print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
             elif hand_data and isinstance(hand_data, list) and len(hand_data) > 0:
                 wrist = hand_data[0]
-                print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
+                if DEBUG:print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
 
         # STEP 5: Apply mirroring AFTER calibration
         if not disable_mirroring:
@@ -2589,7 +2547,7 @@ def process_frame_enhanced(
                 hand_data = frame_data["hands"].get(hand_type)
                 if hand_data and isinstance(hand_data, dict) and 'landmarks' in hand_data:
                     wrist = hand_data['landmarks'][0]
-                    print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
+                    if DEBUG: print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
 
         # Save frame data using actual frame number as key
         all_frames_data[str(actual_frame_number)] = frame_data
