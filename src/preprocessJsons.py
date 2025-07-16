@@ -1,25 +1,23 @@
 """
-Sign Language Data Preprocessor
+Enhanced Sign Language Data Preprocessor with Phoenix Dataset Support
 
 This module provides preprocessing functionality to convert JSON landmark data
-from the sign language processing pipeline into tensor-ready format for ML models.
-
-Features:
-- Multi-modal data handling (hands, face, pose)
-- Sequence padding and normalization
-- Data augmentation capabilities
-- Missing data interpolation
-- Configurable feature extraction
+from the sign language processing pipeline into tensor-ready format for ML models,
+with specific support for Phoenix dataset and LSTM training.
 """
 
 import json
 import numpy as np
 import torch
+import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union, Any
 from dataclasses import dataclass
 from collections import defaultdict
 import warnings
+from sklearn.preprocessing import LabelEncoder
+from torch.utils.data import Dataset, DataLoader
+import pickle
 
 CORE_POSE_LANDMARKS = [
     'NOSE',
@@ -28,13 +26,6 @@ CORE_POSE_LANDMARKS = [
     'LEFT_HIP', 'RIGHT_HIP',
 ]
 
-# CORE_POSE_LANDMARKS = [
-#     'NOSE', 'LEFT_EYE_INNER', 'LEFT_EYE', 'LEFT_EYE_OUTER', 'RIGHT_EYE_INNER',
-#     'RIGHT_EYE', 'RIGHT_EYE_OUTER', 'LEFT_EAR', 'RIGHT_EAR', 'MOUTH_LEFT', 'MOUTH_RIGHT',
-#     'LEFT_SHOULDER', 'RIGHT_SHOULDER', 'LEFT_ELBOW', 'RIGHT_ELBOW', 'LEFT_WRIST', 'RIGHT_WRIST',
-#     'LEFT_HIP', 'RIGHT_HIP', 'LEFT_KNEE', 'RIGHT_KNEE', 'LEFT_ANKLE', 'RIGHT_ANKLE',
-#     'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
-# ]
 @dataclass
 class PreprocessingConfig:
     """Configuration for preprocessing parameters"""
@@ -80,14 +71,153 @@ class PreprocessingConfig:
     output_format: str = "tensor"  # "tensor", "numpy", or "dict"
     device: str = "cpu"
 
+    # Phoenix dataset specific
+    phoenix_data_path: Optional[str] = None
+    phoenix_annotations_path: Optional[str] = None
+    vocab_size: int = 1000  # Maximum vocabulary size for glosses
+
+
+class PhoenixDataset(Dataset):
+    """Dataset class for Phoenix sign language data"""
+
+    def __init__(self,
+                 json_paths: List[str],
+                 annotations: List[str],
+                 preprocessor: 'SignLanguagePreprocessor',
+                 vocab_path: Optional[str] = None):
+        """
+        Initialize Phoenix dataset
+
+        Args:
+            json_paths: List of paths to JSON files
+            annotations: List of annotation strings (glosses)
+            preprocessor: Initialized preprocessor
+            vocab_path: Path to vocabulary file (optional)
+        """
+        self.json_paths = json_paths
+        self.annotations = annotations
+        self.preprocessor = preprocessor
+
+        # Build vocabulary
+        self.vocab = self._build_vocabulary(vocab_path)
+        self.label_encoder = LabelEncoder()
+
+        # Create label mappings
+        all_glosses = []
+        for annotation in annotations:
+            all_glosses.extend(annotation.split())
+
+        unique_glosses = list(set(all_glosses))
+        self.label_encoder.fit(unique_glosses)
+
+        # Add special tokens
+        self.vocab['<PAD>'] = 0
+        self.vocab['<UNK>'] = 1
+        self.vocab['<SOS>'] = 2
+        self.vocab['<EOS>'] = 3
+
+        # Update vocab with glosses
+        for i, gloss in enumerate(unique_glosses):
+            if gloss not in self.vocab:
+                self.vocab[gloss] = len(self.vocab)
+
+        self.vocab_size = len(self.vocab)
+
+    def _build_vocabulary(self, vocab_path: Optional[str] = None) -> Dict[str, int]:
+        """Build vocabulary from annotations"""
+        if vocab_path and Path(vocab_path).exists():
+            with open(vocab_path, 'rb') as f:
+                return pickle.load(f)
+        return {}
+
+    def save_vocabulary(self, vocab_path: str):
+        """Save vocabulary to file"""
+        with open(vocab_path, 'wb') as f:
+            pickle.dump(self.vocab, f)
+
+    def encode_annotation(self, annotation: str) -> List[int]:
+        """Encode annotation string to token IDs"""
+        tokens = annotation.split()
+        encoded = [self.vocab.get(token, self.vocab['<UNK>']) for token in tokens]
+        return [self.vocab['<SOS>']] + encoded + [self.vocab['<EOS>']]
+
+    def decode_annotation(self, token_ids: List[int]) -> str:
+        """Decode token IDs back to annotation string"""
+        id_to_vocab = {v: k for k, v in self.vocab.items()}
+        tokens = [id_to_vocab.get(token_id, '<UNK>') for token_id in token_ids]
+        # Remove special tokens
+        tokens = [t for t in tokens if t not in ['<PAD>', '<SOS>', '<EOS>']]
+        return ' '.join(tokens)
+
+    def __len__(self):
+        return len(self.json_paths)
+
+    def __getitem__(self, idx):
+        try:
+            # Load and preprocess the sequence
+            result = self.preprocessor.process_file(self.json_paths[idx])
+
+            # Encode annotation
+            encoded_annotation = self.encode_annotation(self.annotations[idx])
+
+            # Pad annotation to max length
+            max_annotation_length = 50  # Adjust based on your data
+            if len(encoded_annotation) > max_annotation_length:
+                encoded_annotation = encoded_annotation[:max_annotation_length]
+            else:
+                encoded_annotation.extend([self.vocab['<PAD>']] * (max_annotation_length - len(encoded_annotation)))
+
+            # Ensure consistent tensor shapes
+            sequence = result['sequence']
+            attention_mask = result['attention_mask']
+
+            # Verify shapes are correct
+            expected_seq_shape = (self.preprocessor.config.max_sequence_length, self.preprocessor.feature_dims['total'])
+            expected_mask_shape = (self.preprocessor.config.max_sequence_length,)
+
+            if sequence.shape != expected_seq_shape:
+                print(
+                    f"Warning: Sequence shape mismatch at idx {idx}: {sequence.shape} vs expected {expected_seq_shape}")
+                # Create properly shaped tensor
+                fixed_sequence = torch.zeros(expected_seq_shape, dtype=sequence.dtype)
+                min_seq_len = min(sequence.shape[0], expected_seq_shape[0])
+                min_feat_len = min(sequence.shape[1], expected_seq_shape[1])
+                fixed_sequence[:min_seq_len, :min_feat_len] = sequence[:min_seq_len, :min_feat_len]
+                sequence = fixed_sequence
+
+            if attention_mask.shape != expected_mask_shape:
+                print(
+                    f"Warning: Attention mask shape mismatch at idx {idx}: {attention_mask.shape} vs expected {expected_mask_shape}")
+                # Create properly shaped tensor
+                fixed_mask = torch.zeros(expected_mask_shape, dtype=attention_mask.dtype)
+                min_len = min(attention_mask.shape[0], expected_mask_shape[0])
+                fixed_mask[:min_len] = attention_mask[:min_len]
+                attention_mask = fixed_mask
+
+            return {
+                'sequence': sequence,
+                'attention_mask': attention_mask,
+                'labels': torch.tensor(encoded_annotation, dtype=torch.long),
+                'annotation': self.annotations[idx],
+                'metadata': result['metadata']
+            }
+        except Exception as e:
+            print(f"Error loading sample {idx} (file: {self.json_paths[idx]}): {e}")
+            # Return a dummy sample with correct shapes
+            return {
+                'sequence': torch.zeros(self.preprocessor.config.max_sequence_length,
+                                        self.preprocessor.feature_dims['total']),
+                'attention_mask': torch.zeros(self.preprocessor.config.max_sequence_length, dtype=torch.bool),
+                'labels': torch.zeros(50, dtype=torch.long),  # max_annotation_length
+                'annotation': '',
+                'metadata': {}
+            }
+
 
 class SignLanguagePreprocessor:
     """
-    Preprocessor for converting JSON landmark data to ML-ready tensors
-
-    This class handles the conversion of sign language landmark data from JSON format
-    (as produced by your video processing pipeline) into structured tensors suitable
-    for training neural networks.
+    Enhanced preprocessor for converting JSON landmark data to ML-ready tensors
+    with Phoenix dataset support
     """
 
     def __init__(self, config: PreprocessingConfig = None):
@@ -156,46 +286,187 @@ class SignLanguagePreprocessor:
             dims['face'] = face_landmarks * 3  # x, y, z coordinates
 
         if self.config.include_pose:
-            pose_dim = self.config.pose_landmarks_count * 3
+            pose_dim = len(CORE_POSE_LANDMARKS) * 3
             if self.config.include_pose_visibility:
-                pose_dim += self.config.pose_landmarks_count  # Visibility scores
+                pose_dim += len(CORE_POSE_LANDMARKS)  # Visibility scores
             dims['pose'] = pose_dim
 
         dims['total'] = dims['hands'] + dims['face'] + dims['pose']
         return dims
 
-    def load_json_data(self, json_path: Union[str, Path]) -> Dict:
+    def load_phoenix_annotations(self, excel_path: str) -> pd.DataFrame:
         """
-        Load landmark data from JSON file
+        Load Phoenix dataset annotations from Excel or CSV file
 
         Args:
-            json_path: Path to the video_landmarks.json file
+            excel_path: Path to Excel or CSV file with annotations
 
         Returns:
-            Dictionary containing metadata and frame data
+            DataFrame with columns: id, folder, signer, annotation
         """
-        json_path = Path(json_path)
-        if not json_path.exists():
-            raise FileNotFoundError(f"JSON file not found: {json_path}")
+        try:
+            file_path = Path(excel_path)
+            print(f"Loading Phoenix annotations from: {file_path}")
 
-        with open(json_path, 'r') as f:
-            data = json.load(f)
+            # Step 1: Try to load file with automatic format detection
+            df = None
 
-        if 'frames' not in data:
-            raise ValueError("Invalid JSON format: 'frames' key not found")
+            if file_path.suffix.lower() in ['.xlsx', '.xls']:
+                df = pd.read_excel(file_path)
+                print("✅ Loaded Excel file")
+            else:
+                # For CSV files, try different separators
+                separators = ['|', ',', '\t', ';']  # Put | first since it's common for Phoenix
 
-        return data
+                print("🔍 Trying different separators...")
+                for sep in separators:
+                    try:
+                        test_df = pd.read_csv(file_path, sep=sep, nrows=3)
+                        print(f"  Separator '{sep}': {len(test_df.columns)} columns")
+
+                        if len(test_df.columns) >= 4:  # Need at least 4 columns
+                            df = pd.read_csv(file_path, sep=sep)
+                            print(f"✅ Successfully loaded with separator '{sep}'")
+                            break
+                    except Exception as e:
+                        print(f"  Separator '{sep}': Failed")
+                        continue
+
+                if df is None:
+                    # Last resort: try reading as pipe-separated
+                    try:
+                        df = pd.read_csv(file_path, sep='|', engine='python')
+                        print("✅ Fallback: loaded with pipe separator")
+                    except Exception as e:
+                        raise ValueError(f"Could not parse file with any separator: {e}")
+
+            if df is None:
+                raise ValueError("Failed to load annotations file")
+
+            # Step 2: Validate and fix column names
+            expected_columns = ['id', 'folder', 'signer', 'annotation']
+
+            print(f"📊 Initial shape: {df.shape}")
+            print(f"📋 Columns found: {list(df.columns)}")
+
+            # Check if we have the exact column names
+            if all(col in df.columns for col in expected_columns):
+                print("✅ All expected columns found")
+            else:
+                print("⚠️  Column names don't match exactly, attempting to map...")
+
+                if len(df.columns) < 4:
+                    raise ValueError(f"Insufficient columns: expected 4, found {len(df.columns)}")
+
+                # Map first 4 columns to expected names
+                column_mapping = {}
+                for i, expected_col in enumerate(expected_columns):
+                    if i < len(df.columns):
+                        old_col = df.columns[i]
+                        column_mapping[old_col] = expected_col
+
+                print(f"🔄 Column mapping: {column_mapping}")
+                df = df.rename(columns=column_mapping)
+
+            # Step 3: Keep only expected columns and clean data
+            df = df[expected_columns].copy()
+
+            # Clean the data
+            initial_rows = len(df)
+            df = df.dropna()  # Remove rows with missing values
+            df['id'] = df['id'].astype(str).str.strip()
+            df['annotation'] = df['annotation'].astype(str).str.strip()
+            df['signer'] = df['signer'].astype(str).str.strip()
+            df['folder'] = df['folder'].astype(str).str.strip()
+
+            # Remove empty annotations
+            df = df[df['annotation'].str.len() > 0]
+
+            final_rows = len(df)
+            if final_rows < initial_rows:
+                print(f"⚠️  Removed {initial_rows - final_rows} rows with missing/empty data")
+
+            print(f"✅ Final shape: {df.shape}")
+            print(f"👥 Unique signers: {df['signer'].nunique()}")
+            print(f"📝 Sample annotations:")
+            for i, annotation in enumerate(df['annotation'].head(3)):
+                print(f"   {i+1}. {annotation}")
+
+            return df
+
+        except Exception as e:
+            print(f"❌ Error loading Phoenix annotations: {e}")
+
+            # Enhanced debugging
+            if Path(excel_path).exists():
+                try:
+                    print("🔍 File debugging info:")
+                    with open(excel_path, 'r', encoding='utf-8') as f:
+                        first_lines = [f.readline().strip() for _ in range(3)]
+
+                    print(f"   File size: {Path(excel_path).stat().st_size} bytes")
+                    print(f"   First 3 lines:")
+                    for i, line in enumerate(first_lines):
+                        line_preview = line[:80] + "..." if len(line) > 80 else line
+                        print(f"     {i+1}: {line_preview}")
+
+                except Exception as debug_error:
+                    print(f"   Could not read file for debugging: {debug_error}")
+            else:
+                print(f"   File does not exist: {excel_path}")
+
+            return pd.DataFrame()  # Return empty DataFrame instead of raising
+
+    def create_phoenix_dataset(self,
+                              data_dir: str,
+                              annotations_path: str,
+                              vocab_path: Optional[str] = None) -> PhoenixDataset:
+        """
+        Create Phoenix dataset from JSON files and annotations
+
+        Args:
+            data_dir: Directory containing JSON files
+            annotations_path: Path to Excel file with annotations
+            vocab_path: Path to vocabulary file (optional)
+
+        Returns:
+            PhoenixDataset instance
+        """
+        # Load annotations
+        annotations_df = self.load_phoenix_annotations(annotations_path)
+
+        if annotations_df.empty:
+            raise ValueError("Could not load annotations")
+
+        # Find corresponding JSON files
+        json_paths = []
+        valid_annotations = []
+
+        data_path = Path(data_dir)
+
+        for _, row in annotations_df.iterrows():
+            json_file = data_path / f"{row['id']}.json"
+
+            if json_file.exists():
+                json_paths.append(str(json_file))
+                valid_annotations.append(row['annotation'])
+            else:
+                print(f"Warning: JSON file not found for {row['id']}")
+
+        print(f"Found {len(json_paths)} valid JSON files out of {len(annotations_df)} annotations")
+
+        # Create dataset
+        dataset = PhoenixDataset(
+            json_paths=json_paths,
+            annotations=valid_annotations,
+            preprocessor=self,
+            vocab_path=vocab_path
+        )
+
+        return dataset
 
     def extract_hand_features(self, hand_data: Dict) -> np.ndarray:
-        """
-        Extract hand features from hand data
-
-        Args:
-            hand_data: Hand landmarks data for both hands
-
-        Returns:
-            Array of shape (hand_features,) containing hand coordinates and confidence
-        """
+        """Extract hand features from hand data"""
         features = []
 
         for hand_type in ['left_hand', 'right_hand']:
@@ -214,15 +485,19 @@ class SignLanguagePreprocessor:
                 landmarks = []
                 confidence = 0.0
 
-            # Extract coordinates
+            # Extract coordinates - ensure exactly 21 landmarks
             hand_coords = []
-            if landmarks and len(landmarks) >= self.config.hand_landmarks_count:
-                for i in range(self.config.hand_landmarks_count):
+            for i in range(self.config.hand_landmarks_count):  # Should be 21
+                if i < len(landmarks):
                     lm = landmarks[i]
-                    hand_coords.extend([lm['x'], lm['y'], lm['z']])
-            else:
-                # Missing hand - fill with zeros
-                hand_coords = [0.0] * (self.config.hand_landmarks_count * 3)
+                    if isinstance(lm, dict) and all(k in lm for k in ['x', 'y', 'z']):
+                        hand_coords.extend([lm['x'], lm['y'], lm['z']])
+                    else:
+                        # Invalid landmark data
+                        hand_coords.extend([0.0, 0.0, 0.0])
+                else:
+                    # Missing landmark
+                    hand_coords.extend([0.0, 0.0, 0.0])
 
             features.extend(hand_coords)
 
@@ -232,15 +507,7 @@ class SignLanguagePreprocessor:
         return np.array(features, dtype=np.float32)
 
     def extract_face_features(self, face_data: Dict) -> np.ndarray:
-        """
-        Extract face features from face data
-
-        Args:
-            face_data: Face landmarks data
-
-        Returns:
-            Array of shape (face_features,) containing face coordinates
-        """
+        """Extract face features from face data"""
         features = []
 
         face_landmarks = face_data.get('all_landmarks', [])
@@ -268,22 +535,11 @@ class SignLanguagePreprocessor:
         return np.array(features, dtype=np.float32)
 
     def extract_pose_features(self, pose_data: Dict) -> np.ndarray:
-        """
-        Extract pose features from pose data
-
-        Args:
-            pose_data: Pose landmarks data
-
-        Returns:
-            Array of shape (pose_features,) containing pose coordinates and visibility
-        """
+        """Extract pose features from pose data"""
         features = []
 
-        # MediaPipe pose landmark names in order
-        pose_landmarks = CORE_POSE_LANDMARKS
-
         # Extract coordinates
-        for landmark_name in pose_landmarks:
+        for landmark_name in CORE_POSE_LANDMARKS:
             if landmark_name in pose_data:
                 lm = pose_data[landmark_name]
                 features.extend([lm['x'], lm['y'], lm['z']])
@@ -292,7 +548,7 @@ class SignLanguagePreprocessor:
 
         # Extract visibility if requested
         if self.config.include_pose_visibility:
-            for landmark_name in pose_landmarks:
+            for landmark_name in CORE_POSE_LANDMARKS:
                 if landmark_name in pose_data:
                     visibility = pose_data[landmark_name].get('visibility', 1.0)
                     features.append(visibility)
@@ -302,48 +558,69 @@ class SignLanguagePreprocessor:
         return np.array(features, dtype=np.float32)
 
     def extract_frame_features(self, frame_data: Dict) -> np.ndarray:
-        """
-        Extract all features from a single frame
-
-        Args:
-            frame_data: Complete frame data including hands, face, and pose
-
-        Returns:
-            Array of shape (total_features,) containing all extracted features
-        """
+        """Extract all features from a single frame"""
         features = []
 
         # Extract hand features
         if self.config.include_hands:
             hand_features = self.extract_hand_features(frame_data.get('hands', {}))
+            # Ensure consistent size
+            expected_hand_size = self.feature_dims['hands']
+            if len(hand_features) != expected_hand_size:
+                print(f"Warning: Hand features size mismatch: {len(hand_features)} vs expected {expected_hand_size}")
+                # Pad or truncate to expected size
+                padded_features = np.zeros(expected_hand_size, dtype=np.float32)
+                min_len = min(len(hand_features), expected_hand_size)
+                padded_features[:min_len] = hand_features[:min_len]
+                hand_features = padded_features
             features.append(hand_features)
 
         # Extract face features
         if self.config.include_face:
             face_features = self.extract_face_features(frame_data.get('face', {}))
+            # Ensure consistent size
+            expected_face_size = self.feature_dims['face']
+            if len(face_features) != expected_face_size:
+                print(f"Warning: Face features size mismatch: {len(face_features)} vs expected {expected_face_size}")
+                # Pad or truncate to expected size
+                padded_features = np.zeros(expected_face_size, dtype=np.float32)
+                min_len = min(len(face_features), expected_face_size)
+                padded_features[:min_len] = face_features[:min_len]
+                face_features = padded_features
             features.append(face_features)
 
         # Extract pose features
         if self.config.include_pose:
             pose_features = self.extract_pose_features(frame_data.get('pose', {}))
+            # Ensure consistent size
+            expected_pose_size = self.feature_dims['pose']
+            if len(pose_features) != expected_pose_size:
+                print(f"Warning: Pose features size mismatch: {len(pose_features)} vs expected {expected_pose_size}")
+                # Pad or truncate to expected size
+                padded_features = np.zeros(expected_pose_size, dtype=np.float32)
+                min_len = min(len(pose_features), expected_pose_size)
+                padded_features[:min_len] = pose_features[:min_len]
+                pose_features = padded_features
             features.append(pose_features)
 
         # Concatenate all features
         if features:
-            return np.concatenate(features)
+            result = np.concatenate(features)
+            # Final shape check
+            if len(result) != self.feature_dims['total']:
+                print(f"Warning: Total features size mismatch: {len(result)} vs expected {self.feature_dims['total']}")
+                # Ensure correct final size
+                final_features = np.zeros(self.feature_dims['total'], dtype=np.float32)
+                min_len = min(len(result), self.feature_dims['total'])
+                final_features[:min_len] = result[:min_len]
+                return final_features
+            return result
         else:
-            return np.array([], dtype=np.float32)
+            return np.zeros(self.feature_dims['total'], dtype=np.float32)
+
 
     def normalize_coordinates(self, features: np.ndarray) -> np.ndarray:
-        """
-        Normalize coordinate features to specified range
-
-        Args:
-            features: Feature array with coordinate data
-
-        Returns:
-            Normalized feature array
-        """
+        """Normalize coordinate features to specified range"""
         if not self.config.normalize_coordinates:
             return features
 
@@ -358,16 +635,7 @@ class SignLanguagePreprocessor:
 
     def interpolate_missing_frames(self, sequence: np.ndarray,
                                    valid_mask: np.ndarray) -> np.ndarray:
-        """
-        Interpolate missing frames in a sequence
-
-        Args:
-            sequence: Array of shape (seq_len, features)
-            valid_mask: Boolean mask indicating valid frames
-
-        Returns:
-            Interpolated sequence
-        """
+        """Interpolate missing frames in a sequence"""
         if not self.config.interpolate_missing or np.all(valid_mask):
             return sequence
 
@@ -402,15 +670,7 @@ class SignLanguagePreprocessor:
         return interpolated
 
     def pad_sequence(self, sequence: np.ndarray) -> np.ndarray:
-        """
-        Pad sequence to target length
-
-        Args:
-            sequence: Array of shape (seq_len, features)
-
-        Returns:
-            Padded sequence of shape (max_seq_len, features)
-        """
+        """Pad sequence to target length"""
         seq_len, features = sequence.shape
         target_len = self.config.max_sequence_length
 
@@ -436,18 +696,22 @@ class SignLanguagePreprocessor:
 
         raise ValueError(f"Unknown padding strategy: {self.config.padding_strategy}")
 
+    def load_json_data(self, json_path: Union[str, Path]) -> Dict:
+        """Load landmarks data from JSON file"""
+        json_path = Path(json_path)
+        if not json_path.exists():
+            raise FileNotFoundError(f"JSON file not found: {json_path}")
 
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+
+        if 'frames' not in data:
+            raise ValueError("Invalid JSON format: 'frames' key not found")
+
+        return data
 
     def process_sequence(self, json_data: Dict) -> Tuple[np.ndarray, Dict]:
-        """
-        Process a complete sequence from JSON data
-
-        Args:
-            json_data: Complete JSON data with metadata and frames
-
-        Returns:
-            Tuple of (processed_sequence, metadata)
-        """
+        """Process a complete sequence from JSON data"""
         frames_data = json_data['frames']
         metadata = json_data.get('metadata', {})
 
@@ -514,15 +778,7 @@ class SignLanguagePreprocessor:
         return sequence, processing_metadata
 
     def process_file(self, json_path: Union[str, Path]) -> Union[torch.Tensor, np.ndarray, Dict]:
-        """
-        Process a single JSON file and return tensor-ready data
-
-        Args:
-            json_path: Path to the video_landmarks.json file
-
-        Returns:
-            Processed data in the format specified by config.output_format
-        """
+        """Process a single JSON file and return tensor-ready data"""
         # Load and process data
         json_data = self.load_json_data(json_path)
         sequence, metadata = self.process_sequence(json_data)
@@ -556,15 +812,7 @@ class SignLanguagePreprocessor:
             raise ValueError(f"Unknown output format: {self.config.output_format}")
 
     def process_batch(self, json_paths: List[Union[str, Path]]) -> Dict:
-        """
-        Process multiple JSON files in batch
-
-        Args:
-            json_paths: List of paths to video_landmarks.json files
-
-        Returns:
-            Dictionary containing batched data
-        """
+        """Process multiple JSON files in batch"""
         sequences = []
         attention_masks = []
         metadata_list = []
@@ -597,6 +845,18 @@ class SignLanguagePreprocessor:
         }
 
 
+def validate_feature_dimensions(self, frame_data: Dict) -> bool:
+    """Validate that extracted features match expected dimensions"""
+    features = self.extract_frame_features(frame_data)
+    expected_size = self.feature_dims['total']
+    actual_size = len(features)
+
+    if actual_size != expected_size:
+        print(f"Feature dimension mismatch: expected {expected_size}, got {actual_size}")
+        return False
+    return True
+
+
 # Example usage and utility functions
 def create_default_config(**kwargs) -> PreprocessingConfig:
     """Create a default configuration with optional overrides"""
@@ -610,12 +870,7 @@ def create_default_config(**kwargs) -> PreprocessingConfig:
 
 
 def preprocess_single(json_path: str):
-    """
-    Demonstration of preprocessing functionality
-
-    Args:
-        json_path: Path to a video_landmarks.json file
-    """
+    """Demonstration of preprocessing functionality"""
     print("=== Sign Language Data Preprocessing ===\n")
 
     # Create configuration
