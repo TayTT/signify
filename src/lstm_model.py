@@ -581,6 +581,7 @@ class SignLanguageTrainer:
     def train(self):
         """Main training loop"""
         print("Starting training...")
+        torch.set_num_threads(4)
 
         for epoch in range(self.config.num_epochs):
             print(f"\nEpoch {epoch + 1}/{self.config.num_epochs}")
@@ -611,6 +612,13 @@ class SignLanguageTrainer:
             print(f"Val Accuracy: {metrics['accuracy']:.4f}")
             print(f"Val F1: {metrics['f1']:.4f}")
 
+            # Optional analysis (with error handling)
+            if (epoch + 1) % 3 == 0:  # Every 3 epochs, less frequent
+                try:
+                    self.analyze_predictions(num_samples=2)  # Fewer samples
+                except Exception as e:
+                    print(f"Skipping analysis due to error: {e}")
+
             # Save best model
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
@@ -628,8 +636,27 @@ class SignLanguageTrainer:
 
         print("Training completed!")
 
-        # Plot training curves
-        self._plot_training_curves()
+        # Plot training curves (with error handling)
+        try:
+            self._plot_training_curves()
+        except Exception as e:
+            print(f"Could not plot training curves: {e}")
+
+        print("Training completed!")
+
+        # Plot training curves (with error handling)
+        try:
+            self._plot_training_curves()
+        except Exception as e:
+            print(f"Could not plot training curves: {e}")
+
+        # Final evaluation (with error handling)
+        print("\n=== Final Evaluation ===")
+        try:
+            self.evaluate_sample(0)
+        except Exception as e:
+            print(f"Final evaluation failed: {e}")
+            print("Training completed successfully despite evaluation error.")
 
     def save_model(self):
         """Save model checkpoint"""
@@ -646,7 +673,7 @@ class SignLanguageTrainer:
         torch.save(checkpoint, self.config.model_save_path)
 
         # Save to WandB
-        wandb.save(self.config.model_save_path)
+        # wandb.save(self.config.model_save_path)
 
     def load_model(self, checkpoint_path: str):
         """Load model from checkpoint"""
@@ -679,25 +706,71 @@ class SignLanguageTrainer:
 
     def evaluate_sample(self, sample_idx: int = 0):
         """Evaluate a single sample and show predictions"""
+        try:
+            self.model.eval()
+
+            sample = self.dataset[sample_idx]
+            sequences = sample['sequence'].unsqueeze(0).to(self.device)
+            attention_mask = sample['attention_mask'].unsqueeze(0).to(self.device)
+            labels = sample['labels'].unsqueeze(0).to(self.device)
+
+            with torch.no_grad():
+                outputs = self.model(sequences, attention_mask)
+                predictions = outputs['predictions']
+
+            # Decode predictions and labels safely
+            try:
+                pred_text = self.dataset.decode_annotation(predictions[0].cpu().numpy())
+                true_text = sample['annotation']
+            except Exception as e:
+                print(f"Decoding failed: {e}")
+                pred_text = "<DECODE_ERROR>"
+                true_text = sample.get('annotation', '<UNKNOWN>')
+
+            print(f"True annotation: {true_text}")
+            print(f"Predicted annotation: {pred_text}")
+
+            return pred_text, true_text
+
+        except Exception as e:
+            print(f"Evaluation failed: {e}")
+            return "<ERROR>", "<ERROR>"
+
+    def analyze_predictions(self, num_samples: int = 5):
+        """Analyze what the model is predicting"""
         self.model.eval()
 
-        sample = self.dataset[sample_idx]
-        sequences = sample['sequence'].unsqueeze(0).to(self.device)
-        attention_mask = sample['attention_mask'].unsqueeze(0).to(self.device)
-        labels = sample['labels'].unsqueeze(0).to(self.device)
+        print(f"\n=== Prediction Analysis ===")
 
-        with torch.no_grad():
-            outputs = self.model(sequences, attention_mask)
-            predictions = outputs['predictions']
+        try:
+            # Create id_to_vocab mapping safely
+            id_to_vocab = {v: k for k, v in self.dataset.vocab.items()}
 
-        # Decode predictions and labels
-        pred_text = self.dataset.decode_annotation(predictions[0].cpu().numpy())
-        true_text = sample['annotation']
+            with torch.no_grad():
+                for i in range(min(num_samples, len(self.dataset))):
+                    sample = self.dataset[i]
+                    sequences = sample['sequence'].unsqueeze(0).to(self.device)
+                    attention_mask = sample['attention_mask'].unsqueeze(0).to(self.device)
 
-        print(f"True annotation: {true_text}")
-        print(f"Predicted annotation: {pred_text}")
+                    outputs = self.model(sequences, attention_mask)
+                    predictions = outputs['predictions']
 
-        return pred_text, true_text
+                    # Analyze prediction distribution
+                    pred_tokens = predictions[0].cpu().numpy()
+                    unique_tokens, counts = np.unique(pred_tokens, return_counts=True)
+
+                    print(f"\nSample {i}:")
+                    print(f"  True: {sample['annotation']}")
+                    print(f"  Prediction token distribution: {dict(zip(unique_tokens, counts))}")
+
+                    # Show token meanings safely
+                    for token_id, count in zip(unique_tokens[:5], counts[:5]):  # Only first 5
+                        token_text = id_to_vocab.get(int(token_id), f'UNK_{token_id}')
+                        print(f"    ID {token_id} ('{token_text}'): {count} times")
+
+        except Exception as e:
+            print(f"Analysis failed (non-critical): {e}")
+            print("Continuing training...")
 
 
 def main():

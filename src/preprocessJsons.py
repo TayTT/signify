@@ -101,6 +101,7 @@ class PhoenixDataset(Dataset):
         # Build vocabulary
         self.vocab = self._build_vocabulary(vocab_path)
         self.label_encoder = LabelEncoder()
+        # self.id_to_vocab = {v: k for k, v in self.vocab.items()}
 
         # Create label mappings
         all_glosses = []
@@ -144,10 +145,30 @@ class PhoenixDataset(Dataset):
     def decode_annotation(self, token_ids: List[int]) -> str:
         """Decode token IDs back to annotation string"""
         id_to_vocab = {v: k for k, v in self.vocab.items()}
-        tokens = [id_to_vocab.get(token_id, '<UNK>') for token_id in token_ids]
-        # Remove special tokens
-        tokens = [t for t in tokens if t not in ['<PAD>', '<SOS>', '<EOS>']]
-        return ' '.join(tokens)
+        tokens = []
+
+        for token_id in token_ids:
+            if token_id == 0:  # Skip padding tokens
+                continue
+            elif token_id == self.vocab.get('<EOS>', -1):  # Stop at end-of-sequence
+                break
+            elif token_id == self.vocab.get('< SOS >', -1):  # Skip start-of-sequence
+                continue
+            else:
+                token_text = id_to_vocab.get(token_id, f'<UNK_ID_{token_id}>')
+                if token_text not in ['<PAD>', '<UNK>', '< SOS >', '<EOS>']:
+                    tokens.append(token_text)
+
+        result = ' '.join(tokens)
+
+        # Debug output
+        if not result.strip():
+            print(f"Debug: decode_annotation got empty result from {len(token_ids)} tokens")
+            print(f"First 10 token IDs: {token_ids[:10]}")
+            non_zero_tokens = [tid for tid in token_ids if tid != 0]
+            print(f"Non-zero tokens: {non_zero_tokens[:10]}")
+
+        return result
 
     def __len__(self):
         return len(self.json_paths)
@@ -176,8 +197,9 @@ class PhoenixDataset(Dataset):
             expected_mask_shape = (self.preprocessor.config.max_sequence_length,)
 
             if sequence.shape != expected_seq_shape:
-                print(
-                    f"Warning: Sequence shape mismatch at idx {idx}: {sequence.shape} vs expected {expected_seq_shape}")
+                if idx % 50 == 0:  # Only warn every 50 samples
+                    print(
+                        f"Info: Truncating sequence at idx {idx}: {sequence.shape[0]} -> {expected_seq_shape[0]} frames")
                 # Create properly shaped tensor
                 fixed_sequence = torch.zeros(expected_seq_shape, dtype=sequence.dtype)
                 min_seq_len = min(sequence.shape[0], expected_seq_shape[0])
@@ -186,8 +208,9 @@ class PhoenixDataset(Dataset):
                 sequence = fixed_sequence
 
             if attention_mask.shape != expected_mask_shape:
-                print(
-                    f"Warning: Attention mask shape mismatch at idx {idx}: {attention_mask.shape} vs expected {expected_mask_shape}")
+                if idx % 50 == 0:
+                    print(
+                    f"Warning: Attention mask shape mismatch at idx {idx}: {attention_mask.shape[0]} vs expected {expected_mask_shape[0]}")
                 # Create properly shaped tensor
                 fixed_mask = torch.zeros(expected_mask_shape, dtype=attention_mask.dtype)
                 min_len = min(attention_mask.shape[0], expected_mask_shape[0])
