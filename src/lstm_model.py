@@ -22,6 +22,8 @@ import pickle
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 import matplotlib.pyplot as plt
 import seaborn as sns
+from torch.optim.lr_scheduler import LambdaLR
+import math
 
 from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
 
@@ -108,12 +110,12 @@ class SignLanguageLSTM(nn.Module):
             hidden_size=config.hidden_size,
             num_layers=config.num_layers,
             dropout=config.dropout if config.num_layers > 1 else 0,
-            bidirectional=config.bidirectional,  # False for real-time
+            bidirectional=config.bidirectional,
             batch_first=True
         )
 
         # Attention mechanism
-        lstm_output_size = config.hidden_size  # No *2 since not bidirectional
+        lstm_output_size = config.hidden_size
         self.attention = nn.MultiheadAttention(
             embed_dim=lstm_output_size,
             num_heads=8,
@@ -121,9 +123,9 @@ class SignLanguageLSTM(nn.Module):
             batch_first=True
         )
 
-        # Output layers
+        # Output layers - ADD THE MISSING LAYER_NORM HERE
         self.dropout = nn.Dropout(config.dropout)
-        self.layer_norm = nn.LayerNorm(lstm_output_size)
+        self.layer_norm = nn.LayerNorm(lstm_output_size)  # ADD THIS LINE
 
         # Classification head
         self.classifier = nn.Sequential(
@@ -138,15 +140,7 @@ class SignLanguageLSTM(nn.Module):
 
     def forward(self, x, attention_mask=None, labels=None):
         """
-        Forward pass
-
-        Args:
-            x: Input tensor (batch_size, seq_len, input_size)
-            attention_mask: Attention mask (batch_size, seq_len)
-            labels: Target labels for training (batch_size, target_seq_len)
-
-        Returns:
-            Dictionary with logits, loss, and predictions
+        Forward pass with focal loss and L2 regularization
         """
         batch_size, seq_len, _ = x.shape
 
@@ -161,7 +155,6 @@ class SignLanguageLSTM(nn.Module):
 
         # Apply attention
         if attention_mask is not None:
-            # Convert attention mask to key padding mask
             key_padding_mask = ~attention_mask
         else:
             key_padding_mask = None
@@ -171,39 +164,77 @@ class SignLanguageLSTM(nn.Module):
             key_padding_mask=key_padding_mask
         )
 
-        # Residual connection and layer norm
+        # Residual connection and layer norm - FIXED TO USE CORRECT ATTRIBUTE
         x = self.layer_norm(lstm_out + attn_out)
         x = self.dropout(x)
 
         # Classification
         logits = self.classifier(x)
 
+        # Get predictions for evaluation
+        predictions = torch.argmax(logits, dim=-1)
+
         # Calculate loss if labels are provided
         loss = None
         if labels is not None:
             if self.use_ctc:
-                # CTC loss for sequence alignment
                 log_probs = F.log_softmax(logits, dim=-1)
-                input_lengths = attention_mask.sum(dim=1) if attention_mask is not None else torch.full((batch_size,), seq_len)
-                target_lengths = (labels != 0).sum(dim=1)  # Assuming 0 is padding token
+                input_lengths = attention_mask.sum(dim=1) if attention_mask is not None else torch.full((batch_size,),
+                                                                                                        seq_len)
+                target_lengths = (labels != 0).sum(dim=1)
 
                 loss = F.ctc_loss(
-                    log_probs.transpose(0, 1),  # (seq_len, batch_size, vocab_size)
+                    log_probs.transpose(0, 1),
                     labels,
                     input_lengths,
                     target_lengths,
-                    blank=0,  # Assuming 0 is blank/padding token
+                    blank=0,
                     reduction='mean'
                 )
             else:
-                # Standard cross-entropy loss
-                loss = F.cross_entropy(logits.reshape(-1, self.vocab_size), labels.reshape(-1))
+                # FOCAL LOSS: Focus on hard examples to prevent easy convergence
+                logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
+                labels_flat = labels.reshape(-1)
+
+                # Calculate cross-entropy without reduction
+                ce_loss = F.cross_entropy(logits_flat, labels_flat, ignore_index=0, reduction='none')
+
+                # Apply focal loss weighting
+                pt = torch.exp(-ce_loss)  # Probability of true class
+                focal_weight = (1 - pt) ** 2  # Focus on hard examples (low pt)
+                focal_loss = focal_weight * ce_loss
+
+                # Only average over non-padding tokens
+                mask = labels_flat != 0
+                if mask.sum() > 0:
+                    loss = focal_loss[mask].mean()
+                else:
+                    loss = focal_loss.mean()  # Fallback if all padding
+
+            # L2 REGULARIZATION: Prevent overfitting and force harder learning
+            l2_penalty = 0
+
+            # Regularize classifier layers
+            for param in self.classifier.parameters():
+                l2_penalty += torch.norm(param, 2)
+
+            # Regularize LSTM parameters
+            for param in self.lstm.parameters():
+                l2_penalty += torch.norm(param, 2)
+
+            # Regularize input projection
+            for param in self.input_projection.parameters():
+                l2_penalty += torch.norm(param, 2)
+
+            # Add L2 penalty to loss
+            l2_lambda = 0.001  # L2 regularization strength
+            loss = loss + l2_lambda * l2_penalty
 
         return {
             'logits': logits,
             'loss': loss,
             'attention_weights': attention_weights,
-            'predictions': torch.argmax(logits, dim=-1)
+            'predictions': predictions
         }
 
     def predict(self, x, attention_mask=None):
@@ -304,22 +335,50 @@ class SignLanguageTrainer:
         # Initialize optimizer and scheduler
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=config.learning_rate,
-            weight_decay=config.weight_decay
+            lr=5e-5,  # Much lower starting rate
+            weight_decay=config.weight_decay,
+            betas=(0.9, 0.999),
+            eps=1e-8
         )
 
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        # self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        #     self.optimizer,
+        #     mode='min',
+        #     factor=0.5,
+        #     patience=5
+        # )
+
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer,
-            mode='min',
-            factor=0.5,
-            patience=5
+            step_size=10,  # Reduce LR every 10 epochs
+            gamma=0.8  # Multiply LR by 0.8
         )
+
+
 
         # Training tracking
         self.best_val_loss = float('inf')
         self.patience_counter = 0
         self.train_losses = []
         self.val_losses = []
+
+        def lr_lambda_func(step):
+            warmup_steps = 20
+            total_steps = 200
+
+            if step < warmup_steps:
+                # Warmup phase
+                return max(0.1, step / warmup_steps)  # Minimum 10% of base LR
+            else:
+                # Cosine decay phase with safety checks
+                progress = (step - warmup_steps) / (total_steps - warmup_steps)
+                progress = max(0.0, min(1.0, progress))  # Clamp between 0 and 1
+
+                import math
+                return 0.5 * (1 + math.cos(math.pi * progress))
+
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda_func)
+
 
     def _load_dataset(self) -> PhoenixDataset:
         """Load and create Phoenix dataset"""
@@ -457,7 +516,7 @@ class SignLanguageTrainer:
             loss.backward()
 
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
 
             # Update parameters
             self.optimizer.step()
@@ -578,6 +637,19 @@ class SignLanguageTrainer:
                 'f1': 0.0
             }
 
+    # def get_curriculum_sampler(self, epoch):
+    #     """Create curriculum learning sampler"""
+    #     # Start with shorter sequences, gradually include longer ones
+    #     max_allowed_length = min(50 + epoch * 5, 200)  # Gradually increase
+    #
+    #     valid_indices = []
+    #     for i, sample in enumerate(self.dataset):
+    #         seq_length = sample['attention_mask'].sum().item()
+    #         if seq_length <= max_allowed_length:
+    #             valid_indices.append(i)
+    #
+    #     return torch.utils.data.SubsetRandomSampler(valid_indices)
+
     def train(self):
         """Main training loop"""
         print("Starting training...")
@@ -593,7 +665,7 @@ class SignLanguageTrainer:
             val_loss, metrics = self.validate_epoch()
 
             # Update learning rate
-            self.scheduler.step(val_loss)
+            self.scheduler.step()
 
             # Log to WandB
             wandb.log({

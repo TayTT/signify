@@ -72,7 +72,7 @@ class PhoenixDatasetManager:
                         if len(test_df.columns) >= 4:  # Need at least 4 columns
                             df = pd.read_csv(self.annotations_path, sep=sep)
                             successful_separator = sep
-                            print(f"✅ Successfully loaded with separator '{sep}'")
+                            print(f" Successfully loaded with separator '{sep}'")
                             break
                     except Exception as e:
                         print(f"  Separator '{sep}': Failed - {str(e)[:50]}...")
@@ -85,7 +85,7 @@ class PhoenixDatasetManager:
                         # Try reading as pipe-separated without inferring separator
                         df = pd.read_csv(self.annotations_path, sep='|', engine='python')
                         successful_separator = '|'
-                        print("✅ Fallback method worked with pipe separator")
+                        print(" Fallback method worked with pipe separator")
                     except Exception as e:
                         print(f"Fallback method also failed: {e}")
                         raise ValueError(f"Could not parse CSV file with any separator")
@@ -101,7 +101,7 @@ class PhoenixDatasetManager:
 
             # Check if we have the exact column names
             if all(col in df.columns for col in required_columns):
-                print("✅ All required columns found with exact names")
+                print(" All required columns found with exact names")
             else:
                 print("Column names don't match exactly, attempting to map...")
                 print(f"Expected: {required_columns}")
@@ -137,10 +137,10 @@ class PhoenixDatasetManager:
 
             final_rows = len(df)
             if final_rows < initial_rows:
-                print(f"⚠️  Removed {initial_rows - final_rows} rows with missing/empty data")
+                print(f"️  Removed {initial_rows - final_rows} rows with missing/empty data")
 
-            print(f"✅ Final shape after cleaning: {df.shape}")
-            print(f"📊 Data summary:")
+            print(f" Final shape after cleaning: {df.shape}")
+            print(f" Data summary:")
             print(f"   - Unique signers: {df['signer'].nunique()}")
             print(f"   - Unique IDs: {df['id'].nunique()}")
             print(f"   - Sample annotations:")
@@ -150,14 +150,14 @@ class PhoenixDatasetManager:
             return df
 
         except Exception as e:
-            print(f"❌ Error loading annotations: {e}")
+            print(f" Error loading annotations: {e}")
             print(f"File path: {self.annotations_path}")
             print(f"File exists: {self.annotations_path.exists()}")
 
             # Enhanced debugging info
             if self.annotations_path.exists():
                 try:
-                    print("🔍 File debugging info:")
+                    print(" File debugging info:")
                     with open(self.annotations_path, 'r', encoding='utf-8') as f:
                         first_lines = [f.readline().strip() for _ in range(5)]
 

@@ -336,12 +336,12 @@ class SignLanguagePreprocessor:
 
             if file_path.suffix.lower() in ['.xlsx', '.xls']:
                 df = pd.read_excel(file_path)
-                print("✅ Loaded Excel file")
+                print(" Loaded Excel file")
             else:
                 # For CSV files, try different separators
                 separators = ['|', ',', '\t', ';']  # Put | first since it's common for Phoenix
 
-                print("🔍 Trying different separators...")
+                print(" Trying different separators...")
                 for sep in separators:
                     try:
                         test_df = pd.read_csv(file_path, sep=sep, nrows=3)
@@ -349,7 +349,7 @@ class SignLanguagePreprocessor:
 
                         if len(test_df.columns) >= 4:  # Need at least 4 columns
                             df = pd.read_csv(file_path, sep=sep)
-                            print(f"✅ Successfully loaded with separator '{sep}'")
+                            print(f" Successfully loaded with separator '{sep}'")
                             break
                     except Exception as e:
                         print(f"  Separator '{sep}': Failed")
@@ -359,7 +359,7 @@ class SignLanguagePreprocessor:
                     # Last resort: try reading as pipe-separated
                     try:
                         df = pd.read_csv(file_path, sep='|', engine='python')
-                        print("✅ Fallback: loaded with pipe separator")
+                        print(" Fallback: loaded with pipe separator")
                     except Exception as e:
                         raise ValueError(f"Could not parse file with any separator: {e}")
 
@@ -369,14 +369,14 @@ class SignLanguagePreprocessor:
             # Step 2: Validate and fix column names
             expected_columns = ['id', 'folder', 'signer', 'annotation']
 
-            print(f"📊 Initial shape: {df.shape}")
-            print(f"📋 Columns found: {list(df.columns)}")
+            print(f" Initial shape: {df.shape}")
+            print(f" Columns found: {list(df.columns)}")
 
             # Check if we have the exact column names
             if all(col in df.columns for col in expected_columns):
-                print("✅ All expected columns found")
+                print(" All expected columns found")
             else:
-                print("⚠️  Column names don't match exactly, attempting to map...")
+                print("️  Column names don't match exactly, attempting to map...")
 
                 if len(df.columns) < 4:
                     raise ValueError(f"Insufficient columns: expected 4, found {len(df.columns)}")
@@ -388,7 +388,7 @@ class SignLanguagePreprocessor:
                         old_col = df.columns[i]
                         column_mapping[old_col] = expected_col
 
-                print(f"🔄 Column mapping: {column_mapping}")
+                print(f" Column mapping: {column_mapping}")
                 df = df.rename(columns=column_mapping)
 
             # Step 3: Keep only expected columns and clean data
@@ -407,23 +407,23 @@ class SignLanguagePreprocessor:
 
             final_rows = len(df)
             if final_rows < initial_rows:
-                print(f"⚠️  Removed {initial_rows - final_rows} rows with missing/empty data")
+                print(f"⚠  Removed {initial_rows - final_rows} rows with missing/empty data")
 
-            print(f"✅ Final shape: {df.shape}")
-            print(f"👥 Unique signers: {df['signer'].nunique()}")
-            print(f"📝 Sample annotations:")
+            print(f" Final shape: {df.shape}")
+            print(f" Unique signers: {df['signer'].nunique()}")
+            print(f" Sample annotations:")
             for i, annotation in enumerate(df['annotation'].head(3)):
                 print(f"   {i+1}. {annotation}")
 
             return df
 
         except Exception as e:
-            print(f"❌ Error loading Phoenix annotations: {e}")
+            print(f" Error loading Phoenix annotations: {e}")
 
             # Enhanced debugging
             if Path(excel_path).exists():
                 try:
-                    print("🔍 File debugging info:")
+                    print(" File debugging info:")
                     with open(excel_path, 'r', encoding='utf-8') as f:
                         first_lines = [f.readline().strip() for _ in range(3)]
 
