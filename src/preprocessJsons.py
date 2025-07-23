@@ -65,7 +65,7 @@ class PreprocessingConfig:
     # Missing data handling
     interpolate_missing: bool = True
     interpolation_method: str = "linear"  # "linear", "cubic", "nearest"
-    max_missing_frames: int = 3  # Maximum consecutive missing frames to interpolate
+    max_missing_frames: int = 50 # Maximum consecutive missing frames to interpolate
 
     # Output format
     output_format: str = "tensor"  # "tensor", "numpy", or "dict"
@@ -98,6 +98,10 @@ class PhoenixDataset(Dataset):
         self.annotations = annotations
         self.preprocessor = preprocessor
 
+        # DEBUG: Test the first sample
+        if len(json_paths) > 0:
+            self.preprocessor.debug_single_sample(json_paths[0])  # Pass the json_path
+
         # Build vocabulary
         self.vocab = self._build_vocabulary(vocab_path)
         self.label_encoder = LabelEncoder()
@@ -123,6 +127,7 @@ class PhoenixDataset(Dataset):
                 self.vocab[gloss] = len(self.vocab)
 
         self.vocab_size = len(self.vocab)
+
 
     def _build_vocabulary(self, vocab_path: Optional[str] = None) -> Dict[str, int]:
         """Build vocabulary from annotations"""
@@ -175,8 +180,28 @@ class PhoenixDataset(Dataset):
 
     def __getitem__(self, idx):
         try:
-            # Load and preprocess the sequence
             result = self.preprocessor.process_file(self.json_paths[idx])
+            sequence = result['sequence']
+
+            # DEBUG: Check feature content
+            non_zero_ratio = (sequence != 0).float().mean()
+            non_zero_count = (sequence != 0).sum()
+            total_elements = sequence.numel()
+
+            if idx < 5:  # Print first 5 samples
+                print(f"Sample {idx}: shape={sequence.shape}, "
+                      f"non_zero={non_zero_count}/{total_elements} ({non_zero_ratio:.3f})")
+
+                # Check individual feature types
+                hands_features = sequence[:, :self.preprocessor.feature_dims['hands']]
+                face_features = sequence[:, self.preprocessor.feature_dims['hands']:
+                                            self.preprocessor.feature_dims['hands'] +
+                                            self.preprocessor.feature_dims['face']]
+                pose_features = sequence[:, -self.preprocessor.feature_dims['pose']:]
+
+                print(f"  Hands non-zero: {(hands_features != 0).float().mean():.3f}")
+                print(f"  Face non-zero: {(face_features != 0).float().mean():.3f}")
+                print(f"  Pose non-zero: {(pose_features != 0).float().mean():.3f}")
 
             # Encode annotation
             encoded_annotation = self.encode_annotation(self.annotations[idx])
@@ -489,35 +514,49 @@ class SignLanguagePreprocessor:
         return dataset
 
     def extract_hand_features(self, hand_data: Dict) -> np.ndarray:
-        """Extract hand features from hand data"""
+        """Extract hand features from hand data - with debugging"""
         features = []
 
+        print(f"  extract_hand_features called with: {type(hand_data)}")
+        print(f"  hand_data keys: {list(hand_data.keys()) if isinstance(hand_data, dict) else 'not a dict'}")
+
         for hand_type in ['left_hand', 'right_hand']:
+            print(f"    Processing {hand_type}...")
             hand_info = hand_data.get(hand_type, {})
 
             if isinstance(hand_info, dict) and 'landmarks' in hand_info:
                 # New format with confidence
                 landmarks = hand_info['landmarks']
                 confidence = hand_info.get('confidence', 1.0)
+                print(f"      Found {len(landmarks)} landmarks (dict format)")
             elif isinstance(hand_info, list) and len(hand_info) > 0:
                 # Old format - direct list
                 landmarks = hand_info
                 confidence = 1.0
+                print(f"      Found {len(landmarks)} landmarks (list format)")
             else:
                 # No hand detected - fill with zeros
                 landmarks = []
                 confidence = 0.0
+                print(f"      No landmarks found for {hand_type}")
 
             # Extract coordinates - ensure exactly 21 landmarks
             hand_coords = []
+            valid_landmarks = 0
             for i in range(self.config.hand_landmarks_count):  # Should be 21
                 if i < len(landmarks):
                     lm = landmarks[i]
                     if isinstance(lm, dict) and all(k in lm for k in ['x', 'y', 'z']):
-                        hand_coords.extend([lm['x'], lm['y'], lm['z']])
+                        coords = [lm['x'], lm['y'], lm['z']]
+                        hand_coords.extend(coords)
+                        valid_landmarks += 1
+                        if i == 0:  # Print first landmark as sample
+                            print(f"      Sample landmark 0: x={lm['x']:.3f}, y={lm['y']:.3f}, z={lm['z']:.3f}")
                     else:
                         # Invalid landmark data
                         hand_coords.extend([0.0, 0.0, 0.0])
+                        if i == 0:
+                            print(f"      Invalid landmark at {i}: {lm}")
                 else:
                     # Missing landmark
                     hand_coords.extend([0.0, 0.0, 0.0])
@@ -527,7 +566,11 @@ class SignLanguagePreprocessor:
             if self.config.include_hand_confidence:
                 features.append(confidence)
 
-        return np.array(features, dtype=np.float32)
+            print(f"      {hand_type}: {valid_landmarks}/21 valid landmarks, confidence={confidence:.3f}")
+
+        result = np.array(features, dtype=np.float32)
+        print(f"  Total hand features: {len(result)}, non-zero: {(result != 0).sum()}")
+        return result
 
     def extract_face_features(self, face_data: Dict) -> np.ndarray:
         """Extract face features from face data"""
@@ -584,6 +627,60 @@ class SignLanguagePreprocessor:
         """Extract all features from a single frame"""
         features = []
 
+        #---BEGIN DEBUG----
+        # Debug: Print what we're starting with
+        hands_data = frame_data.get('hands', {})
+        face_data = frame_data.get('face', {})
+        pose_data = frame_data.get('pose', {})
+
+        print(f"\n=== Frame Feature Extraction Debug ===")
+        print(f"Input frame_data keys: {list(frame_data.keys())}")
+        print(
+            f"Hands data type: {type(hands_data)}, keys: {list(hands_data.keys()) if isinstance(hands_data, dict) else 'not dict'}")
+        print(
+            f"Face data type: {type(face_data)}, keys: {list(face_data.keys()) if isinstance(face_data, dict) else 'not dict'}")
+        print(
+            f"Pose data type: {type(pose_data)}, keys: {list(pose_data.keys()) if isinstance(pose_data, dict) else 'not dict'}")
+
+        # Extract hand features
+        if self.config.include_hands:
+            print(f"\n--- Extracting Hand Features ---")
+            hand_features = self.extract_hand_features(hands_data)
+            print(f"Hand features shape: {hand_features.shape}")
+            print(f"Hand features non-zero ratio: {(hand_features != 0).mean():.3f}")
+            print(f"Hand features range: [{hand_features.min():.3f}, {hand_features.max():.3f}]")
+            features.append(hand_features)
+
+        # Extract face features
+        if self.config.include_face:
+            print(f"\n--- Extracting Face Features ---")
+            face_features = self.extract_face_features(face_data)
+            print(f"Face features shape: {face_features.shape}")
+            print(f"Face features non-zero ratio: {(face_features != 0).mean():.3f}")
+            print(f"Face features range: [{face_features.min():.3f}, {face_features.max():.3f}]")
+            features.append(face_features)
+
+        # Extract pose features
+        if self.config.include_pose:
+            print(f"\n--- Extracting Pose Features ---")
+            pose_features = self.extract_pose_features(pose_data)
+            print(f"Pose features shape: {pose_features.shape}")
+            print(f"Pose features non-zero ratio: {(pose_features != 0).mean():.3f}")
+            print(f"Pose features range: [{pose_features.min():.3f}, {pose_features.max():.3f}]")
+            features.append(pose_features)
+
+        # Concatenate all features
+        if features:
+            result = np.concatenate(features)
+            print(f"\n--- Final Concatenated Features ---")
+            print(f"Final features shape: {result.shape}")
+            print(f"Final non-zero ratio: {(result != 0).mean():.3f}")
+            print(f"Final range: [{result.min():.3f}, {result.max():.3f}]")
+            return result
+        else:
+            print(f"\n--- No Features Extracted ---")
+            return np.zeros(self.feature_dims['total'], dtype=np.float32)
+        #--------END DEBUFG-------
         # Extract hand features
         if self.config.include_hands:
             hand_features = self.extract_hand_features(frame_data.get('hands', {}))
@@ -641,18 +738,20 @@ class SignLanguagePreprocessor:
         else:
             return np.zeros(self.feature_dims['total'], dtype=np.float32)
 
-
     def normalize_coordinates(self, features: np.ndarray) -> np.ndarray:
-        """Normalize coordinate features to specified range"""
+        """Normalize coordinates - with debugging"""
         if not self.config.normalize_coordinates:
             return features
 
-        # Assume coordinates are in [0, 1] range (MediaPipe normalized coordinates)
-        # Reshape to target range
-        min_val, max_val = self.config.coordinate_range
+        print(f"\n--- Coordinate Normalization ---")
+        print(f"Before normalization: shape={features.shape}, range=[{features.min():.3f}, {features.max():.3f}]")
+        print(f"Before normalization: non-zero ratio={((features != 0).mean()):.3f}")
 
-        # Normalize from [0, 1] to [min_val, max_val]
+        min_val, max_val = self.config.coordinate_range
         normalized = features * (max_val - min_val) + min_val
+
+        print(f"After normalization: range=[{normalized.min():.3f}, {normalized.max():.3f}]")
+        print(f"After normalization: non-zero ratio={((normalized != 0).mean()):.3f}")
 
         return normalized
 
@@ -866,6 +965,56 @@ class SignLanguagePreprocessor:
             'attention_masks': batched_masks,
             'metadata': metadata_list
         }
+
+    def debug_single_sample(self, json_path: str):
+        """Debug processing of a single sample"""
+        print(f"\n=== DEBUGGING SINGLE SAMPLE ===")
+        print(f"Processing: {json_path}")
+
+        # Load raw JSON
+        json_data = self.load_json_data(json_path)
+        frames_data = json_data['frames']
+        first_frame_key = list(frames_data.keys())[0]
+        first_frame = frames_data[first_frame_key]
+
+        print(f"Raw frame data keys: {list(first_frame.keys())}")
+
+        # Check hands data structure
+        hands_data = first_frame.get('hands', {})
+        print(f"Raw hands data type: {type(hands_data)}")
+
+        if isinstance(hands_data, dict):
+            for hand_type in ['left_hand', 'right_hand']:
+                hand_info = hands_data.get(hand_type, {})
+                print(f"{hand_type}: type={type(hand_info)}")
+                if isinstance(hand_info, dict) and 'landmarks' in hand_info:
+                    landmarks = hand_info['landmarks']
+                    print(f"  {hand_type} landmarks count: {len(landmarks)}")
+                    if landmarks:
+                        first_landmark = landmarks[0]
+                        print(f"  First landmark sample: {first_landmark}")
+                elif isinstance(hand_info, list):
+                    print(f"  {hand_type} landmarks count: {len(hand_info)}")
+                    if hand_info:
+                        print(f"  First landmark sample: {hand_info[0]}")
+                else:
+                    print(f"  {hand_type}: No landmarks found - {hand_info}")
+
+        # Test individual frame extraction
+        print(f"\n--- Testing single frame extraction ---")
+        features = self.extract_frame_features(first_frame)
+        print(f"Single frame features shape: {features.shape}")
+        print(f"Single frame non-zero ratio: {(features != 0).mean():.3f}")
+
+        # Process through full pipeline
+        print(f"\n--- Processing through full pipeline ---")
+        sequence, metadata = self.process_sequence(json_data)
+        print(f"Processed sequence shape: {sequence.shape}")
+        print(f"Processed sequence non-zero ratio: {(sequence != 0).mean():.3f}")
+
+        return sequence
+
+
 
 
 def validate_feature_dimensions(self, frame_data: Dict) -> bool:

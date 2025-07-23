@@ -118,7 +118,7 @@ class SignLanguageLSTM(nn.Module):
         lstm_output_size = config.hidden_size
         self.attention = nn.MultiheadAttention(
             embed_dim=lstm_output_size,
-            num_heads=8,
+            num_heads=1,
             dropout=config.dropout,
             batch_first=True
         )
@@ -402,7 +402,7 @@ class SignLanguageTrainer:
             raise
 
     def _create_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
-        """Create train and validation data loaders"""
+        """Create data loaders with simple length grouping and dynamic padding"""
         # Split dataset
         train_size = int(0.8 * len(self.dataset))
         val_size = len(self.dataset) - train_size
@@ -413,89 +413,183 @@ class SignLanguageTrainer:
             generator=torch.Generator().manual_seed(42)
         )
 
-        # Create data loaders with reduced num_workers and better error handling
+        # Create simple length grouping samplers
+        train_sampler = BatchBucketing(
+            train_dataset,
+            self.config.batch_size,
+            shuffle=True
+        )
+
+        val_sampler = BatchBucketing(
+            val_dataset,
+            self.config.batch_size,
+            shuffle=False  # Don't shuffle validation
+        )
+
+        # Create data loaders with both grouping and dynamic padding
         train_loader = DataLoader(
             train_dataset,
-            batch_size=self.config.batch_size,
-            shuffle=True,
-            num_workers=0,  # Set to 0 to avoid multiprocessing issues on Windows
-            pin_memory=False,  # Disable pin_memory since no GPU acceleration warning
-            collate_fn=self._safe_collate_fn
+            batch_sampler=train_sampler,  # Use our custom sampler
+            num_workers=0,
+            pin_memory=False,
+            collate_fn=self._dynamic_collate_fn  # Plus dynamic padding
         )
 
         val_loader = DataLoader(
             val_dataset,
-            batch_size=self.config.batch_size,
-            shuffle=False,
-            num_workers=0,  # Set to 0 to avoid multiprocessing issues on Windows
-            pin_memory=False,  # Disable pin_memory since no GPU acceleration warning
-            collate_fn=self._safe_collate_fn
+            batch_sampler=val_sampler,
+            num_workers=0,
+            pin_memory=False,
+            collate_fn=self._dynamic_collate_fn
         )
 
-        print(f"Train samples: {len(train_dataset)}")
-        print(f"Validation samples: {len(val_dataset)}")
+        print(f"Train samples: {len(train_dataset)} -> {len(train_sampler)} batches")
+        print(f"Validation samples: {len(val_dataset)} -> {len(val_sampler)} batches")
 
         return train_loader, val_loader
 
-    def _safe_collate_fn(self, batch):
-        """Safe collate function that handles shape mismatches"""
+    # def _safe_collate_fn(self, batch):
+    #     """Safe collate function that handles shape mismatches"""
+    #     try:
+    #         # Check if all samples have the same shapes
+    #         sequences = [item['sequence'] for item in batch]
+    #         attention_masks = [item['attention_mask'] for item in batch]
+    #         labels = [item['labels'] for item in batch]
+    #
+    #         # Verify shapes
+    #         seq_shapes = [seq.shape for seq in sequences]
+    #         mask_shapes = [mask.shape for mask in attention_masks]
+    #         label_shapes = [label.shape for label in labels]
+    #
+    #         if len(set(seq_shapes)) > 1:
+    #             print(f"Warning: Inconsistent sequence shapes in batch: {seq_shapes}")
+    #             # Fix by using the most common shape or a default shape
+    #             target_shape = seq_shapes[0]  # Use first item's shape as reference
+    #             fixed_sequences = []
+    #             for seq in sequences:
+    #                 if seq.shape != target_shape:
+    #                     fixed_seq = torch.zeros(target_shape, dtype=seq.dtype)
+    #                     # Copy as much as possible
+    #                     min_dims = [min(seq.shape[i], target_shape[i]) for i in range(len(target_shape))]
+    #                     if len(min_dims) == 2:
+    #                         fixed_seq[:min_dims[0], :min_dims[1]] = seq[:min_dims[0], :min_dims[1]]
+    #                     else:
+    #                         fixed_seq[:min_dims[0]] = seq[:min_dims[0]]
+    #                     fixed_sequences.append(fixed_seq)
+    #                 else:
+    #                     fixed_sequences.append(seq)
+    #             sequences = fixed_sequences
+    #
+    #         # Stack tensors
+    #         return {
+    #             'sequence': torch.stack(sequences),
+    #             'attention_mask': torch.stack(attention_masks),
+    #             'labels': torch.stack(labels),
+    #             'annotation': [item['annotation'] for item in batch],
+    #             'metadata': [item['metadata'] for item in batch]
+    #         }
+    #     except Exception as e:
+    #         print(f"Error in collate function: {e}")
+    #         # Return a minimal valid batch
+    #         batch_size = len(batch)
+    #         return {
+    #             'sequence': torch.zeros(batch_size, self.dataset.preprocessor.config.max_sequence_length,
+    #                                     self.dataset.preprocessor.feature_dims['total']),
+    #             'attention_mask': torch.zeros(batch_size, self.dataset.preprocessor.config.max_sequence_length,
+    #                                           dtype=torch.bool),
+    #             'labels': torch.zeros(batch_size, 50, dtype=torch.long),
+    #             'annotation': [''] * batch_size,
+    #             'metadata': [{}] * batch_size
+    #         }
+
+    def _dynamic_collate_fn(self, batch):
+        """Dynamic collate function that pads only to batch maximum length"""
         try:
-            # Check if all samples have the same shapes
+            # Extract all components
             sequences = [item['sequence'] for item in batch]
             attention_masks = [item['attention_mask'] for item in batch]
             labels = [item['labels'] for item in batch]
+            annotations = [item['annotation'] for item in batch]
+            metadata = [item['metadata'] for item in batch]
 
-            # Verify shapes
-            seq_shapes = [seq.shape for seq in sequences]
-            mask_shapes = [mask.shape for mask in attention_masks]
-            label_shapes = [label.shape for label in labels]
+            # Find actual lengths in this batch
+            actual_lengths = [mask.sum().item() for mask in attention_masks]
+            batch_max_seq_length = max(actual_lengths)
+            batch_min_seq_length = min(actual_lengths)
 
-            if len(set(seq_shapes)) > 1:
-                print(f"Warning: Inconsistent sequence shapes in batch: {seq_shapes}")
-                # Fix by using the most common shape or a default shape
-                target_shape = seq_shapes[0]  # Use first item's shape as reference
-                fixed_sequences = []
-                for seq in sequences:
-                    if seq.shape != target_shape:
-                        fixed_seq = torch.zeros(target_shape, dtype=seq.dtype)
-                        # Copy as much as possible
-                        min_dims = [min(seq.shape[i], target_shape[i]) for i in range(len(target_shape))]
-                        if len(min_dims) == 2:
-                            fixed_seq[:min_dims[0], :min_dims[1]] = seq[:min_dims[0], :min_dims[1]]
-                        else:
-                            fixed_seq[:min_dims[0]] = seq[:min_dims[0]]
-                        fixed_sequences.append(fixed_seq)
-                    else:
-                        fixed_sequences.append(seq)
-                sequences = fixed_sequences
+            # Don't make batches smaller than a minimum size (for stability)
+            min_batch_length = 32
+            batch_max_seq_length = max(batch_max_seq_length, min_batch_length)
 
-            # Stack tensors
+            # Calculate padding efficiency
+            total_original_padding = len(sequences) * self.config.max_sequence_length - sum(actual_lengths)
+            total_new_padding = len(sequences) * batch_max_seq_length - sum(actual_lengths)
+            padding_reduction = total_original_padding - total_new_padding
+
+            # Occasionally print stats (every 50 batches)
+            if np.random.random() < 0.02:  # ~2% of batches
+                print(f"Batch stats: lengths {batch_min_seq_length}-{batch_max_seq_length}, "
+                      f"padding_to={batch_max_seq_length}, "
+                      f"saved_padding={padding_reduction} tokens ({padding_reduction / (total_original_padding or 1) * 100:.1f}%)")
+
+            # Dynamically resize sequences to batch maximum
+            resized_sequences = []
+            resized_attention_masks = []
+
+            for seq, mask in zip(sequences, attention_masks):
+                # Truncate or pad sequence to batch_max_seq_length
+                if seq.shape[0] >= batch_max_seq_length:
+                    # Truncate
+                    resized_seq = seq[:batch_max_seq_length]
+                    resized_mask = mask[:batch_max_seq_length]
+                else:
+                    # Pad to batch max
+                    pad_length = batch_max_seq_length - seq.shape[0]
+                    padding = torch.zeros(pad_length, seq.shape[1], dtype=seq.dtype)
+                    mask_padding = torch.zeros(pad_length, dtype=mask.dtype)
+
+                    resized_seq = torch.cat([seq, padding], dim=0)
+                    resized_mask = torch.cat([mask, mask_padding], dim=0)
+
+                resized_sequences.append(resized_seq)
+                resized_attention_masks.append(resized_mask)
+
+            # Handle labels (keep original max length for labels)
+            max_label_length = max(label.shape[0] for label in labels)
+            resized_labels = []
+
+            for label in labels:
+                if label.shape[0] >= max_label_length:
+                    resized_label = label[:max_label_length]
+                else:
+                    pad_length = max_label_length - label.shape[0]
+                    padding = torch.zeros(pad_length, dtype=label.dtype)
+                    resized_label = torch.cat([label, padding], dim=0)
+                resized_labels.append(resized_label)
+
+            # Stack everything
             return {
-                'sequence': torch.stack(sequences),
-                'attention_mask': torch.stack(attention_masks),
-                'labels': torch.stack(labels),
-                'annotation': [item['annotation'] for item in batch],
-                'metadata': [item['metadata'] for item in batch]
+                'sequence': torch.stack(resized_sequences),
+                'attention_mask': torch.stack(resized_attention_masks),
+                'labels': torch.stack(resized_labels),
+                'annotation': annotations,
+                'metadata': metadata
             }
+
         except Exception as e:
-            print(f"Error in collate function: {e}")
-            # Return a minimal valid batch
-            batch_size = len(batch)
-            return {
-                'sequence': torch.zeros(batch_size, self.dataset.preprocessor.config.max_sequence_length,
-                                        self.dataset.preprocessor.feature_dims['total']),
-                'attention_mask': torch.zeros(batch_size, self.dataset.preprocessor.config.max_sequence_length,
-                                              dtype=torch.bool),
-                'labels': torch.zeros(batch_size, 50, dtype=torch.long),
-                'annotation': [''] * batch_size,
-                'metadata': [{}] * batch_size
-            }
+            print(f"Error in dynamic collate function: {e}")
+            # Fallback to original behavior
+            return self._safe_collate_fn(batch)
 
     def train_epoch(self) -> float:
-        """Train for one epoch"""
+        """Train for one epoch with padding ratio monitoring"""
         self.model.train()
         total_loss = 0
         num_batches = len(self.train_loader)
+
+        # Padding ratio tracking
+        padding_ratios = []
+        sample_frequency = max(1, num_batches // 10)  # Sample ~10 batches per epoch
 
         pbar = tqdm(self.train_loader, desc="Training")
 
@@ -504,6 +598,33 @@ class SignLanguageTrainer:
             sequences = batch['sequence'].to(self.device)
             attention_mask = batch['attention_mask'].to(self.device)
             labels = batch['labels'].to(self.device)
+
+            # Calculate padding ratio for this batch
+            total_tokens = sequences.numel()  # Total elements in sequences tensor
+            actual_tokens = attention_mask.sum().item()  # Non-padding tokens
+            padding_tokens = total_tokens - actual_tokens
+            padding_ratio = (padding_tokens / total_tokens) * 100 if total_tokens > 0 else 0
+
+            padding_ratios.append(padding_ratio)
+
+            # Display sample padding ratios during training
+            if batch_idx % sample_frequency == 0 or batch_idx < 3:  # Show first 3 + samples
+                batch_size, seq_len, features = sequences.shape
+                avg_seq_length = actual_tokens / batch_size
+                print(f"\nBatch {batch_idx}: shape=({batch_size}, {seq_len}, {features}), "
+                      f"avg_real_length={avg_seq_length:.1f}, padding={padding_ratio:.1f}%")
+
+            # Validation checks
+            non_zero_ratio = (sequences != 0).float().mean().item()
+            if non_zero_ratio < 0.01:
+                print(f"WARNING: Batch {batch_idx} has mostly empty sequences ({non_zero_ratio:.3f})")
+
+            vocab_tokens = (labels > 3).sum().item()
+            total_label_tokens = (labels != 0).sum().item()
+            if total_label_tokens > 0:
+                vocab_ratio = vocab_tokens / total_label_tokens
+                if vocab_ratio < 0.1:
+                    print(f"WARNING: Batch {batch_idx} has mostly special tokens ({vocab_ratio:.3f})")
 
             # Zero gradients
             self.optimizer.zero_grad()
@@ -514,27 +635,47 @@ class SignLanguageTrainer:
 
             # Backward pass
             loss.backward()
-
-            # Gradient clipping
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
-
-            # Update parameters
             self.optimizer.step()
 
             # Update metrics
             total_loss += loss.item()
 
-            # Update progress bar
-            pbar.set_postfix({'loss': loss.item()})
+            # Update progress bar with padding info
+            current_padding = padding_ratios[-1] if padding_ratios else 0
+            pbar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'pad%': f'{current_padding:.1f}',
+                'lr': f'{self.optimizer.param_groups[0]["lr"]:.2e}'
+            })
 
             # Log to WandB
             wandb.log({
                 'train_loss_step': loss.item(),
+                'padding_ratio_batch': padding_ratio,
                 'learning_rate': self.optimizer.param_groups[0]['lr']
             })
 
         avg_loss = total_loss / num_batches
         self.train_losses.append(avg_loss)
+
+        # Calculate and display epoch padding statistics
+        avg_padding_ratio = np.mean(padding_ratios)
+        min_padding_ratio = np.min(padding_ratios)
+        max_padding_ratio = np.max(padding_ratios)
+
+        print(f"\n=== Epoch Padding Statistics ===")
+        print(f"Average padding ratio: {avg_padding_ratio:.1f}%")
+        print(f"Padding range: {min_padding_ratio:.1f}% - {max_padding_ratio:.1f}%")
+        print(f"Batches with <20% padding: {sum(1 for r in padding_ratios if r < 20)}/{len(padding_ratios)}")
+        print(f"Batches with >50% padding: {sum(1 for r in padding_ratios if r > 50)}/{len(padding_ratios)}")
+
+        # Log epoch statistics to WandB
+        wandb.log({
+            'epoch_avg_padding_ratio': avg_padding_ratio,
+            'epoch_min_padding_ratio': min_padding_ratio,
+            'epoch_max_padding_ratio': max_padding_ratio,
+        })
 
         return avg_loss
 
@@ -650,10 +791,62 @@ class SignLanguageTrainer:
     #
     #     return torch.utils.data.SubsetRandomSampler(valid_indices)
 
+    def analyze_padding_improvement(self):
+        """Compare padding ratios with and without dynamic batching"""
+        print("\n=== Padding Ratio Analysis ===")
+
+        # Sample a few batches to show the improvement
+        sample_batches = 0
+        total_original_padding = 0
+        total_dynamic_padding = 0
+        total_tokens_processed = 0
+
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(self.train_loader):
+                if sample_batches >= 5:  # Analyze first 5 batches
+                    break
+
+                sequences = batch['sequence']
+                attention_mask = batch['attention_mask']
+
+                # Calculate current (dynamic) padding
+                current_total_tokens = sequences.numel()
+                current_actual_tokens = attention_mask.sum().item()
+                current_padding = current_total_tokens - current_actual_tokens
+
+                # Calculate what padding would be with original max_sequence_length
+                batch_size = sequences.shape[0]
+                original_total_tokens = batch_size * self.config.max_sequence_length * sequences.shape[2]
+                original_padding = original_total_tokens - current_actual_tokens
+
+                total_original_padding += original_padding
+                total_dynamic_padding += current_padding
+                total_tokens_processed += current_actual_tokens
+
+                print(f"Batch {batch_idx}: "
+                      f"shape={sequences.shape}, "
+                      f"original_pad={original_padding / original_total_tokens * 100:.1f}%, "
+                      f"dynamic_pad={current_padding / current_total_tokens * 100:.1f}%")
+
+                sample_batches += 1
+
+        if total_tokens_processed > 0:
+            original_pad_ratio = total_original_padding / (total_original_padding + total_tokens_processed) * 100
+            dynamic_pad_ratio = total_dynamic_padding / (total_dynamic_padding + total_tokens_processed) * 100
+            improvement = original_pad_ratio - dynamic_pad_ratio
+
+            print(f"\nOverall Improvement:")
+            print(f"  Original padding ratio: {original_pad_ratio:.1f}%")
+            print(f"  Dynamic padding ratio: {dynamic_pad_ratio:.1f}%")
+            print(f"  Improvement: {improvement:.1f} percentage points")
+            print(f"  Relative improvement: {improvement / original_pad_ratio * 100:.1f}%")
+
     def train(self):
         """Main training loop"""
         print("Starting training...")
         torch.set_num_threads(4)
+
+        self.analyze_padding_improvement()
 
         for epoch in range(self.config.num_epochs):
             print(f"\nEpoch {epoch + 1}/{self.config.num_epochs}")
@@ -844,6 +1037,80 @@ class SignLanguageTrainer:
             print(f"Analysis failed (non-critical): {e}")
             print("Continuing training...")
 
+
+class BatchBucketing:
+    """Simple sampler that groups similar-length sequences together"""
+
+    def __init__(self, dataset, batch_size, shuffle=True):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self._create_length_groups()
+
+    def _create_length_groups(self):
+        """Group dataset indices by sequence length"""
+        print("Analyzing sequence lengths for grouping...")
+
+        # Get all sequence lengths
+        length_to_indices = {}
+        for idx in range(len(self.dataset)):
+            try:
+                sample = self.dataset[idx]
+                seq_length = sample['attention_mask'].sum().item()
+
+                if seq_length not in length_to_indices:
+                    length_to_indices[seq_length] = []
+                length_to_indices[seq_length].append(idx)
+
+            except Exception as e:
+                print(f"Error processing sample {idx}: {e}")
+                continue
+
+        # Sort by length and group into batches
+        self.batches = []
+        sorted_lengths = sorted(length_to_indices.keys())
+
+        print(f"Found sequences with lengths: {sorted_lengths[:10]}..." if len(
+            sorted_lengths) > 10 else f"Found sequences with lengths: {sorted_lengths}")
+
+        # Collect all indices in length order
+        all_indices = []
+        for length in sorted_lengths:
+            indices = length_to_indices[length]
+            if self.shuffle:
+                np.random.shuffle(indices)  # Shuffle within same length
+            all_indices.extend(indices)
+
+        # Create batches from grouped indices
+        for i in range(0, len(all_indices), self.batch_size):
+            batch_indices = all_indices[i:i + self.batch_size]
+            if len(batch_indices) > 0:
+                self.batches.append(batch_indices)
+
+        # Print statistics
+        batch_length_ranges = []
+        for batch_indices in self.batches[:5]:  # Sample first 5 batches
+            lengths = []
+            for idx in batch_indices:
+                sample = self.dataset[idx]
+                seq_length = sample['attention_mask'].sum().item()
+                lengths.append(seq_length)
+            batch_length_ranges.append((min(lengths), max(lengths)))
+
+        print(f"Created {len(self.batches)} batches")
+        print(f"Sample batch length ranges: {batch_length_ranges}")
+
+    def __iter__(self):
+        """Generate batch indices"""
+        batches = self.batches.copy()
+        if self.shuffle:
+            np.random.shuffle(batches)  # Shuffle batch order
+
+        for batch_indices in batches:
+            yield batch_indices
+
+    def __len__(self):
+        return len(self.batches)
 
 def main():
     """Main training script"""

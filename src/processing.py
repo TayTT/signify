@@ -39,12 +39,28 @@ class EnhancedHandTracker:
     """Enhanced hand tracker with flickering reduction and false positive filtering"""
 
     def __init__(self,
-                 min_detection_confidence: float = 0.7,
-                 min_tracking_confidence: float = 0.5,
-                 temporal_smoothing_frames: int = 5,
-                 confidence_threshold: float = 0.6,
-                 max_hand_distance_threshold: float = 0.3,
+                 # min_detection_confidence: float = 0.7,
+                 # min_tracking_confidence: float = 0.5,
+                 # temporal_smoothing_frames: int = 5,
+                 # confidence_threshold: float = 0.6,
+                 # max_hand_distance_threshold: float = 0.3,
+                 # frame_border_margin: float = 0.1):
+
+                # min_detection_confidence: float = 0.5,
+                # min_tracking_confidence: float = 0.3,
+                # temporal_smoothing_frames: int = 5,
+                # confidence_threshold: float = 0.4,
+                # max_hand_distance_threshold: float = 0.3,
+                # frame_border_margin: float = 0.1):
+
+                 min_detection_confidence: float = 0.2,
+                 min_tracking_confidence: float = 0.2,
+                 temporal_smoothing_frames: int = 3,
+                 confidence_threshold: float = 0.2,
+                 max_hand_distance_threshold: float = 0.4,
                  frame_border_margin: float = 0.1):
+
+
         """
         Initialize enhanced hand tracker
 
@@ -206,14 +222,16 @@ class EnhancedHandTracker:
                 confidence = handedness.classification[0].score
                 hand_center = self._get_hand_center(hand_landmarks)
 
-                if (confidence >= self.confidence_threshold and
-                        self._is_valid_hand_size(hand_landmarks) and
-                        self._is_hand_shape_valid(hand_landmarks)):
-
-                    valid_hands.append((hand_landmarks, confidence))
-                    valid_handedness.append(handedness)
-                else:
-                    self.stats['false_positives_filtered'] += 1
+                # if (confidence >= self.confidence_threshold and
+                #         self._is_valid_hand_size(hand_landmarks) and
+                #         self._is_hand_shape_valid(hand_landmarks)):
+                #
+                #     valid_hands.append((hand_landmarks, confidence))
+                #     valid_handedness.append(handedness)
+                # else:
+                #     self.stats['false_positives_filtered'] += 1
+                valid_hands.append((hand_landmarks, confidence))
+                valid_handedness.append(handedness)
 
             # Assign hand labels (existing logic)
             if valid_hands:
@@ -972,14 +990,16 @@ class EnhancedHandTracker:
                 hand_center = self._get_hand_center(hand_landmarks)
 
                 # Apply validation filters
-                if (confidence >= self.confidence_threshold and
-                        self._is_valid_hand_size(hand_landmarks) and
-                        self._is_hand_shape_valid(hand_landmarks)):
-
-                    valid_hands.append((hand_landmarks, confidence))
-                    valid_handedness.append(handedness)
-                else:
-                    self.stats['false_positives_filtered'] += 1
+                # if (confidence >= self.confidence_threshold and
+                #         self._is_valid_hand_size(hand_landmarks) and
+                #         self._is_hand_shape_valid(hand_landmarks)):
+                #
+                #     valid_hands.append((hand_landmarks, confidence))
+                #     valid_handedness.append(handedness)
+                # else:
+                #     self.stats['false_positives_filtered'] += 1
+                valid_hands.append((hand_landmarks, confidence))
+                valid_handedness.append(handedness)
 
             # Assign hand labels with improved logic
             if valid_hands:
@@ -1973,12 +1993,13 @@ def process_video(
             print(f"  - Custom JSON name: {phoenix_json_name}.json")
 
     #Initialize enhanced hand tracker instead of regular MediaPipe
-    enhanced_hand_tracker = EnhancedHandTracker(
-        min_detection_confidence=0.7,
-        temporal_smoothing_frames=5,
-        confidence_threshold=0.6,
-        frame_border_margin=0.1  # 10% of frame width/height considered "near border"
-    )
+    # enhanced_hand_tracker = EnhancedHandTracker(
+    #     min_detection_confidence=0.7,
+    #     temporal_smoothing_frames=5,
+    #     confidence_threshold=0.6,
+    #     frame_border_margin=0.1  # 10% of frame width/height considered "near border"
+    # )
+    enhanced_hand_tracker = EnhancedHandTracker()
 
     face_tracker = FaceTracker(
         confidence_threshold=0.5,
