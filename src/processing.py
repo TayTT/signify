@@ -149,43 +149,9 @@ class EnhancedHandTracker:
         self.max_smoothness_gap = 10  # Only calculate smoothness if gap <= 10 frames
 
     #-------------- START Quality calculations
-    def is_near_frame_boundary_mediapipe(self, landmarks_list, margin: float = 0.1) -> bool:
-        """Handle both MediaPipe landmarks and Python list landmarks"""
-        if not landmarks_list:
-            return False
-
-        # Convert MediaPipe landmarks to coordinate lists
-        if hasattr(landmarks_list, '__iter__') and len(landmarks_list) > 0:
-            # Check if first element has MediaPipe landmark attributes
-            first_landmark = landmarks_list[0]
-            if hasattr(first_landmark, 'x'):
-                # MediaPipe landmark objects
-                x_coords = [lm.x for lm in landmarks_list]
-                y_coords = [lm.y for lm in landmarks_list]
-            elif isinstance(first_landmark, dict):
-                # Python dict landmarks (JSON format)
-                x_coords = [lm['x'] for lm in landmarks_list]
-                y_coords = [lm['y'] for lm in landmarks_list]
-            else:
-                return False
-        else:
-            return False
-
-        if not x_coords or not y_coords:
-            return False
-
-        # Get bounding box of hand
-        min_x, max_x = min(x_coords), max(x_coords)
-        min_y, max_y = min(y_coords), max(y_coords)
-
-        # Check if any part of hand is near boundary
-        near_boundary = (min_x < margin or max_x > (1.0 - margin) or
-                         min_y < margin or max_y > (1.0 - margin))
-
-        return near_boundary
 
     def calculate_hand_quality(self, hand_data: Dict, hand_type: str) -> Dict:
-        """Calculate quality with boundary context - fixed for MediaPipe objects"""
+        """Calculate quality without boundary context"""
         if not hand_data or not hand_data.get('landmarks'):
             return {
                 'quality': 0.0,
@@ -200,36 +166,23 @@ class EnhancedHandTracker:
         # Factor 1: Detection confidence
         confidence = hand_data.get('confidence', 0.0)
 
-        # Factor 2: Landmark completeness - FIXED to handle MediaPipe objects
+        # Factor 2: Landmark completeness
         if hasattr(landmarks, 'landmark'):
             # MediaPipe NormalizedLandmarkList object
             completeness = len(landmarks.landmark) / 21.0 if landmarks.landmark else 0.0
-            landmarks_list = landmarks.landmark  # For boundary checking
         elif isinstance(landmarks, list):
             # Python list (JSON format)
             completeness = len(landmarks) / 21.0 if landmarks else 0.0
-            landmarks_list = landmarks
         else:
             # Unknown format
             completeness = 0.0
-            landmarks_list = []
 
         # Factor 3: Stability (with gap handling)
         stability = self._calculate_stability_with_gaps(hand_data, hand_type)
 
-        # Check boundary context - FIXED to handle MediaPipe objects
-        near_boundary = self.is_near_frame_boundary_mediapipe(landmarks_list)
-
-        if near_boundary:
-            # Near boundary: ignore completeness, use only confidence and stability
-            context = 'near_boundary'
-            quality_factors = [confidence, stability]
-            weights = [0.7, 0.3]  # Higher weight on confidence
-        else:
-            # Center frame: use all three factors
-            context = 'center_frame'
-            quality_factors = [confidence, completeness, stability]
-            weights = [0.5, 0.3, 0.2]  # Confidence most important
+        # Simple quality calculation using all three factors
+        quality_factors = [confidence, completeness, stability]
+        weights = [0.5, 0.3, 0.2]  # Confidence most important
 
         # Calculate weighted quality score
         quality_score = sum(factor * weight for factor, weight in zip(quality_factors, weights))
@@ -246,8 +199,7 @@ class EnhancedHandTracker:
             'confidence': confidence,
             'completeness': completeness,
             'stability': stability,
-            'context': context,
-            'near_boundary': near_boundary
+            'context': 'detected'
         }
 
     def _calculate_stability_with_gaps(self, current_hand: Dict, hand_type: str) -> float:
@@ -264,10 +216,10 @@ class EnhancedHandTracker:
             return 0.8  # Slightly reduced but not penalized heavily
 
         # Calculate smoothness between current and last valid detection
-        return self._calculate_exit_smoothness(current_hand, last_valid['data'])
+        return self._calculate_movement_smoothness(current_hand, last_valid['data'])
 
-    def _calculate_exit_smoothness(self, current_hand: Dict, previous_hand: Dict) -> float:
-        """Calculate movement smoothness - FIXED for MediaPipe objects"""
+    def _calculate_movement_smoothness(self, current_hand: Dict, previous_hand: Dict) -> float:
+        """Calculate movement smoothness between two detections"""
         curr_landmarks = current_hand.get('landmarks')
         prev_landmarks = previous_hand.get('landmarks')
 
@@ -831,317 +783,317 @@ class EnhancedHandTracker:
 
         return smoothed_hands
 
-    def process_frame_enhanced(
-            frame, actual_frame_number, fps, enhanced_hand_tracker, face_mesh, pose,
-            extract_face, extract_pose, all_frames_data,
-            annotated_frame_path=None, video_writer=None,
-            total_frames=0, skip_frames=1,
-            save_all_frames=False,
-            use_full_mesh=False,
-            use_enhancement=False
-    ):
-        """
-        Enhanced frame processing function that uses the new hand tracker with hand-wrist calibration
-        """
-        try:
-            # Apply enhancement if requested
-            if use_enhancement:
-                # Create comparison save path if we're saving frames
-                comparison_save_path = None
-                if annotated_frame_path:
-                    # Create comparisons directory alongside frames directory, not inside it
-                    frames_dir = annotated_frame_path.parent  # This is the "frames" directory
-                    output_dir = frames_dir.parent  # Go up one level to the main output directory
-                    comparisons_dir = output_dir / "comparisons"
-                    comparisons_dir.mkdir(parents=True, exist_ok=True)
-
-                    # Set comparison save path (without extension)
-                    comparison_save_path = str(comparisons_dir / f"frame_{actual_frame_number:04d}")
-
-                # Apply enhancement with comparison saving
-                processing_frame = enhance_image_for_hand_detection(
-                    frame,
-                    visualize=False,
-                    save_comparison=(annotated_frame_path is not None),
-                    comparison_save_path=comparison_save_path
-                )
-            else:
-                processing_frame = frame
-
-            # Convert to RGB for MediaPipe - use the processing frame (enhanced or original)
-            rgb_frame = cv2.cvtColor(processing_frame, cv2.COLOR_BGR2RGB)
-
-            # Make a copy for annotations - always use original frame for annotations
-            annotated_frame = frame.copy()
-
-            # Initialize frame data structure - use actual frame number
-            frame_data = {
-                "frame": actual_frame_number,
-                "timestamp": actual_frame_number / fps,
-                "hands": {"left_hand": [], "right_hand": []},
-                "face": {"all_landmarks": [], "mouth_landmarks": []},
-                "pose": {},
-                "enhancement_applied": use_enhancement  # Track if enhancement was used
-            }
-
-            # Step 1: Process pose landmarks first (needed for hand calibration)
-            pose_wrists = {"LEFT_WRIST": None, "RIGHT_WRIST": None}
-
-            if extract_pose:
-                results_pose = pose.process(rgb_frame)
-
-                if results_pose.pose_landmarks:
-                    # Extract pose landmarks
-                    pose_data = {}
-                    h, w, _ = frame.shape
-
-                    for landmark_name in CORE_POSE_LANDMARKS:
-                        try:
-                            landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
-                            lm = results_pose.pose_landmarks.landmark[landmark_enum]
-                            pose_data[landmark_name] = {
-                                "x": lm.x,
-                                "y": lm.y,
-                                "z": lm.z,
-                                "px": int(lm.x * w),
-                                "py": int(lm.y * h),
-                                "visibility": float(lm.visibility)
-                            }
-                        except AttributeError:
-                            continue
-
-                    # Store wrist positions for hand calibration
-                    if "LEFT_WRIST" in pose_data:
-                        pose_wrists["LEFT_WRIST"] = np.array([
-                            pose_data["LEFT_WRIST"]["x"],
-                            pose_data["LEFT_WRIST"]["y"],
-                            pose_data["LEFT_WRIST"]["z"]
-                        ])
-
-                    if "RIGHT_WRIST" in pose_data:
-                        pose_wrists["RIGHT_WRIST"] = np.array([
-                            pose_data["RIGHT_WRIST"]["x"],
-                            pose_data["RIGHT_WRIST"]["y"],
-                            pose_data["RIGHT_WRIST"]["z"]
-                        ])
-
-                    frame_data["pose"] = pose_data
-
-                    # Draw pose landmarks on original frame
-                    pose_landmark_spec = mp_drawing.DrawingSpec(
-                        color=(0, 0, 255),  # Blue
-                        thickness=1,
-                        circle_radius=1
-                    )
-
-                    pose_connection_spec = mp_drawing.DrawingSpec(
-                        color=(255, 255, 0),  # Cyan
-                        thickness=1,
-                        circle_radius=1
-                    )
-
-                    mp_drawing.draw_landmarks(
-                        annotated_frame,
-                        results_pose.pose_landmarks,
-                        mp_pose.POSE_CONNECTIONS,
-                        landmark_drawing_spec=pose_landmark_spec,
-                        connection_drawing_spec=pose_connection_spec
-                    )
-
-            # Step 2: Process hands with ENHANCED TRACKING and CALIBRATION
-            hands_data = enhanced_hand_tracker.process_frame(rgb_frame)
-
-            # STEP 3: Calibrate hands at MediaPipe object level (BEFORE JSON conversion)
-            if pose_wrists["LEFT_WRIST"] is not None or pose_wrists["RIGHT_WRIST"] is not None:
-                # Use the existing calibrate_hands_to_wrists function that works with MediaPipe objects
-                calibrated_hands_data = calibrate_hands_to_wrists(hands_data, pose_wrists)
-            else:
-                calibrated_hands_data = hands_data
-
-            # Convert calibrated MediaPipe objects to JSON format
-            json_hands_data = enhanced_hand_tracker.get_landmarks_for_json(calibrated_hands_data, frame.shape)
-            frame_data["hands"] = json_hands_data
-
-            # Draw calibrated hands on annotated frame
-            enhanced_hand_tracker.draw_hands_on_frame(annotated_frame, calibrated_hands_data)
-
-            # Step 3: Process face landmarks if requested (keep existing implementation)
-            if extract_face:
-                results_face = face_mesh.process(rgb_frame)
-
-                if results_face.multi_face_landmarks:
-                    for face_landmarks in results_face.multi_face_landmarks:
-                        # CALIBRATE face landmarks to pose nose (following hands pattern)
-                        pose_nose_position = None
-                        if frame_data["pose"] and "NOSE" in frame_data["pose"]:
-                            pose_nose_position = np.array([
-                                frame_data["pose"]["NOSE"]["x"],
-                                frame_data["pose"]["NOSE"]["y"],
-                                frame_data["pose"]["NOSE"]["z"]
-                            ])
-
-                        # Calibrate the MediaPipe face landmarks object (same as hands)
-                        calibrated_face_landmarks = calibrate_face_to_nose(face_landmarks, pose_nose_position)
-
-                        # Extract calibrated face landmarks for JSON data
-                        face_data = []
-                        mouth_data = []
-                        h, w, _ = frame.shape
-
-                        # Use CALIBRATED landmarks for JSON extraction
-                        for i, lm in enumerate(calibrated_face_landmarks.landmark):
-                            point = {
-                                "x": lm.x,
-                                "y": lm.y,
-                                "z": lm.z,
-                                "px": int(lm.x * w),
-                                "py": int(lm.y * h)
-                            }
-                            face_data.append(point)
-
-                            if i in MOUTH_LANDMARKS:
-                                mouth_data.append(point)
-
-                        frame_data["face"]["all_landmarks"] = face_data
-                        frame_data["face"]["mouth_landmarks"] = mouth_data
-
-                        # Mark as calibrated if pose nose was available
-                        if pose_nose_position is not None:
-                            frame_data["face"]["calibrated"] = True
-
-                        # Draw face landmarks using CALIBRATED MediaPipe object (same as hands)
-                        if use_full_mesh:
-                            mp_drawing.draw_landmarks(
-                                annotated_frame,
-                                calibrated_face_landmarks,  # ← NOW using calibrated landmarks like hands
-                                mp_face_mesh.FACEMESH_TESSELATION,
-                                landmark_drawing_spec=None,
-                                connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style()
-                            )
-                        else:
-                            # Draw simplified key landmarks (keep your existing implementation)
-                            KEY_FACE_LANDMARKS = {
-                                'silhouette': [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
-                                               397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
-                                               172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109],
-                                'eyebrows': [70, 63, 105, 66, 107, 336, 296, 334, 293, 300],
-                                'eyes': [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7,
-                                         362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381,
-                                         382],
-                                'nose': [168, 6, 197, 195, 5, 4, 1, 19, 94, 2],
-                                'lips': [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191,
-                                         80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178],
-                            }
-
-                            color_map = {
-                                'silhouette': (200, 200, 200),
-                                'eyebrows': (0, 150, 255),
-                                'eyes': (255, 0, 0),
-                                'nose': (0, 255, 255),
-                                'lips': (0, 0, 255)
-                            }
-
-                            # Draw face outline (silhouette)
-                            silhouette_points = []
-                            for idx in KEY_FACE_LANDMARKS['silhouette']:
-                                lm = face_landmarks.landmark[idx]
-                                x, y = int(lm.x * w), int(lm.y * h)
-                                silhouette_points.append((x, y))
-
-                            if silhouette_points:
-                                cv2.polylines(annotated_frame, [np.array(silhouette_points)], True,
-                                              color_map['silhouette'], 1)
-
-                            # Draw eyebrows
-                            for idx in KEY_FACE_LANDMARKS['eyebrows']:
-                                lm = face_landmarks.landmark[idx]
-                                x, y = int(lm.x * w), int(lm.y * h)
-                                cv2.circle(annotated_frame, (x, y), 1, color_map['eyebrows'], -1)
-
-                            # Draw eyes
-                            left_eye_points = []
-                            left_eye_indices = KEY_FACE_LANDMARKS['eyes'][:16]
-                            for idx in left_eye_indices:
-                                lm = face_landmarks.landmark[idx]
-                                x, y = int(lm.x * w), int(lm.y * h)
-                                left_eye_points.append((x, y))
-
-                            right_eye_points = []
-                            right_eye_indices = KEY_FACE_LANDMARKS['eyes'][16:]
-                            for idx in right_eye_indices:
-                                lm = face_landmarks.landmark[idx]
-                                x, y = int(lm.x * w), int(lm.y * h)
-                                right_eye_points.append((x, y))
-
-                            if left_eye_points:
-                                cv2.polylines(annotated_frame, [np.array(left_eye_points)], True,
-                                              color_map['eyes'], 1)
-                            if right_eye_points:
-                                cv2.polylines(annotated_frame, [np.array(right_eye_points)], True,
-                                              color_map['eyes'], 1)
-
-                            # Draw nose
-                            nose_points = []
-                            for idx in KEY_FACE_LANDMARKS['nose']:
-                                lm = face_landmarks.landmark[idx]
-                                x, y = int(lm.x * w), int(lm.y * h)
-                                nose_points.append((x, y))
-                                cv2.circle(annotated_frame, (x, y), 1, color_map['nose'], -1)
-
-                            # Draw lips
-                            outer_lip_points = []
-                            outer_lip_indices = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
-                            for idx in outer_lip_indices:
-                                lm = face_landmarks.landmark[idx]
-                                x, y = int(lm.x * w), int(lm.y * h)
-                                outer_lip_points.append((x, y))
-
-                            if outer_lip_points:
-                                cv2.polylines(annotated_frame, [np.array(outer_lip_points)], True,
-                                              color_map['lips'], 1)
-
-                            inner_lip_points = []
-                            inner_lip_indices = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 191]
-                            for idx in inner_lip_indices:
-                                lm = face_landmarks.landmark[idx]
-                                x, y = int(lm.x * w), int(lm.y * h)
-                                inner_lip_points.append((x, y))
-
-                            if inner_lip_points:
-                                cv2.polylines(annotated_frame, [np.array(inner_lip_points)], True,
-                                              color_map['lips'], 1)
-
-            # Save frame data using actual frame number as key
-            all_frames_data[str(actual_frame_number)] = frame_data
-
-            # Add frame info to image - show actual frame number and enhancement status
-            progress_percent = (actual_frame_number / total_frames) * 100 if total_frames > 0 else 0
-            enhancement_text = " (Enhanced)" if use_enhancement else ""
-            tracking_text = "  | Enhanced Hand + Face Calibration"
-            cv2.putText(
-                annotated_frame,
-                f"Frame: {actual_frame_number} | {progress_percent:.1f}%{enhancement_text}{tracking_text}",
-                (10, 20),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 255, 255),
-                1
-            )
-
-            # Save annotated frame image (only if path is provided)
-            if annotated_frame_path:
-                success = cv2.imwrite(str(annotated_frame_path), annotated_frame)
-                if not success:
-                    print(f"Error: Could not save annotated frame to {annotated_frame_path}")
-
-            # Write frame to video
-            if video_writer:
-                video_writer.write(annotated_frame)
-
-        except Exception as e:
-            print(f"Error processing frame {actual_frame_number}: {e}")
-            import traceback
-            traceback.print_exc()
+    # def process_frame_enhanced(
+    #         frame, actual_frame_number, fps, enhanced_hand_tracker, face_mesh, pose,
+    #         extract_face, extract_pose, all_frames_data,
+    #         annotated_frame_path=None, video_writer=None,
+    #         total_frames=0, skip_frames=1,
+    #         save_all_frames=False,
+    #         use_full_mesh=False,
+    #         use_enhancement=False
+    # ):
+    #     """
+    #     Enhanced frame processing function that uses the new hand tracker with hand-wrist calibration
+    #     """
+    #     try:
+    #         # Apply enhancement if requested
+    #         if use_enhancement:
+    #             # Create comparison save path if we're saving frames
+    #             comparison_save_path = None
+    #             if annotated_frame_path:
+    #                 # Create comparisons directory alongside frames directory, not inside it
+    #                 frames_dir = annotated_frame_path.parent  # This is the "frames" directory
+    #                 output_dir = frames_dir.parent  # Go up one level to the main output directory
+    #                 comparisons_dir = output_dir / "comparisons"
+    #                 comparisons_dir.mkdir(parents=True, exist_ok=True)
+    #
+    #                 # Set comparison save path (without extension)
+    #                 comparison_save_path = str(comparisons_dir / f"frame_{actual_frame_number:04d}")
+    #
+    #             # Apply enhancement with comparison saving
+    #             processing_frame = enhance_image_for_hand_detection(
+    #                 frame,
+    #                 visualize=False,
+    #                 save_comparison=(annotated_frame_path is not None),
+    #                 comparison_save_path=comparison_save_path
+    #             )
+    #         else:
+    #             processing_frame = frame
+    #
+    #         # Convert to RGB for MediaPipe - use the processing frame (enhanced or original)
+    #         rgb_frame = cv2.cvtColor(processing_frame, cv2.COLOR_BGR2RGB)
+    #
+    #         # Make a copy for annotations - always use original frame for annotations
+    #         annotated_frame = frame.copy()
+    #
+    #         # Initialize frame data structure - use actual frame number
+    #         frame_data = {
+    #             "frame": actual_frame_number,
+    #             "timestamp": actual_frame_number / fps,
+    #             "hands": {"left_hand": [], "right_hand": []},
+    #             "face": {"all_landmarks": [], "mouth_landmarks": []},
+    #             "pose": {},
+    #             "enhancement_applied": use_enhancement  # Track if enhancement was used
+    #         }
+    #
+    #         # Step 1: Process pose landmarks first (needed for hand calibration)
+    #         pose_wrists = {"LEFT_WRIST": None, "RIGHT_WRIST": None}
+    #
+    #         if extract_pose:
+    #             results_pose = pose.process(rgb_frame)
+    #
+    #             if results_pose.pose_landmarks:
+    #                 # Extract pose landmarks
+    #                 pose_data = {}
+    #                 h, w, _ = frame.shape
+    #
+    #                 for landmark_name in CORE_POSE_LANDMARKS:
+    #                     try:
+    #                         landmark_enum = getattr(mp_pose.PoseLandmark, landmark_name)
+    #                         lm = results_pose.pose_landmarks.landmark[landmark_enum]
+    #                         pose_data[landmark_name] = {
+    #                             "x": lm.x,
+    #                             "y": lm.y,
+    #                             "z": lm.z,
+    #                             "px": int(lm.x * w),
+    #                             "py": int(lm.y * h),
+    #                             "visibility": float(lm.visibility)
+    #                         }
+    #                     except AttributeError:
+    #                         continue
+    #
+    #                 # Store wrist positions for hand calibration
+    #                 if "LEFT_WRIST" in pose_data:
+    #                     pose_wrists["LEFT_WRIST"] = np.array([
+    #                         pose_data["LEFT_WRIST"]["x"],
+    #                         pose_data["LEFT_WRIST"]["y"],
+    #                         pose_data["LEFT_WRIST"]["z"]
+    #                     ])
+    #
+    #                 if "RIGHT_WRIST" in pose_data:
+    #                     pose_wrists["RIGHT_WRIST"] = np.array([
+    #                         pose_data["RIGHT_WRIST"]["x"],
+    #                         pose_data["RIGHT_WRIST"]["y"],
+    #                         pose_data["RIGHT_WRIST"]["z"]
+    #                     ])
+    #
+    #                 frame_data["pose"] = pose_data
+    #
+    #                 # Draw pose landmarks on original frame
+    #                 pose_landmark_spec = mp_drawing.DrawingSpec(
+    #                     color=(0, 0, 255),  # Blue
+    #                     thickness=1,
+    #                     circle_radius=1
+    #                 )
+    #
+    #                 pose_connection_spec = mp_drawing.DrawingSpec(
+    #                     color=(255, 255, 0),  # Cyan
+    #                     thickness=1,
+    #                     circle_radius=1
+    #                 )
+    #
+    #                 mp_drawing.draw_landmarks(
+    #                     annotated_frame,
+    #                     results_pose.pose_landmarks,
+    #                     mp_pose.POSE_CONNECTIONS,
+    #                     landmark_drawing_spec=pose_landmark_spec,
+    #                     connection_drawing_spec=pose_connection_spec
+    #                 )
+    #
+    #         # Step 2: Process hands with ENHANCED TRACKING and CALIBRATION
+    #         hands_data = enhanced_hand_tracker.process_frame(rgb_frame)
+    #
+    #         # STEP 3: Calibrate hands at MediaPipe object level (BEFORE JSON conversion)
+    #         if pose_wrists["LEFT_WRIST"] is not None or pose_wrists["RIGHT_WRIST"] is not None:
+    #             # Use the existing calibrate_hands_to_wrists function that works with MediaPipe objects
+    #             calibrated_hands_data = calibrate_hands_to_wrists(hands_data, pose_wrists)
+    #         else:
+    #             calibrated_hands_data = hands_data
+    #
+    #         # Convert calibrated MediaPipe objects to JSON format
+    #         json_hands_data = enhanced_hand_tracker.get_landmarks_for_json(calibrated_hands_data, frame.shape)
+    #         frame_data["hands"] = json_hands_data
+    #
+    #         # Draw calibrated hands on annotated frame
+    #         enhanced_hand_tracker.draw_hands_on_frame(annotated_frame, calibrated_hands_data)
+    #
+    #         # Step 3: Process face landmarks if requested (keep existing implementation)
+    #         if extract_face:
+    #             results_face = face_mesh.process(rgb_frame)
+    #
+    #             if results_face.multi_face_landmarks:
+    #                 for face_landmarks in results_face.multi_face_landmarks:
+    #                     # CALIBRATE face landmarks to pose nose (following hands pattern)
+    #                     pose_nose_position = None
+    #                     if frame_data["pose"] and "NOSE" in frame_data["pose"]:
+    #                         pose_nose_position = np.array([
+    #                             frame_data["pose"]["NOSE"]["x"],
+    #                             frame_data["pose"]["NOSE"]["y"],
+    #                             frame_data["pose"]["NOSE"]["z"]
+    #                         ])
+    #
+    #                     # Calibrate the MediaPipe face landmarks object (same as hands)
+    #                     calibrated_face_landmarks = calibrate_face_to_nose(face_landmarks, pose_nose_position)
+    #
+    #                     # Extract calibrated face landmarks for JSON data
+    #                     face_data = []
+    #                     mouth_data = []
+    #                     h, w, _ = frame.shape
+    #
+    #                     # Use CALIBRATED landmarks for JSON extraction
+    #                     for i, lm in enumerate(calibrated_face_landmarks.landmark):
+    #                         point = {
+    #                             "x": lm.x,
+    #                             "y": lm.y,
+    #                             "z": lm.z,
+    #                             "px": int(lm.x * w),
+    #                             "py": int(lm.y * h)
+    #                         }
+    #                         face_data.append(point)
+    #
+    #                         if i in MOUTH_LANDMARKS:
+    #                             mouth_data.append(point)
+    #
+    #                     frame_data["face"]["all_landmarks"] = face_data
+    #                     frame_data["face"]["mouth_landmarks"] = mouth_data
+    #
+    #                     # Mark as calibrated if pose nose was available
+    #                     if pose_nose_position is not None:
+    #                         frame_data["face"]["calibrated"] = True
+    #
+    #                     # Draw face landmarks using CALIBRATED MediaPipe object (same as hands)
+    #                     if use_full_mesh:
+    #                         mp_drawing.draw_landmarks(
+    #                             annotated_frame,
+    #                             calibrated_face_landmarks,  # ← NOW using calibrated landmarks like hands
+    #                             mp_face_mesh.FACEMESH_TESSELATION,
+    #                             landmark_drawing_spec=None,
+    #                             connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style()
+    #                         )
+    #                     else:
+    #                         # Draw simplified key landmarks (keep your existing implementation)
+    #                         KEY_FACE_LANDMARKS = {
+    #                             'silhouette': [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+    #                                            397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+    #                                            172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109],
+    #                             'eyebrows': [70, 63, 105, 66, 107, 336, 296, 334, 293, 300],
+    #                             'eyes': [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7,
+    #                                      362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381,
+    #                                      382],
+    #                             'nose': [168, 6, 197, 195, 5, 4, 1, 19, 94, 2],
+    #                             'lips': [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191,
+    #                                      80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178],
+    #                         }
+    #
+    #                         color_map = {
+    #                             'silhouette': (200, 200, 200),
+    #                             'eyebrows': (0, 150, 255),
+    #                             'eyes': (255, 0, 0),
+    #                             'nose': (0, 255, 255),
+    #                             'lips': (0, 0, 255)
+    #                         }
+    #
+    #                         # Draw face outline (silhouette)
+    #                         silhouette_points = []
+    #                         for idx in KEY_FACE_LANDMARKS['silhouette']:
+    #                             lm = face_landmarks.landmark[idx]
+    #                             x, y = int(lm.x * w), int(lm.y * h)
+    #                             silhouette_points.append((x, y))
+    #
+    #                         if silhouette_points:
+    #                             cv2.polylines(annotated_frame, [np.array(silhouette_points)], True,
+    #                                           color_map['silhouette'], 1)
+    #
+    #                         # Draw eyebrows
+    #                         for idx in KEY_FACE_LANDMARKS['eyebrows']:
+    #                             lm = face_landmarks.landmark[idx]
+    #                             x, y = int(lm.x * w), int(lm.y * h)
+    #                             cv2.circle(annotated_frame, (x, y), 1, color_map['eyebrows'], -1)
+    #
+    #                         # Draw eyes
+    #                         left_eye_points = []
+    #                         left_eye_indices = KEY_FACE_LANDMARKS['eyes'][:16]
+    #                         for idx in left_eye_indices:
+    #                             lm = face_landmarks.landmark[idx]
+    #                             x, y = int(lm.x * w), int(lm.y * h)
+    #                             left_eye_points.append((x, y))
+    #
+    #                         right_eye_points = []
+    #                         right_eye_indices = KEY_FACE_LANDMARKS['eyes'][16:]
+    #                         for idx in right_eye_indices:
+    #                             lm = face_landmarks.landmark[idx]
+    #                             x, y = int(lm.x * w), int(lm.y * h)
+    #                             right_eye_points.append((x, y))
+    #
+    #                         if left_eye_points:
+    #                             cv2.polylines(annotated_frame, [np.array(left_eye_points)], True,
+    #                                           color_map['eyes'], 1)
+    #                         if right_eye_points:
+    #                             cv2.polylines(annotated_frame, [np.array(right_eye_points)], True,
+    #                                           color_map['eyes'], 1)
+    #
+    #                         # Draw nose
+    #                         nose_points = []
+    #                         for idx in KEY_FACE_LANDMARKS['nose']:
+    #                             lm = face_landmarks.landmark[idx]
+    #                             x, y = int(lm.x * w), int(lm.y * h)
+    #                             nose_points.append((x, y))
+    #                             cv2.circle(annotated_frame, (x, y), 1, color_map['nose'], -1)
+    #
+    #                         # Draw lips
+    #                         outer_lip_points = []
+    #                         outer_lip_indices = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 78, 191]
+    #                         for idx in outer_lip_indices:
+    #                             lm = face_landmarks.landmark[idx]
+    #                             x, y = int(lm.x * w), int(lm.y * h)
+    #                             outer_lip_points.append((x, y))
+    #
+    #                         if outer_lip_points:
+    #                             cv2.polylines(annotated_frame, [np.array(outer_lip_points)], True,
+    #                                           color_map['lips'], 1)
+    #
+    #                         inner_lip_points = []
+    #                         inner_lip_indices = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 191]
+    #                         for idx in inner_lip_indices:
+    #                             lm = face_landmarks.landmark[idx]
+    #                             x, y = int(lm.x * w), int(lm.y * h)
+    #                             inner_lip_points.append((x, y))
+    #
+    #                         if inner_lip_points:
+    #                             cv2.polylines(annotated_frame, [np.array(inner_lip_points)], True,
+    #                                           color_map['lips'], 1)
+    #
+    #         # Save frame data using actual frame number as key
+    #         all_frames_data[str(actual_frame_number)] = frame_data
+    #
+    #         # Add frame info to image - show actual frame number and enhancement status
+    #         progress_percent = (actual_frame_number / total_frames) * 100 if total_frames > 0 else 0
+    #         enhancement_text = " (Enhanced)" if use_enhancement else ""
+    #         tracking_text = "  | Enhanced Hand + Face Calibration"
+    #         cv2.putText(
+    #             annotated_frame,
+    #             f"Frame: {actual_frame_number} | {progress_percent:.1f}%{enhancement_text}{tracking_text}",
+    #             (10, 20),
+    #             cv2.FONT_HERSHEY_SIMPLEX,
+    #             0.5,
+    #             (0, 255, 255),
+    #             1
+    #         )
+    #
+    #         # Save annotated frame image (only if path is provided)
+    #         if annotated_frame_path:
+    #             success = cv2.imwrite(str(annotated_frame_path), annotated_frame)
+    #             if not success:
+    #                 print(f"Error: Could not save annotated frame to {annotated_frame_path}")
+    #
+    #         # Write frame to video
+    #         if video_writer:
+    #             video_writer.write(annotated_frame)
+    #
+    #     except Exception as e:
+    #         print(f"Error processing frame {actual_frame_number}: {e}")
+    #         import traceback
+    #         traceback.print_exc()
 
     def process_frame(self, rgb_frame: np.ndarray) -> Dict:
         """
@@ -2824,7 +2776,7 @@ def process_frame_enhanced(
 
 
 def analyze_sequence_quality(json_path: str) -> Dict:
-    """Analyze quality scores across a sequence"""
+    """Analyze quality scores across a sequence - simplified"""
     with open(json_path, 'r') as f:
         data = json.load(f)
 
@@ -2832,7 +2784,7 @@ def analyze_sequence_quality(json_path: str) -> Dict:
 
     left_qualities = []
     right_qualities = []
-    contexts = {'center_frame': 0, 'near_boundary': 0, 'no_detection': 0}
+    contexts = {'detected': 0, 'no_detection': 0}
 
     for frame_key, frame_data in frames_data.items():
         quality_scores = frame_data.get('quality_scores', {})
