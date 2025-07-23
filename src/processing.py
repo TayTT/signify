@@ -5,7 +5,7 @@ import re
 import numpy as np
 import mediapipe as mp
 from pathlib import Path
-from typing import Dict, Tuple, Any, Optional
+from typing import Dict, Tuple, Any, Optional, List
 from collections import deque
 import math
 
@@ -46,12 +46,12 @@ class EnhancedHandTracker:
                  # max_hand_distance_threshold: float = 0.3,
                  # frame_border_margin: float = 0.1):
 
-                # min_detection_confidence: float = 0.5,
-                # min_tracking_confidence: float = 0.3,
-                # temporal_smoothing_frames: int = 5,
-                # confidence_threshold: float = 0.4,
-                # max_hand_distance_threshold: float = 0.3,
-                # frame_border_margin: float = 0.1):
+                 # min_detection_confidence: float = 0.5,
+                 # min_tracking_confidence: float = 0.3,
+                 # temporal_smoothing_frames: int = 5,
+                 # confidence_threshold: float = 0.4,
+                 # max_hand_distance_threshold: float = 0.3,
+                 # frame_border_margin: float = 0.1):
 
                  min_detection_confidence: float = 0.2,
                  min_tracking_confidence: float = 0.2,
@@ -59,7 +59,6 @@ class EnhancedHandTracker:
                  confidence_threshold: float = 0.2,
                  max_hand_distance_threshold: float = 0.4,
                  frame_border_margin: float = 0.1):
-
 
         """
         Initialize enhanced hand tracker
@@ -143,6 +142,184 @@ class EnhancedHandTracker:
             }
         }
 
+        self.last_valid_detections = {
+            'left_hand': {'data': None, 'frame': -1},
+            'right_hand': {'data': None, 'frame': -1}
+        }
+        self.max_smoothness_gap = 10  # Only calculate smoothness if gap <= 10 frames
+
+    #-------------- START Quality calculations
+    def is_near_frame_boundary_mediapipe(self, landmarks_list, margin: float = 0.1) -> bool:
+        """Handle both MediaPipe landmarks and Python list landmarks"""
+        if not landmarks_list:
+            return False
+
+        # Convert MediaPipe landmarks to coordinate lists
+        if hasattr(landmarks_list, '__iter__') and len(landmarks_list) > 0:
+            # Check if first element has MediaPipe landmark attributes
+            first_landmark = landmarks_list[0]
+            if hasattr(first_landmark, 'x'):
+                # MediaPipe landmark objects
+                x_coords = [lm.x for lm in landmarks_list]
+                y_coords = [lm.y for lm in landmarks_list]
+            elif isinstance(first_landmark, dict):
+                # Python dict landmarks (JSON format)
+                x_coords = [lm['x'] for lm in landmarks_list]
+                y_coords = [lm['y'] for lm in landmarks_list]
+            else:
+                return False
+        else:
+            return False
+
+        if not x_coords or not y_coords:
+            return False
+
+        # Get bounding box of hand
+        min_x, max_x = min(x_coords), max(x_coords)
+        min_y, max_y = min(y_coords), max(y_coords)
+
+        # Check if any part of hand is near boundary
+        near_boundary = (min_x < margin or max_x > (1.0 - margin) or
+                         min_y < margin or max_y > (1.0 - margin))
+
+        return near_boundary
+
+    def calculate_hand_quality(self, hand_data: Dict, hand_type: str) -> Dict:
+        """Calculate quality with boundary context - fixed for MediaPipe objects"""
+        if not hand_data or not hand_data.get('landmarks'):
+            return {
+                'quality': 0.0,
+                'confidence': 0.0,
+                'completeness': 0.0,
+                'stability': 0.0,
+                'context': 'no_detection'
+            }
+
+        landmarks = hand_data.get('landmarks')
+
+        # Factor 1: Detection confidence
+        confidence = hand_data.get('confidence', 0.0)
+
+        # Factor 2: Landmark completeness - FIXED to handle MediaPipe objects
+        if hasattr(landmarks, 'landmark'):
+            # MediaPipe NormalizedLandmarkList object
+            completeness = len(landmarks.landmark) / 21.0 if landmarks.landmark else 0.0
+            landmarks_list = landmarks.landmark  # For boundary checking
+        elif isinstance(landmarks, list):
+            # Python list (JSON format)
+            completeness = len(landmarks) / 21.0 if landmarks else 0.0
+            landmarks_list = landmarks
+        else:
+            # Unknown format
+            completeness = 0.0
+            landmarks_list = []
+
+        # Factor 3: Stability (with gap handling)
+        stability = self._calculate_stability_with_gaps(hand_data, hand_type)
+
+        # Check boundary context - FIXED to handle MediaPipe objects
+        near_boundary = self.is_near_frame_boundary_mediapipe(landmarks_list)
+
+        if near_boundary:
+            # Near boundary: ignore completeness, use only confidence and stability
+            context = 'near_boundary'
+            quality_factors = [confidence, stability]
+            weights = [0.7, 0.3]  # Higher weight on confidence
+        else:
+            # Center frame: use all three factors
+            context = 'center_frame'
+            quality_factors = [confidence, completeness, stability]
+            weights = [0.5, 0.3, 0.2]  # Confidence most important
+
+        # Calculate weighted quality score
+        quality_score = sum(factor * weight for factor, weight in zip(quality_factors, weights))
+        quality_score = min(1.0, max(0.0, quality_score))
+
+        # Update last valid detection for future smoothness calculations
+        self.last_valid_detections[hand_type] = {
+            'data': hand_data,
+            'frame': self.frame_count
+        }
+
+        return {
+            'quality': quality_score,
+            'confidence': confidence,
+            'completeness': completeness,
+            'stability': stability,
+            'context': context,
+            'near_boundary': near_boundary
+        }
+
+    def _calculate_stability_with_gaps(self, current_hand: Dict, hand_type: str) -> float:
+        """Calculate stability handling long periods of missing data"""
+        last_valid = self.last_valid_detections[hand_type]
+
+        # No previous valid detection
+        if last_valid['data'] is None:
+            return 1.0  # Neutral stability for first detection
+
+        # Gap too large - don't calculate stability
+        frame_gap = self.frame_count - last_valid['frame']
+        if frame_gap > self.max_smoothness_gap:
+            return 0.8  # Slightly reduced but not penalized heavily
+
+        # Calculate smoothness between current and last valid detection
+        return self._calculate_exit_smoothness(current_hand, last_valid['data'])
+
+    def _calculate_exit_smoothness(self, current_hand: Dict, previous_hand: Dict) -> float:
+        """Calculate movement smoothness - FIXED for MediaPipe objects"""
+        curr_landmarks = current_hand.get('landmarks')
+        prev_landmarks = previous_hand.get('landmarks')
+
+        if not curr_landmarks or not prev_landmarks:
+            return 0.5  # Neutral stability
+
+        # Handle MediaPipe objects
+        def get_wrist_coords(landmarks):
+            if hasattr(landmarks, 'landmark'):
+                # MediaPipe NormalizedLandmarkList
+                if len(landmarks.landmark) > 0:
+                    wrist = landmarks.landmark[0]  # Wrist is landmark 0
+                    return (wrist.x, wrist.y)
+            elif isinstance(landmarks, list) and len(landmarks) > 0:
+                # Python list (JSON format)
+                wrist = landmarks[0]
+                if isinstance(wrist, dict):
+                    return (wrist['x'], wrist['y'])
+            return None
+
+        curr_wrist_coords = get_wrist_coords(curr_landmarks)
+        prev_wrist_coords = get_wrist_coords(prev_landmarks)
+
+        if not curr_wrist_coords or not prev_wrist_coords:
+            return 0.5  # Neutral stability
+
+        # Calculate movement distance
+        movement_distance = ((curr_wrist_coords[0] - prev_wrist_coords[0]) ** 2 +
+                             (curr_wrist_coords[1] - prev_wrist_coords[1]) ** 2) ** 0.5
+
+        # Smooth movement should be moderate (not too fast, not too slow)
+        if movement_distance < 0.01:
+            return 0.9  # Very stable (minimal movement)
+        elif movement_distance < 0.05:
+            return 1.0  # Perfect stability (natural movement)
+        elif movement_distance < 0.15:
+            return 0.8  # Good stability (moderate movement)
+        elif movement_distance < 0.3:
+            return 0.5  # Reduced stability (fast movement)
+        else:
+            return 0.2  # Poor stability (very fast/jumpy movement)
+
+    def _get_hand_center(self, landmarks: List[Dict]) -> Tuple[float, float]:
+        """Get hand center from landmarks"""
+        if not landmarks or len(landmarks) == 0:
+            return (0.0, 0.0)
+
+        # Use wrist position as center
+        wrist = landmarks[0]
+        return (wrist['x'], wrist['y'])
+
+    #------------ END quality calculations
     def _analyze_hand_disappearance(self, hand_type: str, hand_detected: bool, current_center: np.ndarray = None):
         """
         Analyze if hand disappearance is expected (left frame) or unexpected (detection failure)
@@ -1378,6 +1555,7 @@ def apply_mirroring_to_frame_data(frame_data: Dict, pose_wrists: Dict, frame_sha
 
     return mirrored_frame_data
 
+
 def mirror_single_hand_data(hand_data, frame_width: int):
     """
     Mirror a single hand's data (coordinates only)
@@ -1416,6 +1594,7 @@ def mirror_single_hand_data(hand_data, frame_width: int):
         return mirrored_landmarks
 
     return []
+
 
 def calibrate_hands_to_wrists(hands_data: Dict, pose_wrists: Dict) -> Dict:
     """
@@ -1474,7 +1653,6 @@ def calibrate_hands_to_wrists(hands_data: Dict, pose_wrists: Dict) -> Dict:
             calibrated_hands[hand_type] = hand_data
 
     return calibrated_hands
-
 
 
 def calibrate_face_to_nose(face_landmarks, pose_nose_position):
@@ -1808,7 +1986,6 @@ def process_image(
                 for landmark in mp_pose.PoseLandmark:
                     lm = results_pose.pose_landmarks.landmark[landmark]
                     pose_data[landmark.name] = {"x": lm.x, "y": lm.y, "z": lm.z}
-
 
                 for landmark_name in CORE_POSE_LANDMARKS:
                     try:
@@ -2307,6 +2484,7 @@ def create_calibrated_face_landmarks(original_landmarks, translation_offset):
 
     return calibrated_landmarks
 
+
 def process_frame_enhanced(
         frame, actual_frame_number, fps, enhanced_hand_tracker, face_mesh, pose,
         extract_face, extract_pose, all_frames_data,
@@ -2318,12 +2496,12 @@ def process_frame_enhanced(
         phoenix_mode=False,
         processed_frame_count=0,
         phoenix_frame_sample_rate=50,
-        phoenix_json_only=False,  # NEW: JSON-only mode
+        phoenix_json_only=False,
         disable_mirroring=False,
         face_tracker=None
 ):
     """
-    Enhanced frame processing function that uses the new hand tracker
+    Enhanced frame processing function that uses the new hand tracker with quality calculation
     """
     try:
         # Apply enhancement if requested
@@ -2442,30 +2620,21 @@ def process_frame_enhanced(
         json_hands_data = enhanced_hand_tracker.get_landmarks_for_json(calibrated_hands_data, frame.shape)
         frame_data["hands"] = json_hands_data
 
-        # UPDATE: Track missing hand data
-        left_hand_data = json_hands_data.get('left_hand', [])
-        right_hand_data = json_hands_data.get('right_hand', [])
-
-        # Check if hands are missing
-        def is_hand_data_missing(hand_data):
-            if not hand_data:
-                return True
-            if isinstance(hand_data, dict):
-                landmarks = hand_data.get('landmarks', [])
-                confidence = hand_data.get('confidence', 0)
-                return not landmarks or confidence < 0.1
-            elif isinstance(hand_data, list):
-                return len(hand_data) == 0
-            return True
-
-        frame_data["missing_data"]["left_hand_missing"] = is_hand_data_missing(left_hand_data)
-        frame_data["missing_data"]["right_hand_missing"] = is_hand_data_missing(right_hand_data)
+        # STEP 3.5: Calculate hand quality scores (NEW - but don't filter)
+        left_hand_quality = enhanced_hand_tracker.calculate_hand_quality(
+            calibrated_hands_data.get('left_hand'), 'left_hand'
+        )
+        right_hand_quality = enhanced_hand_tracker.calculate_hand_quality(
+            calibrated_hands_data.get('right_hand'), 'right_hand'
+        )
 
         # Draw hands (use original MediaPipe objects for drawing)
         enhanced_hand_tracker.draw_hands_on_frame(annotated_frame, calibrated_hands_data)
 
         # STEP 4: Process face
         face_detected = False
+        face_quality = {'quality': 0.0, 'context': 'no_detection'}
+
         if extract_face:
             results_face = face_mesh.process(rgb_frame)
 
@@ -2494,6 +2663,7 @@ def process_frame_enhanced(
                     # Face was detected and passed tracking validation
                     face_landmarks = tracked_face_result['landmarks']  # This is already calibrated
                     face_detected = True
+                    face_quality = {'quality': 0.8, 'context': 'detected'}  # Simple quality for now
 
                     # Extract face data to JSON format from calibrated MediaPipe object
                     face_data = []
@@ -2540,8 +2710,36 @@ def process_frame_enhanced(
                 # If face tracking is disabled, we can't determine if face is missing
                 # so we'll assume it's not missing for filtering purposes
                 face_detected = True
+                face_quality = {'quality': 1.0, 'context': 'tracking_disabled'}
 
-        # UPDATE: Track missing face data
+        # STEP 4.5: Add quality information to frame data (NEW - preserve all data)
+        frame_data["quality_scores"] = {
+            'left_hand': left_hand_quality,
+            'right_hand': right_hand_quality,
+            'face': face_quality,
+            'hands_avg_quality': (left_hand_quality['quality'] + right_hand_quality['quality']) / 2,
+            'overall_quality': (left_hand_quality['quality'] + right_hand_quality['quality'] + face_quality[
+                'quality']) / 3
+        }
+
+        # STEP 5: Update missing data detection (ORIGINAL logic - no quality filtering)
+        left_hand_data = json_hands_data.get('left_hand', [])
+        right_hand_data = json_hands_data.get('right_hand', [])
+
+        # Check if hands are missing using original logic
+        def is_hand_data_missing(hand_data):
+            if not hand_data:
+                return True
+            if isinstance(hand_data, dict):
+                landmarks = hand_data.get('landmarks', [])
+                confidence = hand_data.get('confidence', 0)
+                return not landmarks or confidence < 0.1
+            elif isinstance(hand_data, list):
+                return len(hand_data) == 0
+            return True
+
+        frame_data["missing_data"]["left_hand_missing"] = is_hand_data_missing(left_hand_data)
+        frame_data["missing_data"]["right_hand_missing"] = is_hand_data_missing(right_hand_data)
         frame_data["missing_data"]["face_missing"] = not face_detected
 
         # Calculate if any data is missing
@@ -2551,6 +2749,7 @@ def process_frame_enhanced(
                 frame_data["missing_data"]["face_missing"]
         )
 
+        # Debug output for hand positions
         for hand_type in ['left_hand', 'right_hand']:
             hand_data = frame_data["hands"].get(hand_type)
             if hand_data and isinstance(hand_data, dict) and 'landmarks' in hand_data:
@@ -2558,9 +2757,9 @@ def process_frame_enhanced(
                 if DEBUG: print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
             elif hand_data and isinstance(hand_data, list) and len(hand_data) > 0:
                 wrist = hand_data[0]
-                if DEBUG:print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
+                if DEBUG: print(f"  {hand_type}: wrist at x={wrist['x']:.3f}")
 
-        # STEP 5: Apply mirroring AFTER calibration
+        # STEP 6: Apply mirroring AFTER calibration
         if not disable_mirroring:
             frame_data = apply_mirroring_to_frame_data(frame_data, pose_wrists, frame.shape)
 
@@ -2579,7 +2778,7 @@ def process_frame_enhanced(
             if not phoenix_mode:  # Skip detailed frame info in Phoenix mode for speed
                 progress_percent = (actual_frame_number / total_frames) * 100 if total_frames > 0 else 0
                 enhancement_text = " (Enhanced)" if use_enhancement else ""
-                tracking_text = " | Enhanced Hand Tracking"
+                tracking_text = " | Enhanced Hand Tracking + Quality"
                 cv2.putText(
                     annotated_frame,
                     f"Frame: {actual_frame_number} | {progress_percent:.1f}%{enhancement_text}{tracking_text}",
@@ -2612,9 +2811,59 @@ def process_frame_enhanced(
             "face": {"all_landmarks": [], "mouth_landmarks": []},
             "pose": {},
             "error": True,
-            "error_message": str(e)
+            "error_message": str(e),
+            "quality_scores": {
+                'left_hand': {'quality': 0.0, 'context': 'error'},
+                'right_hand': {'quality': 0.0, 'context': 'error'},
+                'face': {'quality': 0.0, 'context': 'error'},
+                'hands_avg_quality': 0.0,
+                'overall_quality': 0.0
+            }
         }
         all_frames_data[str(actual_frame_number)] = error_frame_data
+
+
+def analyze_sequence_quality(json_path: str) -> Dict:
+    """Analyze quality scores across a sequence"""
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    frames_data = data.get('frames', {})
+
+    left_qualities = []
+    right_qualities = []
+    contexts = {'center_frame': 0, 'near_boundary': 0, 'no_detection': 0}
+
+    for frame_key, frame_data in frames_data.items():
+        quality_scores = frame_data.get('quality_scores', {})
+
+        left_quality = quality_scores.get('left_hand', {})
+        right_quality = quality_scores.get('right_hand', {})
+
+        if left_quality.get('quality', 0) > 0:
+            left_qualities.append(left_quality['quality'])
+            contexts[left_quality.get('context', 'no_detection')] += 1
+
+        if right_quality.get('quality', 0) > 0:
+            right_qualities.append(right_quality['quality'])
+            contexts[right_quality.get('context', 'no_detection')] += 1
+
+    return {
+        'left_hand_stats': {
+            'mean_quality': np.mean(left_qualities) if left_qualities else 0,
+            'min_quality': np.min(left_qualities) if left_qualities else 0,
+            'max_quality': np.max(left_qualities) if left_qualities else 0,
+            'detection_rate': len(left_qualities) / len(frames_data) if frames_data else 0
+        },
+        'right_hand_stats': {
+            'mean_quality': np.mean(right_qualities) if right_qualities else 0,
+            'min_quality': np.min(right_qualities) if right_qualities else 0,
+            'max_quality': np.max(right_qualities) if right_qualities else 0,
+            'detection_rate': len(right_qualities) / len(frames_data) if frames_data else 0
+        },
+        'context_distribution': contexts,
+        'total_frames': len(frames_data)
+    }
 
 
 def natural_sort_key(s):
@@ -2632,3 +2881,14 @@ def natural_sort_key(s):
 
     # Original logic for other naming patterns
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
+
+
+def main(json_path):
+    quality_stats = analyze_sequence_quality(json_path)
+    print(f"Left hand mean quality: {quality_stats['left_hand_stats']['mean_quality']:.2f}")
+    print(f"Right hand mean quality: {quality_stats['right_hand_stats']['mean_quality']:.2f}")
+    print(f"Context distribution: {quality_stats['context_distribution']}")
+
+
+if __name__ == "__main__":
+    main('./../output_data/phoenix_sample_interpolate_50_quality_calc/01August_2011_Monday_heute_default-6.json')
