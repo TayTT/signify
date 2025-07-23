@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.optim.lr_scheduler import LambdaLR
 import math
-
+from curriculum_learning import CurriculumDataset, CurriculumSampler
 from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
 
 
@@ -33,6 +33,13 @@ from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, Phoen
 @dataclass
 class ModelConfig:
     """Configuration for LSTM model"""
+
+    # Curriculum Learning parameters
+    use_curriculum_learning: bool = True
+    curriculum_warmup_epochs: int = 5
+    curriculum_stages: int = 4
+    curriculum_overlap_ratio: float = 0.3
+
     # Model architecture - will be updated dynamically
     input_size: int = 356  # Updated default based on calculated dimensions
     hidden_size: int = 128  # Reduced for debugging
@@ -298,6 +305,8 @@ class SignLanguageTrainer:
     def __init__(self, config: ModelConfig):
         self.config = config
         self.device = torch.device(config.device)
+        self.use_curriculum_learning = True
+        self.curriculum_dataset = None
 
         # Initialize WandB
         wandb.init(
@@ -403,6 +412,114 @@ class SignLanguageTrainer:
 
     def _create_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """Create data loaders with simple length grouping and dynamic padding"""
+        if self.use_curriculum_learning:
+            return self._create_data_loaders_with_curriculum()
+        else:
+            # Split dataset
+            train_size = int(0.8 * len(self.dataset))
+            val_size = len(self.dataset) - train_size
+
+            train_dataset, val_dataset = random_split(
+                self.dataset,
+                [train_size, val_size],
+                generator=torch.Generator().manual_seed(42)
+            )
+
+            # Create simple length grouping samplers
+            train_sampler = BatchBucketing(
+                train_dataset,
+                self.config.batch_size,
+                shuffle=True
+            )
+
+            val_sampler = BatchBucketing(
+                val_dataset,
+                self.config.batch_size,
+                shuffle=False  # Don't shuffle validation
+            )
+
+            # Create data loaders with both grouping and dynamic padding
+            train_loader = DataLoader(
+                train_dataset,
+                batch_sampler=train_sampler,  # Use our custom sampler
+                num_workers=0,
+                pin_memory=False,
+                collate_fn=self._dynamic_collate_fn  # Plus dynamic padding
+            )
+
+            val_loader = DataLoader(
+                val_dataset,
+                batch_sampler=val_sampler,
+                num_workers=0,
+                pin_memory=False,
+                collate_fn=self._dynamic_collate_fn
+            )
+
+            print(f"Train samples: {len(train_dataset)} -> {len(train_sampler)} batches")
+            print(f"Validation samples: {len(val_dataset)} -> {len(val_sampler)} batches")
+
+            return self._create_data_loaders_original()
+
+    def _create_data_loaders_with_curriculum(self) -> Tuple[DataLoader, DataLoader]:
+        """Create data loaders with curriculum learning support"""
+        print("Creating curriculum learning data loaders...")
+
+        # Create curriculum dataset
+        self.curriculum_dataset = self.dataset.create_curriculum_dataset(
+            total_epochs=self.config.num_epochs,
+            warmup_epochs=min(5, self.config.num_epochs // 4)
+        )
+
+        # Split curriculum dataset for training
+        curriculum_size = len(self.curriculum_dataset.difficulty_metrics)
+        train_size = int(0.8 * curriculum_size)
+        val_size = curriculum_size - train_size
+
+        # Create train/val splits based on difficulty ranking
+        train_difficulties = self.curriculum_dataset.difficulty_metrics[:train_size]
+        val_difficulties = self.curriculum_dataset.difficulty_metrics[train_size:]
+
+        # Create separate curriculum datasets for train/val
+        train_curriculum = CurriculumDataset(
+            base_dataset=self.dataset,
+            difficulty_metrics=train_difficulties,
+            scheduler=self.curriculum_dataset.scheduler
+        )
+
+        # For validation, use a subset of medium-difficulty samples
+        val_indices = [d.index for d in val_difficulties
+                       if 0.2 < d.overall_difficulty < 0.8][:len(val_difficulties) // 2]
+        val_subset = torch.utils.data.Subset(self.dataset, val_indices)
+
+        # Create data loaders
+        train_sampler = CurriculumSampler(train_curriculum, self.config.batch_size)
+
+        train_loader = DataLoader(
+            train_curriculum,
+            batch_size=self.config.batch_size,
+            sampler=train_sampler,
+            num_workers=0,
+            pin_memory=False,
+            collate_fn=self._dynamic_collate_fn
+        )
+
+        val_loader = DataLoader(
+            val_subset,
+            batch_size=self.config.batch_size,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=False,
+            collate_fn=self._dynamic_collate_fn
+        )
+
+        print(f"Curriculum train samples: {len(train_curriculum.difficulty_metrics)}")
+        print(f"Validation samples: {len(val_subset)}")
+
+        return train_loader, val_loader
+
+    def _create_data_loaders_original(self) -> Tuple[DataLoader, DataLoader]:
+        """Original data loader creation (renamed from existing method)"""
+        # Move your existing _create_data_loaders implementation here
         # Split dataset
         train_size = int(0.8 * len(self.dataset))
         val_size = len(self.dataset) - train_size
@@ -423,16 +540,16 @@ class SignLanguageTrainer:
         val_sampler = BatchBucketing(
             val_dataset,
             self.config.batch_size,
-            shuffle=False  # Don't shuffle validation
+            shuffle=False
         )
 
         # Create data loaders with both grouping and dynamic padding
         train_loader = DataLoader(
             train_dataset,
-            batch_sampler=train_sampler,  # Use our custom sampler
+            batch_sampler=train_sampler,
             num_workers=0,
             pin_memory=False,
-            collate_fn=self._dynamic_collate_fn  # Plus dynamic padding
+            collate_fn=self._dynamic_collate_fn
         )
 
         val_loader = DataLoader(
@@ -448,59 +565,6 @@ class SignLanguageTrainer:
 
         return train_loader, val_loader
 
-    # def _safe_collate_fn(self, batch):
-    #     """Safe collate function that handles shape mismatches"""
-    #     try:
-    #         # Check if all samples have the same shapes
-    #         sequences = [item['sequence'] for item in batch]
-    #         attention_masks = [item['attention_mask'] for item in batch]
-    #         labels = [item['labels'] for item in batch]
-    #
-    #         # Verify shapes
-    #         seq_shapes = [seq.shape for seq in sequences]
-    #         mask_shapes = [mask.shape for mask in attention_masks]
-    #         label_shapes = [label.shape for label in labels]
-    #
-    #         if len(set(seq_shapes)) > 1:
-    #             print(f"Warning: Inconsistent sequence shapes in batch: {seq_shapes}")
-    #             # Fix by using the most common shape or a default shape
-    #             target_shape = seq_shapes[0]  # Use first item's shape as reference
-    #             fixed_sequences = []
-    #             for seq in sequences:
-    #                 if seq.shape != target_shape:
-    #                     fixed_seq = torch.zeros(target_shape, dtype=seq.dtype)
-    #                     # Copy as much as possible
-    #                     min_dims = [min(seq.shape[i], target_shape[i]) for i in range(len(target_shape))]
-    #                     if len(min_dims) == 2:
-    #                         fixed_seq[:min_dims[0], :min_dims[1]] = seq[:min_dims[0], :min_dims[1]]
-    #                     else:
-    #                         fixed_seq[:min_dims[0]] = seq[:min_dims[0]]
-    #                     fixed_sequences.append(fixed_seq)
-    #                 else:
-    #                     fixed_sequences.append(seq)
-    #             sequences = fixed_sequences
-    #
-    #         # Stack tensors
-    #         return {
-    #             'sequence': torch.stack(sequences),
-    #             'attention_mask': torch.stack(attention_masks),
-    #             'labels': torch.stack(labels),
-    #             'annotation': [item['annotation'] for item in batch],
-    #             'metadata': [item['metadata'] for item in batch]
-    #         }
-    #     except Exception as e:
-    #         print(f"Error in collate function: {e}")
-    #         # Return a minimal valid batch
-    #         batch_size = len(batch)
-    #         return {
-    #             'sequence': torch.zeros(batch_size, self.dataset.preprocessor.config.max_sequence_length,
-    #                                     self.dataset.preprocessor.feature_dims['total']),
-    #             'attention_mask': torch.zeros(batch_size, self.dataset.preprocessor.config.max_sequence_length,
-    #                                           dtype=torch.bool),
-    #             'labels': torch.zeros(batch_size, 50, dtype=torch.long),
-    #             'annotation': [''] * batch_size,
-    #             'metadata': [{}] * batch_size
-    #         }
 
     def _dynamic_collate_fn(self, batch):
         """Dynamic collate function that pads only to batch maximum length"""
@@ -842,14 +906,33 @@ class SignLanguageTrainer:
             print(f"  Relative improvement: {improvement / original_pad_ratio * 100:.1f}%")
 
     def train(self):
-        """Main training loop"""
-        print("Starting training...")
+        """Modified training loop with curriculum learning support"""
+        print("Starting training with curriculum learning...")
         torch.set_num_threads(4)
 
-        self.analyze_padding_improvement()
+        if self.use_curriculum_learning:
+            self.analyze_padding_improvement()
 
         for epoch in range(self.config.num_epochs):
             print(f"\nEpoch {epoch + 1}/{self.config.num_epochs}")
+
+            # Update curriculum for this epoch
+            if self.use_curriculum_learning and self.curriculum_dataset:
+                # Update the curriculum dataset for current epoch
+                if hasattr(self.train_loader.dataset, 'update_epoch'):
+                    self.train_loader.dataset.update_epoch(epoch)
+
+                # Log curriculum statistics
+                current_samples = len(self.train_loader.dataset)
+                total_samples = len(
+                    self.curriculum_dataset.difficulty_metrics) if self.curriculum_dataset else current_samples
+                wandb.log({
+                    'curriculum/current_samples': current_samples,
+                    'curriculum/total_samples': total_samples,
+                    'curriculum/sample_ratio': current_samples / max(1, total_samples),
+                    'curriculum/difficulty_threshold': self.curriculum_dataset.scheduler.get_difficulty_threshold(
+                        epoch) if self.curriculum_dataset else 1.0
+                })
 
             # Train
             train_loss = self.train_epoch()
@@ -878,9 +961,9 @@ class SignLanguageTrainer:
             print(f"Val F1: {metrics['f1']:.4f}")
 
             # Optional analysis (with error handling)
-            if (epoch + 1) % 3 == 0:  # Every 3 epochs, less frequent
+            if (epoch + 1) % 3 == 0:
                 try:
-                    self.analyze_predictions(num_samples=2)  # Fewer samples
+                    self.analyze_predictions(num_samples=2)
                 except Exception as e:
                     print(f"Skipping analysis due to error: {e}")
 
@@ -898,14 +981,6 @@ class SignLanguageTrainer:
             if self.patience_counter >= self.config.patience:
                 print("Early stopping triggered!")
                 break
-
-        print("Training completed!")
-
-        # Plot training curves (with error handling)
-        try:
-            self._plot_training_curves()
-        except Exception as e:
-            print(f"Could not plot training curves: {e}")
 
         print("Training completed!")
 
@@ -1119,6 +1194,9 @@ def main():
     parser.add_argument('--annotations_path', type=str, default='./phoenix_annotations.xlsx', help='Path to annotations Excel file')
     parser.add_argument('--config_path', type=str, help='Path to config JSON file')
     parser.add_argument('--resume', type=str, help='Path to checkpoint to resume training')
+    parser.add_argument('--curriculum_learning', action='store_true', default=True, help='Enable curriculum learning')
+    parser.add_argument('--curriculum_warmup_epochs', type=int, default=5, help='Number of warmup epochs for curriculum learning')
+    parser.add_argument('--no_curriculum', action='store_true', help='Disable curriculum learning')
 
     args = parser.parse_args()
 

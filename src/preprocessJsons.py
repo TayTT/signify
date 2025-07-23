@@ -18,6 +18,10 @@ import warnings
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset, DataLoader
 import pickle
+from curriculum_learning import (
+    CurriculumDataset, CurriculumScheduler, CurriculumSampler,
+    analyze_dataset_difficulty, SampleDifficulty
+)
 
 CORE_POSE_LANDMARKS = [
     'NOSE',
@@ -174,6 +178,44 @@ class PhoenixDataset(Dataset):
             print(f"Non-zero tokens: {non_zero_tokens[:10]}")
 
         return result
+
+    def create_curriculum_dataset(self,
+                                  total_epochs: int,
+                                  warmup_epochs: int = 5) -> CurriculumDataset:
+        """
+        Create curriculum learning version of this dataset
+
+        Args:
+            total_epochs: Total number of training epochs
+            warmup_epochs: Number of epochs for warmup phase
+
+        Returns:
+            CurriculumDataset instance
+        """
+        print("Creating curriculum learning dataset...")
+
+        # Analyze difficulty for all samples
+        difficulty_metrics = analyze_dataset_difficulty(
+            self.json_paths,
+            max_seq_length=self.preprocessor.config.max_sequence_length
+        )
+
+        # Create scheduler
+        scheduler = CurriculumScheduler(
+            total_epochs=total_epochs,
+            warmup_epochs=warmup_epochs,
+            stages=4,
+            overlap_ratio=0.3
+        )
+
+        # Create curriculum dataset
+        curriculum_dataset = CurriculumDataset(
+            base_dataset=self,
+            difficulty_metrics=difficulty_metrics,
+            scheduler=scheduler
+        )
+
+        return curriculum_dataset
 
     def __len__(self):
         return len(self.json_paths)
