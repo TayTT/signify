@@ -925,22 +925,17 @@ class SignLanguagePreprocessor:
         # Pad sequence
         sequence = self.pad_sequence(sequence)
 
-        # Create attention mask for padding
-        attention_mask = np.ones(len(frame_keys), dtype=bool)
-        if len(frame_keys) < self.config.max_sequence_length:
-            padding_length = self.config.max_sequence_length - len(frame_keys)
-            if self.config.padding_strategy == "post":
-                attention_mask = np.concatenate([attention_mask, np.zeros(padding_length, dtype=bool)])
-            elif self.config.padding_strategy == "pre":
-                attention_mask = np.concatenate([np.zeros(padding_length, dtype=bool), attention_mask])
-            elif self.config.padding_strategy == "center":
-                pad_before = padding_length // 2
-                pad_after = padding_length - pad_before
-                attention_mask = np.concatenate([
-                    np.zeros(pad_before, dtype=bool),
-                    attention_mask,
-                    np.zeros(pad_after, dtype=bool)
-                ])
+        # Create attention mask based on actual sequence content (AFTER padding)
+        attention_mask = self._create_proper_attention_mask(sequence)
+
+        # Ensure mask length matches sequence length
+        if len(attention_mask) != sequence.shape[0]:
+            print(f"Warning: Mask length {len(attention_mask)} != sequence length {sequence.shape[0]}")
+            # Create new mask of correct length
+            corrected_mask = np.zeros(sequence.shape[0], dtype=bool)
+            min_len = min(len(attention_mask), sequence.shape[0])
+            corrected_mask[:min_len] = attention_mask[:min_len]
+            attention_mask = corrected_mask
 
         # Add metadata
         processing_metadata = {
@@ -1068,6 +1063,22 @@ class SignLanguagePreprocessor:
         print(f"Processed sequence non-zero ratio: {(sequence != 0).mean():.3f}")
 
         return sequence
+
+    def _create_proper_attention_mask(self, sequence: np.ndarray) -> np.ndarray:
+        """Create attention mask based on actual sequence content, not frame count"""
+
+        # Check which positions have meaningful data
+        # A position is "valid" if it has non-zero values in at least some features
+        valid_positions = []
+
+        for i, frame_features in enumerate(sequence):
+            # Check if this frame has any meaningful data
+            # Consider a frame valid if at least 10% of features are non-zero
+            non_zero_ratio = np.mean(frame_features != 0)
+            is_valid = non_zero_ratio > 0.1  # At least 10% non-zero features
+            valid_positions.append(is_valid)
+
+        return np.array(valid_positions, dtype=bool)
 
 
 def validate_feature_dimensions(self, frame_data: Dict) -> bool:

@@ -143,7 +143,7 @@ class SignLanguageLSTM(nn.Module):
         )
 
         # CTC loss for sequence alignment
-        self.use_ctc = True
+        self.use_ctc = False
 
     def forward(self, x, attention_mask=None, labels=None):
         """
@@ -198,25 +198,62 @@ class SignLanguageLSTM(nn.Module):
                     blank=0,
                     reduction='mean'
                 )
+            # else:
+            #     # FOCAL LOSS: Focus on hard examples to prevent easy convergence
+            #     logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
+            #     labels_flat = labels.reshape(-1)
+            #
+            #     # Calculate cross-entropy without reduction
+            #     ce_loss = F.cross_entropy(logits_flat, labels_flat, ignore_index=0, reduction='none')
+            #
+            #     # Apply focal loss weighting
+            #     pt = torch.exp(-ce_loss)  # Probability of true class
+            #     focal_weight = (1 - pt) ** 2  # Focus on hard examples (low pt)
+            #     focal_loss = focal_weight * ce_loss
+            #
+            #     # Only average over non-padding tokens
+            #     mask = labels_flat != 0
+            #     if mask.sum() > 0:
+            #         loss = focal_loss[mask].mean()
+            #     else:
+            #         loss = focal_loss.mean()  # Fallback if all padding
             else:
-                # FOCAL LOSS: Focus on hard examples to prevent easy convergence
+                # ENHANCED LOSS: Class-weighted focal loss + diversity penalty
                 logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
                 labels_flat = labels.reshape(-1)
 
-                # Calculate cross-entropy without reduction
-                ce_loss = F.cross_entropy(logits_flat, labels_flat, ignore_index=0, reduction='none')
+                # Calculate class weights dynamically
+                mask = labels_flat != 0
+                non_padding_ratio = mask.float().mean()
 
-                # Apply focal loss weighting
-                pt = torch.exp(-ce_loss)  # Probability of true class
-                focal_weight = (1 - pt) ** 2  # Focus on hard examples (low pt)
+                # Strong class weighting to discourage padding predictions
+                class_weights = torch.ones(self.vocab_size, device=logits.device)
+                class_weights[0] = 0.1  # Very low weight for padding token
+
+                # Calculate weighted cross-entropy
+                ce_loss = F.cross_entropy(logits_flat, labels_flat, weight=class_weights, reduction='none')
+
+                # STRONGER focal loss (gamma=3 instead of 2)
+                pt = torch.exp(-ce_loss)
+                focal_weight = (1 - pt) ** 3  # Stronger focus on hard examples
                 focal_loss = focal_weight * ce_loss
 
-                # Only average over non-padding tokens
-                mask = labels_flat != 0
+                # Add diversity penalty to encourage non-padding predictions
+                probs = F.softmax(logits_flat, dim=-1)
+                padding_prob = probs[:, 0]  # Probability of predicting padding
+                diversity_penalty = torch.mean(padding_prob) * 2.0  # Penalty for high padding predictions
+
+                # Combine losses
                 if mask.sum() > 0:
-                    loss = focal_loss[mask].mean()
+                    loss = focal_loss[mask].mean() + diversity_penalty
                 else:
-                    loss = focal_loss.mean()  # Fallback if all padding
+                    loss = focal_loss.mean() + diversity_penalty
+
+                # Log diversity metrics
+                if torch.rand(1).item() < 0.1:  # Occasionally log
+                    non_padding_preds = (torch.argmax(logits_flat, dim=-1) != 0).float().mean()
+                    print(
+                        f"Non-padding predictions: {non_padding_preds:.3f}, Diversity penalty: {diversity_penalty:.3f}")
 
             # L2 REGULARIZATION: Prevent overfitting and force harder learning
             l2_penalty = 0
@@ -665,6 +702,96 @@ class SignLanguageTrainer:
 
         return padding_ratio
 
+    def _debug_attention_mask_mismatch(self, batch):
+        """Debug attention mask vs actual data mismatch"""
+        sequences = batch['sequence']
+        attention_mask = batch['attention_mask']
+
+        for i in range(min(2, sequences.shape[0])):  # Check first 2 samples
+            seq = sequences[i]
+            mask = attention_mask[i]
+
+            # Calculate different padding ratios
+            mask_based_padding = (1 - mask.float().mean()) * 100
+            data_based_padding = (1 - (seq != 0).float().mean()) * 100
+
+            print(f"\nSample {i} Mismatch Analysis:")
+            print(f"  Mask-based padding: {mask_based_padding:.1f}%")
+            print(f"  Data-based padding: {data_based_padding:.1f}%")
+            print(f"  Difference: {abs(mask_based_padding - data_based_padding):.1f}%")
+
+            # Check position-by-position
+            mask_valid_positions = mask.sum().item()
+            data_valid_positions = (seq != 0).any(dim=1).sum().item()
+
+            print(f"  Mask says {mask_valid_positions} valid positions")
+            print(f"  Data has {data_valid_positions} non-zero positions")
+
+    def _detect_and_fix_collapse(self, outputs, batch_idx):
+        """Detect model collapse (including SOS/EOS collapse) and increase learning rate"""
+        predictions = outputs['predictions'].flatten()
+
+        # Count different token types
+        total_preds = predictions.numel()
+        padding_preds = (predictions == 0).sum().item()
+        unk_preds = (predictions == 1).sum().item()
+        sos_preds = (predictions == 2).sum().item()
+        eos_preds = (predictions == 3).sum().item()
+        vocab_preds = (predictions > 3).sum().item()
+
+        # Calculate ratios
+        vocab_ratio = vocab_preds / total_preds
+        special_ratio = (sos_preds + eos_preds) / total_preds
+        padding_ratio = padding_preds / total_preds
+
+        # Detect different types of collapse
+        collapsed = False
+        collapse_type = None
+
+        if vocab_ratio < 0.10:  # Less than 5% vocabulary predictions
+            collapsed = True
+
+            if padding_ratio > 0.9:
+                collapse_type = "PADDING_COLLAPSE"
+            elif special_ratio > 0.8:
+                collapse_type = "SPECIAL_TOKEN_COLLAPSE (SOS/EOS)"
+            elif unk_preds > total_preds * 0.8:
+                collapse_type = "UNK_COLLAPSE"
+            else:
+                collapse_type = "VOCAB_COLLAPSE"
+
+        if collapsed:
+            print(f"   {collapse_type} DETECTED at batch {batch_idx}!")
+            print(
+                f"   Vocab preds: {vocab_ratio:.1%} | Special (SOS/EOS): {special_ratio:.1%} | Padding: {padding_ratio:.1%}")
+            print(f"   Breakdown: SOS={sos_preds}, EOS={eos_preds}, Vocab={vocab_preds}, PAD={padding_preds}")
+
+            # Increase learning rate to escape local minimum
+            current_lr = self.optimizer.param_groups[0]['lr']
+            new_lr = min(current_lr * 3.0, 1e-3)  # Triple LR, max 1e-3
+
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = new_lr
+
+            print(f"   Increased LR from {current_lr:.2e} to {new_lr:.2e}")
+
+            # Log to wandb if available
+            if hasattr(self, 'wandb') or 'wandb' in globals():
+                try:
+                    wandb.log({
+                        'collapse_detected': 1,
+                        'collapse_type': collapse_type,
+                        'vocab_prediction_ratio': vocab_ratio,
+                        'special_token_ratio': special_ratio,
+                        'learning_rate_boost': new_lr
+                    })
+                except:
+                    pass  # Don't fail if wandb isn't available
+
+            return True
+
+        return False
+
     def train_epoch(self) -> float:
         """Train for one epoch with padding ratio monitoring"""
         self.model.train()
@@ -746,12 +873,21 @@ class SignLanguageTrainer:
                 if vocab_ratio < 0.1:
                     print(f"WARNING: Batch {batch_idx} has mostly special tokens ({vocab_ratio:.3f})")
 
+            if batch_idx == 0 and not hasattr(self, '_mask_debug_done'):
+                self._debug_attention_mask_mismatch(batch)
+                self._mask_debug_done = True
+
             # Zero gradients
             self.optimizer.zero_grad()
 
             # Forward pass
             outputs = self.model(sequences, attention_mask, labels)
             loss = outputs['loss']
+
+            if batch_idx % 10 == 0:  # Check every 20 batches
+                collapsed = self._detect_and_fix_collapse(outputs, batch_idx)
+                if collapsed:
+                    wandb.log({'collapse_detected': 1, 'learning_rate_boost': self.optimizer.param_groups[0]['lr']})
 
             # Backward pass
             loss.backward()
@@ -962,16 +1098,101 @@ class SignLanguageTrainer:
             print(f"  Improvement: {improvement:.1f} percentage points")
             print(f"  Relative improvement: {improvement / original_pad_ratio * 100:.1f}%")
 
+    def _debug_label_distribution(self):
+        """Debug what tokens are actually in the training labels"""
+        print("\n=== Label Distribution Analysis ===")
+
+        token_counts = {}
+        total_tokens = 0
+
+        # Sample first few batches
+        for batch_idx, batch in enumerate(self.train_loader):
+            if batch_idx >= 3:  # Just first 3 batches
+                break
+
+            labels = batch['labels']
+
+            # Count all tokens in this batch
+            for label_seq in labels:
+                for token_id in label_seq:
+                    token_id = token_id.item()
+                    token_counts[token_id] = token_counts.get(token_id, 0) + 1
+                    total_tokens += 1
+
+        # Sort by frequency
+        sorted_tokens = sorted(token_counts.items(), key=lambda x: x[1], reverse=True)
+
+        print(f"Total tokens analyzed: {total_tokens}")
+        print("Top 15 most frequent tokens:")
+
+        id_to_vocab = {v: k for k, v in self.dataset.vocab.items()}
+
+        for token_id, count in sorted_tokens[:15]:
+            token_name = id_to_vocab.get(token_id, f"UNKNOWN_{token_id}")
+            percentage = (count / total_tokens) * 100
+            print(f"  ID {token_id:3d} ('{token_name}'): {count:5d} times ({percentage:5.1f}%)")
+
+        # Calculate special token ratio
+        special_tokens = [0, 1, 2, 3]  # PAD, UNK, SOS, EOS
+        special_count = sum(token_counts.get(tid, 0) for tid in special_tokens)
+        vocab_count = total_tokens - special_count
+
+        print(f"\nToken Type Distribution:")
+        print(f"  Special tokens: {special_count:5d} ({special_count / total_tokens * 100:5.1f}%)")
+        print(f"  Vocabulary tokens: {vocab_count:5d} ({vocab_count / total_tokens * 100:5.1f}%)")
+
+    def _debug_sample_labels(self):
+        """Debug individual sample label structure"""
+        print("\n=== Sample Label Structure ===")
+
+        for i in range(3):  # Check first 3 samples
+            sample = self.dataset[i]
+            labels = sample['labels']
+            annotation = sample['annotation']
+
+            # Show raw label sequence
+            non_zero_labels = labels[labels != 0]  # Remove padding
+            print(f"\nSample {i}:")
+            print(f"  Annotation: '{annotation}'")
+            print(f"  Raw labels: {labels[:15].tolist()}...")  # First 15 labels
+            print(f"  Non-zero labels: {non_zero_labels.tolist()}")
+
+            # Decode labels
+            id_to_vocab = {v: k for k, v in self.dataset.vocab.items()}
+            decoded_tokens = []
+            for token_id in non_zero_labels:
+                token_name = id_to_vocab.get(token_id.item(), f"UNK_{token_id.item()}")
+                decoded_tokens.append(token_name)
+
+            print(f"  Decoded labels: {decoded_tokens}")
+
+            # Check annotation words vs vocab
+            expected_words = annotation.split()
+            print(f"  Expected words: {expected_words}")
+
+            # Check if words are in vocab
+            missing_words = []
+            for word in expected_words:
+                if word not in self.dataset.vocab:
+                    missing_words.append(word)
+
+            if missing_words:
+                print(f"  ⚠️  Missing from vocab: {missing_words}")
+
     def train(self):
         """Modified training loop with curriculum learning support"""
         print("Starting training with curriculum learning...")
         torch.set_num_threads(4)
+
+        self._debug_label_distribution()
+        self._debug_sample_labels()
 
         if self.use_curriculum_learning:
             self.analyze_padding_improvement()
 
         for epoch in range(self.config.num_epochs):
             print(f"\nEpoch {epoch + 1}/{self.config.num_epochs}")
+            self.current_epoch = epoch
 
             # Update curriculum for this epoch
             if self.use_curriculum_learning and self.curriculum_dataset:
