@@ -483,7 +483,8 @@ class SignLanguageTrainer:
         train_curriculum = CurriculumDataset(
             base_dataset=self.dataset,
             difficulty_metrics=train_difficulties,
-            scheduler=self.curriculum_dataset.scheduler
+            scheduler=self.curriculum_dataset.scheduler,
+            preprocessor=self.preprocessor
         )
 
         # For validation, use a subset of medium-difficulty samples
@@ -565,9 +566,8 @@ class SignLanguageTrainer:
 
         return train_loader, val_loader
 
-
     def _dynamic_collate_fn(self, batch):
-        """Dynamic collate function that pads only to batch maximum length"""
+        """Dynamic collate function with curriculum-aware sequence lengths"""
         try:
             # Extract all components
             sequences = [item['sequence'] for item in batch]
@@ -576,49 +576,37 @@ class SignLanguageTrainer:
             annotations = [item['annotation'] for item in batch]
             metadata = [item['metadata'] for item in batch]
 
-            # Find actual lengths in this batch
+            # For curriculum learning, all sequences should already be the same length
+            # But double-check and pad to batch maximum just in case
             actual_lengths = [mask.sum().item() for mask in attention_masks]
-            batch_max_seq_length = max(actual_lengths)
-            batch_min_seq_length = min(actual_lengths)
 
-            # Don't make batches smaller than a minimum size (for stability)
-            min_batch_length = 32
-            batch_max_seq_length = max(batch_max_seq_length, min_batch_length)
+            if len(set(seq.shape[0] for seq in sequences)) > 1:
+                # Sequences have different lengths - pad to maximum in batch
+                batch_max_seq_length = max(seq.shape[0] for seq in sequences)
 
-            # Calculate padding efficiency
-            total_original_padding = len(sequences) * self.config.max_sequence_length - sum(actual_lengths)
-            total_new_padding = len(sequences) * batch_max_seq_length - sum(actual_lengths)
-            padding_reduction = total_original_padding - total_new_padding
+                resized_sequences = []
+                resized_attention_masks = []
 
-            # Occasionally print stats (every 50 batches)
-            if np.random.random() < 0.02:  # ~2% of batches
-                print(f"Batch stats: lengths {batch_min_seq_length}-{batch_max_seq_length}, "
-                      f"padding_to={batch_max_seq_length}, "
-                      f"saved_padding={padding_reduction} tokens ({padding_reduction / (total_original_padding or 1) * 100:.1f}%)")
+                for seq, mask in zip(sequences, attention_masks):
+                    if seq.shape[0] < batch_max_seq_length:
+                        pad_length = batch_max_seq_length - seq.shape[0]
+                        padding = torch.zeros(pad_length, seq.shape[1], dtype=seq.dtype)
+                        mask_padding = torch.zeros(pad_length, dtype=mask.dtype)
 
-            # Dynamically resize sequences to batch maximum
-            resized_sequences = []
-            resized_attention_masks = []
+                        resized_seq = torch.cat([seq, padding], dim=0)
+                        resized_mask = torch.cat([mask, mask_padding], dim=0)
+                    else:
+                        resized_seq = seq
+                        resized_mask = mask
 
-            for seq, mask in zip(sequences, attention_masks):
-                # Truncate or pad sequence to batch_max_seq_length
-                if seq.shape[0] >= batch_max_seq_length:
-                    # Truncate
-                    resized_seq = seq[:batch_max_seq_length]
-                    resized_mask = mask[:batch_max_seq_length]
-                else:
-                    # Pad to batch max
-                    pad_length = batch_max_seq_length - seq.shape[0]
-                    padding = torch.zeros(pad_length, seq.shape[1], dtype=seq.dtype)
-                    mask_padding = torch.zeros(pad_length, dtype=mask.dtype)
+                    resized_sequences.append(resized_seq)
+                    resized_attention_masks.append(resized_mask)
+            else:
+                # All sequences same length - use as is
+                resized_sequences = sequences
+                resized_attention_masks = attention_masks
 
-                    resized_seq = torch.cat([seq, padding], dim=0)
-                    resized_mask = torch.cat([mask, mask_padding], dim=0)
-
-                resized_sequences.append(resized_seq)
-                resized_attention_masks.append(resized_mask)
-
-            # Handle labels (keep original max length for labels)
+            # Handle labels (keep original logic)
             max_label_length = max(label.shape[0] for label in labels)
             resized_labels = []
 
@@ -631,7 +619,16 @@ class SignLanguageTrainer:
                     resized_label = torch.cat([label, padding], dim=0)
                 resized_labels.append(resized_label)
 
-            # Stack everything
+            # Log curriculum efficiency
+            if hasattr(self, 'curriculum_dataset') and self.curriculum_dataset:
+                total_tokens = sum(seq.numel() for seq in resized_sequences)
+                actual_tokens = sum(
+                    mask.sum().item() * seq.shape[1] for seq, mask in zip(resized_sequences, resized_attention_masks))
+                efficiency = (actual_tokens / total_tokens) * 100
+
+                if np.random.random() < 0.02:  # Occasionally log
+                    print(f"Curriculum efficiency: {efficiency:.1f}% ({actual_tokens}/{total_tokens} tokens)")
+
             return {
                 'sequence': torch.stack(resized_sequences),
                 'attention_mask': torch.stack(resized_attention_masks),
@@ -642,7 +639,6 @@ class SignLanguageTrainer:
 
         except Exception as e:
             print(f"Error in dynamic collate function: {e}")
-            # Fallback to original behavior
             return self._safe_collate_fn(batch)
 
     def train_epoch(self) -> float:

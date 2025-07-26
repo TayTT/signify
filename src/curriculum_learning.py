@@ -32,47 +32,71 @@ class CurriculumScheduler:
                  total_epochs: int,
                  warmup_epochs: int = 5,
                  stages: int = 4,
-                 overlap_ratio: float = 0.3):
+                 overlap_ratio: float = 0.3,
+                 sequence_length_progression: Dict[str, int] = None):
         """
-        Initialize curriculum scheduler
+        Initialize curriculum scheduler with dynamic sequence lengths
 
         Args:
             total_epochs: Total number of training epochs
             warmup_epochs: Number of epochs to train only on easiest samples
             stages: Number of curriculum stages
-            overlap_ratio: Overlap between stages (0.0 = no overlap, 1.0 = full overlap)
+            overlap_ratio: Overlap between stages
+            sequence_length_progression: Dict mapping stage to max sequence length
         """
         self.total_epochs = total_epochs
         self.warmup_epochs = warmup_epochs
         self.stages = stages
         self.overlap_ratio = overlap_ratio
 
+        # Default sequence length progression
+        if sequence_length_progression is None:
+            self.sequence_length_progression = {
+                'warmup': 96,  # Short sequences in warmup
+                'early': 128,  # Medium sequences in early stages
+                'middle': 160,  # Longer sequences in middle stages
+                'late': 192  # Full sequences in late stages
+            }
+        else:
+            self.sequence_length_progression = sequence_length_progression
+
         # Calculate stage boundaries
         self.stage_epochs = max(1, (total_epochs - warmup_epochs) // stages)
         self.current_stage = 0
 
+    def get_max_sequence_length(self, epoch: int) -> int:
+        """Get the maximum sequence length for current epoch"""
+        if epoch < self.warmup_epochs:
+            return self.sequence_length_progression['warmup']
+
+        # Calculate progression through stages
+        stage_progress = (epoch - self.warmup_epochs) / (self.total_epochs - self.warmup_epochs)
+
+        if stage_progress <= 0.25:
+            return self.sequence_length_progression['early']
+        elif stage_progress <= 0.6:
+            return self.sequence_length_progression['middle']
+        else:
+            return self.sequence_length_progression['late']
+
     def get_difficulty_threshold(self, epoch: int) -> float:
         """Get the maximum difficulty threshold for current epoch"""
         if epoch < self.warmup_epochs:
-            # Warmup: only easiest samples
             return 0.3
 
-        # Calculate current stage
         stage_progress = (epoch - self.warmup_epochs) / (self.total_epochs - self.warmup_epochs)
         stage_progress = min(1.0, stage_progress)
 
-        # Gradually increase difficulty threshold
         return 0.3 + (0.7 * stage_progress)
 
     def get_sample_ratio(self, epoch: int) -> float:
         """Get the ratio of samples to include from sorted difficulty list"""
         if epoch < self.warmup_epochs:
-            return 0.25  # Start with easiest 25%
+            return 0.25
 
         stage_progress = (epoch - self.warmup_epochs) / (self.total_epochs - self.warmup_epochs)
         stage_progress = min(1.0, stage_progress)
 
-        # Gradually include more samples
         return 0.25 + (0.75 * stage_progress)
 
 
@@ -82,19 +106,22 @@ class CurriculumDataset(Dataset):
     def __init__(self,
                  base_dataset: Dataset,
                  difficulty_metrics: List[SampleDifficulty],
-                 scheduler: CurriculumScheduler):
-        """
-        Initialize curriculum dataset
-
-        Args:
-            base_dataset: Original PhoenixDataset
-            difficulty_metrics: Pre-calculated difficulty metrics for all samples
-            scheduler: Curriculum learning scheduler
-        """
+                 scheduler: CurriculumScheduler,
+                 preprocessor=None):
+        """Initialize curriculum dataset"""
         self.base_dataset = base_dataset
         self.difficulty_metrics = difficulty_metrics
         self.scheduler = scheduler
+        self.preprocessor = preprocessor
         self.current_epoch = 0
+
+        # Initialize current_sample_count immediately
+        initial_ratio = self.scheduler.get_sample_ratio(0)
+        self.current_sample_count = int(len(self.difficulty_metrics) * initial_ratio)
+        self.current_sample_count = max(1, min(self.current_sample_count, len(self.difficulty_metrics)))
+
+        # Disable dynamic sequence lengths for now
+        self.use_dynamic_lengths = False
 
         # Sort samples by difficulty (easiest first)
         self.sorted_indices = sorted(
@@ -103,8 +130,21 @@ class CurriculumDataset(Dataset):
         )
 
         print(f"Curriculum dataset initialized with {len(difficulty_metrics)} samples")
-        print(f"Difficulty range: {min(m.overall_difficulty for m in difficulty_metrics):.3f} - "
-              f"{max(m.overall_difficulty for m in difficulty_metrics):.3f}")
+        print(f"Initial sample count: {self.current_sample_count}")
+        print("Using fixed sequence lengths (dynamic lengths disabled)")
+
+    def __len__(self):
+        """Return current number of available samples"""
+        # Always return current_sample_count, with a safe fallback
+        if hasattr(self, 'current_sample_count') and self.current_sample_count > 0:
+            return self.current_sample_count
+
+        # Safe fallback
+        if hasattr(self, 'difficulty_metrics') and self.difficulty_metrics:
+            return max(1, len(self.difficulty_metrics) // 4)
+
+        # Last resort fallback
+        return 1
 
     def update_epoch(self, epoch: int):
         """Update current epoch for curriculum progression"""
@@ -118,29 +158,54 @@ class CurriculumDataset(Dataset):
         print(f"Epoch {epoch}: Using {self.current_sample_count}/{len(self.difficulty_metrics)} samples "
               f"({sample_ratio:.1%}) with max difficulty {self.scheduler.get_difficulty_threshold(epoch):.3f}")
 
-    def __len__(self):
-        """Return current number of available samples"""
-        if hasattr(self, 'current_sample_count'):
-            return self.current_sample_count
-        return len(self.difficulty_metrics) // 4  # Default to 25% if not updated
-
     def __getitem__(self, idx):
         """Get sample by curriculum-adjusted index"""
         # Map curriculum index to actual dataset index
         actual_idx = self.sorted_indices[idx]
         return self.base_dataset[actual_idx]
 
+    def _resize_sample_sequence(self, sample):
+        """Resize sample sequence to current curriculum length"""
+        current_length = sample['sequence'].shape[0]
+        target_length = self.current_max_sequence_length
+
+        if current_length == target_length:
+            return sample
+
+        # Get original sequence and attention mask
+        sequence = sample['sequence']
+        attention_mask = sample['attention_mask']
+
+        if current_length > target_length:
+            # Truncate
+            new_sequence = sequence[:target_length]
+            new_attention_mask = attention_mask[:target_length]
+        else:
+            # Pad
+            pad_length = target_length - current_length
+            feature_dim = sequence.shape[1]
+
+            # Create padding
+            sequence_padding = torch.zeros(pad_length, feature_dim, dtype=sequence.dtype)
+            mask_padding = torch.zeros(pad_length, dtype=attention_mask.dtype)
+
+            # Concatenate
+            new_sequence = torch.cat([sequence, sequence_padding], dim=0)
+            new_attention_mask = torch.cat([attention_mask, mask_padding], dim=0)
+
+        # Return updated sample
+        return {
+            'sequence': new_sequence,
+            'attention_mask': new_attention_mask,
+            'labels': sample['labels'],
+            'annotation': sample['annotation'],
+            'metadata': sample['metadata']
+        }
+
 
 def calculate_sample_difficulty(json_path: str, max_seq_length: int = 512) -> SampleDifficulty:
     """
     Calculate difficulty metrics for a single JSON file
-
-    Args:
-        json_path: Path to JSON landmark file
-        max_seq_length: Maximum sequence length for normalization
-
-    Returns:
-        SampleDifficulty object with calculated metrics
     """
     try:
         with open(json_path, 'r') as f:
@@ -153,15 +218,15 @@ def calculate_sample_difficulty(json_path: str, max_seq_length: int = 512) -> Sa
         # Calculate sequence length
         sequence_length = len(frames_data)
 
-        # Calculate missing data rate
+        # Calculate missing data rate and quality
         total_missing = 0
         total_components = 0
-        quality_scores = []
+        confidence_scores = []
 
         for frame_key, frame_data in frames_data.items():
+            # Check missing data
             missing_data = frame_data.get('missing_data', {})
 
-            # Count missing components
             left_missing = missing_data.get('left_hand_missing', True)
             right_missing = missing_data.get('right_hand_missing', True)
             face_missing = missing_data.get('face_missing', True)
@@ -169,23 +234,42 @@ def calculate_sample_difficulty(json_path: str, max_seq_length: int = 512) -> Sa
             total_missing += sum([left_missing, right_missing, face_missing])
             total_components += 3
 
-            # Extract quality scores if available
-            quality_data = frame_data.get('quality_scores', {})
-            if quality_data:
-                frame_quality = quality_data.get('overall_quality', 0.0)
-                quality_scores.append(frame_quality)
+            # Extract confidence scores from hands data
+            hands_data = frame_data.get('hands', {})
+
+            # Check left hand confidence
+            left_hand_data = hands_data.get('left_hand', {})
+            if isinstance(left_hand_data, dict) and 'confidence' in left_hand_data:
+                confidence_scores.append(left_hand_data['confidence'])
+            elif isinstance(left_hand_data, list) and left_hand_data:
+                confidence_scores.append(0.8)  # Assume good quality if landmarks exist
+
+            # Check right hand confidence
+            right_hand_data = hands_data.get('right_hand', {})
+            if isinstance(right_hand_data, dict) and 'confidence' in right_hand_data:
+                confidence_scores.append(right_hand_data['confidence'])
+            elif isinstance(right_hand_data, list) and right_hand_data:
+                confidence_scores.append(0.8)  # Assume good quality if landmarks exist
+
+            # Add face quality estimate
+            face_data = frame_data.get('face', {})
+            if face_data.get('all_landmarks'):
+                confidence_scores.append(0.7)  # Assume reasonable face quality
 
         # Calculate metrics
         missing_data_rate = total_missing / max(1, total_components)
-        avg_quality_score = np.mean(quality_scores) if quality_scores else 0.0
+
+        # Calculate quality score
+        if confidence_scores:
+            avg_quality_score = np.mean(confidence_scores)
+        else:
+            # Fallback: estimate quality from missing data rate
+            avg_quality_score = max(0.0, 1.0 - missing_data_rate)
 
         # Normalize sequence length (longer = more difficult)
         normalized_seq_length = min(1.0, sequence_length / max_seq_length)
 
         # Calculate overall difficulty (0 = easiest, 1 = hardest)
-        # Higher missing rate = more difficult
-        # Lower quality = more difficult
-        # Longer sequence = more difficult
         difficulty_weights = {
             'missing_rate': 0.4,
             'quality': 0.4,
