@@ -79,15 +79,22 @@ class CurriculumScheduler:
         else:
             return self.sequence_length_progression['late']
 
+    # def get_difficulty_threshold(self, epoch: int) -> float:
+    #     """Get the maximum difficulty threshold for current epoch"""
+    #     if epoch < self.warmup_epochs:
+    #         return 0.3
+    #
+    #     stage_progress = (epoch - self.warmup_epochs) / (self.total_epochs - self.warmup_epochs)
+    #     stage_progress = min(1.0, stage_progress)
+    #
+    #     return 0.3 + (0.7 * stage_progress)
+
     def get_difficulty_threshold(self, epoch: int) -> float:
-        """Get the maximum difficulty threshold for current epoch"""
-        if epoch < self.warmup_epochs:
-            return 0.3
+        """Get current difficulty threshold - REVERSED to start with longer sequences"""
+        progress = min(epoch / self.total_epochs, 1.0)
 
-        stage_progress = (epoch - self.warmup_epochs) / (self.total_epochs - self.warmup_epochs)
-        stage_progress = min(1.0, stage_progress)
-
-        return 0.3 + (0.7 * stage_progress)
+        # START with high difficulty (longer sequences), gradually include shorter ones
+        return 1.0 - (progress * 0.7)  # Start at 1.0, go down to 0.3
 
     def get_sample_ratio(self, epoch: int) -> float:
         """Get the ratio of samples to include from sorted difficulty list"""
