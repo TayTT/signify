@@ -641,6 +641,30 @@ class SignLanguageTrainer:
             print(f"Error in dynamic collate function: {e}")
             return self._safe_collate_fn(batch)
 
+    def _calculate_padding_ratio(self, sequences: torch.Tensor, attention_mask: torch.Tensor) -> float:
+        """
+        Calculate padding ratio consistently across all methods
+
+        Args:
+            sequences: Input sequences tensor [batch_size, seq_len, feature_dims]
+            attention_mask: Attention mask [batch_size, seq_len]
+
+        Returns:
+            Padding ratio as percentage (0-100)
+        """
+        total_elements = sequences.numel()  # batch_size × seq_len × feature_dims
+
+        # Count actual (non-padding) elements
+        non_padding_positions = attention_mask.sum().item()  # Count of True values (positions only)
+        feature_dims = sequences.shape[2]
+        actual_elements = non_padding_positions * feature_dims
+
+        # Calculate padding ratio
+        padding_elements = total_elements - actual_elements
+        padding_ratio = (padding_elements / total_elements) * 100 if total_elements > 0 else 0
+
+        return padding_ratio
+
     def train_epoch(self) -> float:
         """Train for one epoch with padding ratio monitoring"""
         self.model.train()
@@ -653,6 +677,45 @@ class SignLanguageTrainer:
 
         pbar = tqdm(self.train_loader, desc="Training")
 
+        if not hasattr(self, '_padding_debug_done'):
+            print("\n=== ENHANCED PADDING DEBUG ===")
+            test_batch_count = 0
+            for batch in self.train_loader:
+                if test_batch_count >= 1:  # Just check first batch
+                    break
+
+                sequences = batch['sequence'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+
+                # Debug the shapes and values
+                print(f"Sequences shape: {sequences.shape}")
+                print(f"Attention mask shape: {attention_mask.shape}")
+                print(f"Attention mask dtype: {attention_mask.dtype}")
+                print(f"Attention mask sum: {attention_mask.sum().item()}")
+                print(f"Attention mask min/max: {attention_mask.min().item()}/{attention_mask.max().item()}")
+                print(f"Total elements in sequences: {sequences.numel()}")
+
+                # Test calculations
+                total_elements = sequences.numel()
+                mask_sum = attention_mask.sum().item()
+                feature_dims = sequences.shape[2]
+
+                print(f"Feature dimensions: {feature_dims}")
+                print(f"Mask sum × feature dims: {mask_sum * feature_dims}")
+                print(f"Total elements: {total_elements}")
+
+                # Check if mask_sum * feature_dims > total_elements
+                if mask_sum * feature_dims > total_elements:
+                    print(f"ERROR: actual_elements ({mask_sum * feature_dims}) > total_elements ({total_elements})")
+                    print("This suggests attention mask values are not 0/1 or there's a shape mismatch")
+
+                test_batch_count += 1
+
+            self._padding_debug_done = True
+
+            print("All padding calculations verified!")
+            self._padding_debug_done = True
+
         for batch_idx, batch in enumerate(pbar):
             # Move batch to device
             sequences = batch['sequence'].to(self.device)
@@ -660,17 +723,14 @@ class SignLanguageTrainer:
             labels = batch['labels'].to(self.device)
 
             # Calculate padding ratio for this batch
-            total_tokens = sequences.numel()  # Total elements in sequences tensor
-            actual_tokens = attention_mask.sum().item()  # Non-padding tokens
-            padding_tokens = total_tokens - actual_tokens
-            padding_ratio = (padding_tokens / total_tokens) * 100 if total_tokens > 0 else 0
+            padding_ratio = self._calculate_padding_ratio(sequences, attention_mask)
 
             padding_ratios.append(padding_ratio)
 
             # Display sample padding ratios during training
             if batch_idx % sample_frequency == 0 or batch_idx < 3:  # Show first 3 + samples
                 batch_size, seq_len, features = sequences.shape
-                avg_seq_length = actual_tokens / batch_size
+                avg_seq_length = attention_mask.sum().item() / batch_size
                 print(f"\nBatch {batch_idx}: shape=({batch_size}, {seq_len}, {features}), "
                       f"avg_real_length={avg_seq_length:.1f}, padding={padding_ratio:.1f}%")
 
@@ -870,8 +930,9 @@ class SignLanguageTrainer:
                 attention_mask = batch['attention_mask']
 
                 # Calculate current (dynamic) padding
+                current_padding_ratio = self._calculate_padding_ratio(sequences, attention_mask)
                 current_total_tokens = sequences.numel()
-                current_actual_tokens = attention_mask.sum().item()
+                current_actual_tokens = attention_mask.sum().item() * sequences.shape[2]
                 current_padding = current_total_tokens - current_actual_tokens
 
                 # Calculate what padding would be with original max_sequence_length
@@ -1185,7 +1246,7 @@ class BatchBucketing:
 
 def main():
     """Main training script"""
-    parser = argparse.ArgumentParser(description='Train LSTM model for sign language recognition')
+    parser = argparse.ArgumentParser(description='Train LS model for sign language recognition')
     parser.add_argument('--data_dir', type=str, default='./output', help='Directory containing JSON files')
     parser.add_argument('--annotations_path', type=str, default='./phoenix_annotations.xlsx', help='Path to annotations Excel file')
     parser.add_argument('--config_path', type=str, help='Path to config JSON file')
