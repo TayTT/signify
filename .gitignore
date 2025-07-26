@@ -1,8 +1,15 @@
 ./src/__init__.py
 *.pyc
-.idea/signify.iml
+.idea/
 docs/changelog.txt
 data/
+docs/
 output/
 output_data/
+phoenix_dev
+phoenix_dev_leanient
+models/
+*.pkl
+*.json
 *.xml
+wandb/
