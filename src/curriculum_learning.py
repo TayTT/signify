@@ -127,8 +127,7 @@ class CurriculumDataset(Dataset):
         self.current_sample_count = int(len(self.difficulty_metrics) * initial_ratio)
         self.current_sample_count = max(1, min(self.current_sample_count, len(self.difficulty_metrics)))
 
-        # Disable dynamic sequence lengths for now
-        self.use_dynamic_lengths = False
+        self.use_dynamic_lengths = True
 
         # Sort samples by difficulty (easiest first)
         self.sorted_indices = sorted(

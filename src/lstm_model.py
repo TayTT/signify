@@ -792,6 +792,45 @@ class SignLanguageTrainer:
 
         return False
 
+    def _should_do_nuclear_reset(self, outputs, batch_idx):
+        """Check if nuclear reset is needed (without doing it)"""
+        predictions = outputs['predictions'].flatten()
+        vocab_predictions = predictions[predictions > 3]
+
+        if len(vocab_predictions) > 0:
+            unique_preds, counts = torch.unique(vocab_predictions, return_counts=True)
+            if len(counts) > 0:
+                repetition_ratio = counts.max().item() / len(vocab_predictions)
+
+                if repetition_ratio > 0.4:  # Same threshold
+                    print(f"*** NUCLEAR RESET SCHEDULED at batch {batch_idx}!")
+                    print(f"    Repetition: {repetition_ratio:.1%}")
+                    return True
+
+        return False
+
+    def _do_nuclear_reset(self):
+        """Execute nuclear reset (called after backward pass)"""
+        print("    EXECUTING NUCLEAR RESET...")
+
+        # 1. RESET classifier weights
+        for layer in self.model.classifier:
+            if hasattr(layer, 'weight'):
+                torch.nn.init.xavier_uniform_(layer.weight)
+                if hasattr(layer, 'bias') and layer.bias is not None:
+                    torch.nn.init.zeros_(layer.bias)
+
+        # 2. MASSIVE learning rate boost
+        new_lr = 5e-3
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = new_lr
+
+        # 3. Enable gradient noise
+        self._enable_gradient_noise = True
+        self._noise_steps_remaining = 50
+
+        print(f"    Classifier reset complete, LR changed to {new_lr:.2e}")
+
     def train_epoch(self) -> float:
         """Train for one epoch with padding ratio monitoring"""
         self.model.train()
@@ -855,7 +894,7 @@ class SignLanguageTrainer:
             padding_ratios.append(padding_ratio)
 
             # Display sample padding ratios during training
-            if batch_idx % sample_frequency == 0 or batch_idx < 3:  # Show first 3 + samples
+            if batch_idx % sample_frequency == 0 or batch_idx < 2:  # Show first 2 + samples
                 batch_size, seq_len, features = sequences.shape
                 avg_seq_length = attention_mask.sum().item() / batch_size
                 print(f"\nBatch {batch_idx}: shape=({batch_size}, {seq_len}, {features}), "
@@ -884,15 +923,25 @@ class SignLanguageTrainer:
             outputs = self.model(sequences, attention_mask, labels)
             loss = outputs['loss']
 
-            if batch_idx % 10 == 0:  # Check every 20 batches
+            nuclear_reset_needed = False
+            if batch_idx % 10 == 0:  # Check every 10 batches
                 collapsed = self._detect_and_fix_collapse(outputs, batch_idx)
-                if collapsed:
-                    wandb.log({'collapse_detected': 1, 'learning_rate_boost': self.optimizer.param_groups[0]['lr']})
+                if not collapsed:
+                    # diversity_problem = self._detect_diversity_problem(outputs, batch_idx)
+                    # excape_deep_minimum = self._escape_deep_minimum(outputs, batch_idx)
+
+                    # if diversity_problem:
+                    nuclear_reset_needed = self._should_do_nuclear_reset(outputs, batch_idx)
+                else:
+                    nuclear_reset_needed = False
 
             # Backward pass
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
             self.optimizer.step()
+
+            if nuclear_reset_needed:
+                self._do_nuclear_reset()
 
             # Update metrics
             total_loss += loss.item()
@@ -1177,7 +1226,105 @@ class SignLanguageTrainer:
                     missing_words.append(word)
 
             if missing_words:
-                print(f"  ⚠️  Missing from vocab: {missing_words}")
+                print(f"    Missing from vocab: {missing_words}")
+
+    def _detect_diversity_problem(self, outputs, batch_idx):
+        """Detect when model gets stuck predicting the same words repeatedly"""
+        predictions = outputs['predictions'].flatten()
+
+        # Filter to vocabulary predictions only (exclude special tokens)
+        vocab_predictions = predictions[predictions > 3]
+
+        # Need at least some vocab predictions to analyze
+        if len(vocab_predictions) == 0:
+            return False  # No vocab predictions to analyze
+
+        # Count occurrences of each vocabulary word
+        unique_preds, counts = torch.unique(vocab_predictions, return_counts=True)
+
+        if len(counts) == 0:
+            return False
+
+        # Find the most frequently predicted word
+        max_count = counts.max().item()
+        total_vocab_preds = len(vocab_predictions)
+        repetition_ratio = max_count / total_vocab_preds
+
+        # Detect if any single word dominates predictions
+        if repetition_ratio > 0.4:  # More than 40% of vocab predictions are the same word
+            # Find which word is dominating (for logging)
+            most_common_idx = torch.argmax(counts)
+            dominant_word_id = unique_preds[most_common_idx].item()
+
+            # Get word name if possible
+            word_name = "UNKNOWN"
+            if hasattr(self.dataset, 'vocab'):
+                id_to_vocab = {v: k for k, v in self.dataset.vocab.items()}
+                word_name = id_to_vocab.get(dominant_word_id, f"ID_{dominant_word_id}")
+
+            print(f"*** DIVERSITY PROBLEM at batch {batch_idx}!")
+            print(f"    Word '{word_name}' dominates: {repetition_ratio:.1%} of vocab predictions")
+            print(f"    Breakdown: {max_count}/{total_vocab_preds} vocab predictions")
+
+            # Boost learning rate (smaller boost than collapse detection)
+            current_lr = self.optimizer.param_groups[0]['lr']
+            new_lr = min(current_lr * 2.0, 1e-3)  # Double LR (less aggressive than collapse)
+
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = new_lr
+
+            print(f"    >>> Boosted LR from {current_lr:.2e} to {new_lr:.2e}")
+
+            # Log to wandb if available
+            try:
+                if 'wandb' in globals():
+                    wandb.log({
+                        'diversity_problem_detected': 1,
+                        'dominant_word_ratio': repetition_ratio,
+                        'dominant_word_id': dominant_word_id,
+                        'learning_rate_boost': new_lr
+                    })
+            except:
+                pass  # Don't fail if wandb isn't available
+
+            return True
+
+        return False
+
+    def _escape_deep_minimum(self, outputs, batch_idx):
+        """More aggressive escape from deep local minima"""
+        predictions = outputs['predictions'].flatten()
+        vocab_predictions = predictions[predictions > 3]
+
+        if len(vocab_predictions) > 0:
+            unique_preds, counts = torch.unique(vocab_predictions, return_counts=True)
+            if len(counts) > 0:
+                repetition_ratio = counts.max().item() / len(vocab_predictions)
+
+                if repetition_ratio > 0.4:  # Diversity problem detected
+                    print(f"*** DEEP MINIMUM ESCAPE at batch {batch_idx}!")
+                    print(f"    Repetition: {repetition_ratio:.1%}")
+
+                    # 1. RESET classifier weights (nuclear option)
+                    for layer in self.model.classifier:
+                        if hasattr(layer, 'weight'):
+                            torch.nn.init.xavier_uniform_(layer.weight)
+                            if hasattr(layer, 'bias') and layer.bias is not None:
+                                torch.nn.init.zeros_(layer.bias)
+
+                    # 2. MASSIVE learning rate boost
+                    new_lr = 5e-3  # Much higher than max 1e-3
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = new_lr
+
+                    # 3. Add gradient noise for several steps
+                    self._enable_gradient_noise = True
+                    self._noise_steps_remaining = 50
+
+                    print(f"     NUCLEAR RESET: Classifier reinitialized, LR -> {new_lr:.2e}")
+                    return True
+
+        return False
 
     def train(self):
         """Modified training loop with curriculum learning support"""
