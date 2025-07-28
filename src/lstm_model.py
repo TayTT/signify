@@ -42,31 +42,31 @@ class ModelConfig:
 
     # Model architecture - will be updated dynamically
     input_size: int = 356  # Updated default based on calculated dimensions
-    hidden_size: int = 128  # Reduced for debugging
-    num_layers: int = 1     # Reduced for debugging
-    dropout: float = 0.2    # Reduced for debugging
+    hidden_size: int = 256
+    num_layers: int = 2
+    dropout: float = 0.3
     bidirectional: bool = False
 
     # Training parameters
-    batch_size: int = 4     # Small for debugging
-    learning_rate: float = 1e-3
+    batch_size: int = 8
+    learning_rate: float = 1e-4
     weight_decay: float = 1e-4
-    num_epochs: int = 5     # Reduced for debugging
-    patience: int = 3
+    num_epochs: int = 50
+    patience: int = 8
 
     # Data parameters
-    max_sequence_length: int = 64   # Reduced for debugging
-    max_annotation_length: int = 20
-
-    # Paths
-    data_dir: str = "./output"
-    annotations_path: str = "./phoenix_annotations.xlsx"
-    vocab_path: str = "./vocab.pkl"
-    model_save_path: str = "./models/lstm_sign2gloss.pth"
+    max_sequence_length: int = 224
+    max_annotation_length: int = 25
 
     # WandB configuration
     project_name: str = "sign-language-lstm"
     experiment_name: str = "lstm-sign2gloss"
+
+    # Paths
+    data_dir: str = "./phoenix_train"
+    annotations_path: str = "./data/train_corpus.csv"
+    vocab_path: str = "./vocab.pkl"
+    model_save_path: str = f"./models/{experiment_name}.pth"
 
     # Device
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -381,23 +381,18 @@ class SignLanguageTrainer:
         # Initialize optimizer and scheduler
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=5e-5,  # Much lower starting rate
+            lr=config.learning_rate,  # Higher starting rate but not too high
             weight_decay=config.weight_decay,
-            betas=(0.9, 0.999),
+            betas=(0.9, 0.98),  # Slightly higher beta2 for stability
             eps=1e-8
         )
 
-        # self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        #     self.optimizer,
-        #     mode='min',
-        #     factor=0.5,
-        #     patience=5
-        # )
-
-        self.scheduler = torch.optim.lr_scheduler.StepLR(
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
-            step_size=10,  # Reduce LR every 10 epochs
-            gamma=0.8  # Multiply LR by 0.8
+            mode='min',
+            factor=0.7,  # Less aggressive reduction
+            patience=8,  # More patience
+            min_lr=1e-6  # Don't go too low
         )
 
 
@@ -829,7 +824,7 @@ class SignLanguageTrainer:
         self._enable_gradient_noise = True
         self._noise_steps_remaining = 50
 
-        print(f"    Classifier reset complete, LR changed to {new_lr:.2e}")
+        print(f"    Classifier reset complete, LR  changed to {new_lr:.2e}")
 
     def train_epoch(self) -> float:
         """Train for one epoch with padding ratio monitoring"""
@@ -924,7 +919,7 @@ class SignLanguageTrainer:
             loss = outputs['loss']
 
             nuclear_reset_needed = False
-            if batch_idx % 10 == 0:  # Check every 10 batches
+            if batch_idx % 15 == 0:  # Check every 15 batches
                 collapsed = self._detect_and_fix_collapse(outputs, batch_idx)
                 if not collapsed:
                     # diversity_problem = self._detect_diversity_problem(outputs, batch_idx)
