@@ -217,62 +217,117 @@ class SignLanguageLSTM(nn.Module):
             #         loss = focal_loss[mask].mean()
             #     else:
             #         loss = focal_loss.mean()  # Fallback if all padding
+            #-----------------------------
+            # else:
+            #     # ENHANCED LOSS: Class-weighted focal loss + diversity penalty
+            #     logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
+            #     labels_flat = labels.reshape(-1)
+            #
+            #     # Calculate class weights dynamically
+            #     mask = labels_flat != 0
+            #     non_padding_ratio = mask.float().mean()
+            #
+            #     # Strong class weighting to discourage padding predictions
+            #     class_weights = torch.ones(self.vocab_size, device=logits.device)
+            #     class_weights[0] = 0.1  # Very low weight for padding token
+            #
+            #     # Calculate weighted cross-entropy
+            #     ce_loss = F.cross_entropy(logits_flat, labels_flat, weight=class_weights, reduction='none')
+            #
+            #     # STRONGER focal loss (gamma=3 instead of 2)
+            #     pt = torch.exp(-ce_loss)
+            #     focal_weight = (1 - pt) ** 3  # Stronger focus on hard examples
+            #     focal_loss = focal_weight * ce_loss
+            #
+            #     # Add diversity penalty to encourage non-padding predictions
+            #     probs = F.softmax(logits_flat, dim=-1)
+            #     padding_prob = probs[:, 0]  # Probability of predicting padding
+            #     diversity_penalty = torch.mean(padding_prob) * 2.0  # Penalty for high padding predictions
+            #
+            #     # Combine losses
+            #     if mask.sum() > 0:
+            #         loss = focal_loss[mask].mean() + diversity_penalty
+            #     else:
+            #         loss = focal_loss.mean() + diversity_penalty
             else:
-                # ENHANCED LOSS: Class-weighted focal loss + diversity penalty
+                # EXPERIMENT 1: Early EOS termination penalty
                 logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
                 labels_flat = labels.reshape(-1)
 
-                # Calculate class weights dynamically
+                # CRITICAL: Add early EOS termination penalty
+                eos_penalty_weights = torch.ones_like(labels_flat, device=logits.device, dtype=torch.float)
+
+                for batch_idx in range(labels.shape[0]):
+                    batch_labels = labels[batch_idx]
+                    # Find natural sequence length (last non-padding position)
+                    non_padding_mask = batch_labels != 0
+                    if non_padding_mask.sum() > 0:
+                        natural_length = non_padding_mask.sum().item()
+                        batch_start = batch_idx * labels.shape[1]
+
+                        # Penalize EOS tokens that appear before 70% of natural sequence length
+                        early_eos_threshold = int(natural_length * 0.7)
+                        for pos in range(min(early_eos_threshold, labels.shape[1])):
+                            global_pos = batch_start + pos
+                            if global_pos < len(labels_flat) and labels_flat[global_pos] == 3:  # EOS token
+                                eos_penalty_weights[global_pos] = 5.0  # Heavy penalty for early EOS
+
+                # Standard cross-entropy with EOS penalty
+                ce_loss = F.cross_entropy(logits_flat, labels_flat, ignore_index=0, reduction='none')
+                weighted_loss = ce_loss * eos_penalty_weights
+
+                # Only average over non-padding tokens
                 mask = labels_flat != 0
-                non_padding_ratio = mask.float().mean()
-
-                # Strong class weighting to discourage padding predictions
-                class_weights = torch.ones(self.vocab_size, device=logits.device)
-                class_weights[0] = 0.1  # Very low weight for padding token
-
-                # Calculate weighted cross-entropy
-                ce_loss = F.cross_entropy(logits_flat, labels_flat, weight=class_weights, reduction='none')
-
-                # STRONGER focal loss (gamma=3 instead of 2)
-                pt = torch.exp(-ce_loss)
-                focal_weight = (1 - pt) ** 3  # Stronger focus on hard examples
-                focal_loss = focal_weight * ce_loss
-
-                # Add diversity penalty to encourage non-padding predictions
-                probs = F.softmax(logits_flat, dim=-1)
-                padding_prob = probs[:, 0]  # Probability of predicting padding
-                diversity_penalty = torch.mean(padding_prob) * 2.0  # Penalty for high padding predictions
-
-                # Combine losses
                 if mask.sum() > 0:
-                    loss = focal_loss[mask].mean() + diversity_penalty
+                    loss = weighted_loss[mask].mean()
                 else:
-                    loss = focal_loss.mean() + diversity_penalty
+                    loss = weighted_loss.mean()
 
-                # Log diversity metrics
-                if torch.rand(1).item() < 0.1:  # Occasionally log
-                    non_padding_preds = (torch.argmax(logits_flat, dim=-1) != 0).float().mean()
-                    print(
-                        f"Non-padding predictions: {non_padding_preds:.3f}, Diversity penalty: {diversity_penalty:.3f}")
+                # Log both EOS and padding metrics for comprehensive experiment tracking
+                if batch_idx % 20 == 0:  # Log every 20 batches consistently
+                    predictions = torch.argmax(logits_flat, dim=-1)
 
-            # L2 REGULARIZATION: Prevent overfitting and force harder learning
-            l2_penalty = 0
+                    total_preds = predictions.numel()
+                    padding_preds = (predictions == 0).sum().item()  # ID 0: PAD
+                    sos_preds = (predictions == 2).sum().item()  # ID 2: SOS
+                    eos_preds = (predictions == 3).sum().item()  # ID 3: EOS
+                    vocab_preds = (predictions > 3).sum().item()  # ID >3: Real vocabulary
 
-            # Regularize classifier layers
-            for param in self.classifier.parameters():
-                l2_penalty += torch.norm(param, 2)
+                    # Calculate ratios
+                    padding_ratio = padding_preds / total_preds
+                    eos_ratio = eos_preds / total_preds
+                    sos_ratio = sos_preds / total_preds
+                    vocab_ratio = vocab_preds / total_preds
 
-            # Regularize LSTM parameters
-            for param in self.lstm.parameters():
-                l2_penalty += torch.norm(param, 2)
+                    print(f"Batch {batch_idx}: PAD: {padding_ratio:.1%}, EOS: {eos_ratio:.1%}, "
+                          f"Vocab: {vocab_ratio:.1%}, Loss: {loss.item():.4f}")
 
-            # Regularize input projection
-            for param in self.input_projection.parameters():
-                l2_penalty += torch.norm(param, 2)
+                    # Alert if either problem resurfaces
+                    if padding_ratio > 0.5:
+                        print(f"    WARNING: High padding predictions ({padding_ratio:.1%})")
+                    if eos_ratio > 0.8:
+                        print(f"    WARNING: High EOS predictions ({eos_ratio:.1%})")
+                    if sos_ratio > 0.3:
+                        print(f"    WARNING: High EOS predictions ({sos_ratio:.1%})")
 
-            # Add L2 penalty to loss
-            l2_lambda = 0.001  # L2 regularization strength
-            loss = loss + l2_lambda * l2_penalty
+            # # L2 REGULARIZATION: Prevent overfitting and force harder learning
+            # l2_penalty = 0
+            #
+            # # Regularize classifier layers
+            # for param in self.classifier.parameters():
+            #     l2_penalty += torch.norm(param, 2)
+            #
+            # # Regularize LSTM parameters
+            # for param in self.lstm.parameters():
+            #     l2_penalty += torch.norm(param, 2)
+            #
+            # # Regularize input projection
+            # for param in self.input_projection.parameters():
+            #     l2_penalty += torch.norm(param, 2)
+            #
+            # # Add L2 penalty to loss
+            # l2_lambda = 0.001  # L2 regularization strength
+            # loss = loss + l2_lambda * l2_penalty
 
         return {
             'logits': logits,
