@@ -250,38 +250,48 @@ class SignLanguageLSTM(nn.Module):
             #     else:
             #         loss = focal_loss.mean() + diversity_penalty
             else:
-                # EXPERIMENT 1: Early EOS termination penalty
+                # EXPERIMENT 1: Target both EOS collapse AND padding collapse
                 logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
                 labels_flat = labels.reshape(-1)
 
-                # CRITICAL: Add early EOS termination penalty
+                # Keep class weights to discourage padding predictions
+                class_weights = torch.ones(self.vocab_size, device=logits.device)
+                class_weights[0] = 0.1  # Low weight for padding token
+
+                # EOS penalty weights (your main experiment)
                 eos_penalty_weights = torch.ones_like(labels_flat, device=logits.device, dtype=torch.float)
 
                 for batch_idx in range(labels.shape[0]):
                     batch_labels = labels[batch_idx]
-                    # Find natural sequence length (last non-padding position)
                     non_padding_mask = batch_labels != 0
                     if non_padding_mask.sum() > 0:
                         natural_length = non_padding_mask.sum().item()
                         batch_start = batch_idx * labels.shape[1]
 
-                        # Penalize EOS tokens that appear before 70% of natural sequence length
-                        early_eos_threshold = int(natural_length * 0.7)
-                        for pos in range(min(early_eos_threshold, labels.shape[1])):
+                        # Heavy penalty for early EOS
+                        max_early_percentage = 0.5  # Don't penalize beyond frame 60?
+                        early_eos_threshold = int(natural_length * max_early_percentage)
+                        for pos in range(1, min(early_eos_threshold, labels.shape[1])): # 1 to skip SOS
                             global_pos = batch_start + pos
                             if global_pos < len(labels_flat) and labels_flat[global_pos] == 3:  # EOS token
-                                eos_penalty_weights[global_pos] = 5.0  # Heavy penalty for early EOS
+                                eos_penalty_weights[global_pos] = 5.0  # Heavy EOS penalty
 
-                # Standard cross-entropy with EOS penalty
-                ce_loss = F.cross_entropy(logits_flat, labels_flat, ignore_index=0, reduction='none')
+                # Cross-entropy with class weights + EOS penalties
+                ce_loss = F.cross_entropy(logits_flat, labels_flat, weight=class_weights, ignore_index=0,
+                                          reduction='none')
                 weighted_loss = ce_loss * eos_penalty_weights
 
-                # Only average over non-padding tokens
+                # Add diversity penalty against padding predictions
+                probs = F.softmax(logits_flat, dim=-1)
+                padding_prob = probs[:, 0]  # Probability of predicting padding
+                diversity_penalty = torch.mean(padding_prob) * 1.0  # Reduced from 2.0
+
+                # Combine losses
                 mask = labels_flat != 0
                 if mask.sum() > 0:
-                    loss = weighted_loss[mask].mean()
+                    loss = weighted_loss[mask].mean() + diversity_penalty
                 else:
-                    loss = weighted_loss.mean()
+                    loss = weighted_loss.mean() + diversity_penalty
 
                 # Log both EOS and padding metrics for comprehensive experiment tracking
                 if batch_idx % 20 == 0:  # Log every 20 batches consistently
