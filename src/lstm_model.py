@@ -250,16 +250,16 @@ class SignLanguageLSTM(nn.Module):
             #     else:
             #         loss = focal_loss.mean() + diversity_penalty
             else:
-                # EXPERIMENT 1: Target both EOS collapse AND padding collapse
+                # EXPERIMENT 1: Target EOS, SOS, and padding collapse
                 logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
                 labels_flat = labels.reshape(-1)
 
-                # Keep class weights to discourage padding predictions
+                # Class weights to discourage padding predictions
                 class_weights = torch.ones(self.vocab_size, device=logits.device)
                 class_weights[0] = 0.1  # Low weight for padding token
 
-                # EOS penalty weights (your main experiment)
-                eos_penalty_weights = torch.ones_like(labels_flat, device=logits.device, dtype=torch.float)
+                # Initialize penalty weights
+                penalty_weights = torch.ones_like(labels_flat, device=logits.device, dtype=torch.float)
 
                 for batch_idx in range(labels.shape[0]):
                     batch_labels = labels[batch_idx]
@@ -268,23 +268,29 @@ class SignLanguageLSTM(nn.Module):
                         natural_length = non_padding_mask.sum().item()
                         batch_start = batch_idx * labels.shape[1]
 
-                        # Heavy penalty for early EOS
-                        max_early_percentage = 0.5  # Don't penalize beyond frame 60?
-                        early_eos_threshold = int(natural_length * max_early_percentage)
-                        for pos in range(1, min(early_eos_threshold, labels.shape[1])): # 1 to skip SOS
-                            global_pos = batch_start + pos
-                            if global_pos < len(labels_flat) and labels_flat[global_pos] == 3:  # EOS token
-                                eos_penalty_weights[global_pos] = 5.0  # Heavy EOS penalty
+                        # 50% threshold for early EOS penalty
+                        early_eos_threshold = int(natural_length * 0.5)
 
-                # Cross-entropy with class weights + EOS penalties
+                        for pos in range(1,
+                                         min(early_eos_threshold, labels.shape[1])):  # Start at 1 to skip SOS position
+                            global_pos = batch_start + pos
+                            if global_pos < len(labels_flat):
+                                # Heavy penalty for early EOS
+                                if labels_flat[global_pos] == 3:  # EOS token
+                                    penalty_weights[global_pos] = 5.0
+                                # Heavy penalty for SOS after position 0
+                                elif labels_flat[global_pos] == 2:  # SOS token
+                                    penalty_weights[global_pos] = 5.0
+
+                # Cross-entropy with class weights + EOS/SOS penalties
                 ce_loss = F.cross_entropy(logits_flat, labels_flat, weight=class_weights, ignore_index=0,
                                           reduction='none')
-                weighted_loss = ce_loss * eos_penalty_weights
+                weighted_loss = ce_loss * penalty_weights
 
-                # Add diversity penalty against padding predictions
+                # Diversity penalty against padding predictions
                 probs = F.softmax(logits_flat, dim=-1)
                 padding_prob = probs[:, 0]  # Probability of predicting padding
-                diversity_penalty = torch.mean(padding_prob) * 1.0  # Reduced from 2.0
+                diversity_penalty = torch.mean(padding_prob) * 1.0
 
                 # Combine losses
                 mask = labels_flat != 0
@@ -318,7 +324,7 @@ class SignLanguageLSTM(nn.Module):
                     if eos_ratio > 0.8:
                         print(f"    WARNING: High EOS predictions ({eos_ratio:.1%})")
                     if sos_ratio > 0.3:
-                        print(f"    WARNING: High EOS predictions ({sos_ratio:.1%})")
+                        print(f"    WARNING: High SOS predictions ({sos_ratio:.1%})")
 
             # # L2 REGULARIZATION: Prevent overfitting and force harder learning
             # l2_penalty = 0
@@ -984,16 +990,16 @@ class SignLanguageTrainer:
             loss = outputs['loss']
 
             nuclear_reset_needed = False
-            if batch_idx % 15 == 0:  # Check every 15 batches
-                collapsed = self._detect_and_fix_collapse(outputs, batch_idx)
-                if not collapsed:
-                    # diversity_problem = self._detect_diversity_problem(outputs, batch_idx)
-                    # excape_deep_minimum = self._escape_deep_minimum(outputs, batch_idx)
-
-                    # if diversity_problem:
-                    nuclear_reset_needed = self._should_do_nuclear_reset(outputs, batch_idx)
-                else:
-                    nuclear_reset_needed = False
+            # if batch_idx % 15 == 0:  # Check every 15 batches
+            #     collapsed = self._detect_and_fix_collapse(outputs, batch_idx)
+                # if not collapsed:
+                #     # diversity_problem = self._detect_diversity_problem(outputs, batch_idx)
+                #     # excape_deep_minimum = self._escape_deep_minimum(outputs, batch_idx)
+                #
+                #     # if diversity_problem:
+                #     nuclear_reset_needed = self._should_do_nuclear_reset(outputs, batch_idx)
+                # else:
+                #     nuclear_reset_needed = False
 
             # Backward pass
             loss.backward()
@@ -1675,8 +1681,8 @@ class BatchBucketing:
 def main():
     """Main training script"""
     parser = argparse.ArgumentParser(description='Train LS model for sign language recognition')
-    parser.add_argument('--data_dir', type=str, default='./output', help='Directory containing JSON files')
-    parser.add_argument('--annotations_path', type=str, default='./phoenix_annotations.xlsx', help='Path to annotations Excel file')
+    parser.add_argument('--data_dir', type=str, help='Directory containing JSON files')
+    parser.add_argument('--annotations_path', type=str, help='Path to annotations Excel file')
     parser.add_argument('--config_path', type=str, help='Path to config JSON file')
     parser.add_argument('--resume', type=str, help='Path to checkpoint to resume training')
     parser.add_argument('--curriculum_learning', action='store_true', default=True, help='Enable curriculum learning')
