@@ -27,6 +27,7 @@ import math
 from curriculum_learning import CurriculumDataset, CurriculumSampler
 from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
 
+DEBUG = True
 
 @dataclass
 @dataclass
@@ -280,7 +281,7 @@ class SignLanguageLSTM(nn.Module):
                                     penalty_weights[global_pos] = 5.0
                                 # Heavy penalty for SOS after position 0
                                 elif labels_flat[global_pos] == 2:  # SOS token
-                                    penalty_weights[global_pos] = 5.0
+                                    penalty_weights[global_pos] = 6.0
 
                 # Cross-entropy with class weights + EOS/SOS penalties
                 ce_loss = F.cross_entropy(logits_flat, labels_flat, weight=class_weights, ignore_index=0,
@@ -413,7 +414,7 @@ class SignLanguageTrainer:
     def __init__(self, config: ModelConfig):
         self.config = config
         self.device = torch.device(config.device)
-        self.use_curriculum_learning = True
+        self.use_curriculum_learning = False
         self.curriculum_dataset = None
 
         # Initialize WandB
@@ -1396,6 +1397,20 @@ class SignLanguageTrainer:
         """Modified training loop with curriculum learning support"""
         print("Starting training with curriculum learning...")
         torch.set_num_threads(4)
+
+        if DEBUG:
+            print("\n=== PRE-TRAINING COORDINATE CHECK ===")
+            first_batch = next(iter(self.train_loader))
+            sequences = first_batch['sequence'].to(self.device)
+            sample_sequence = sequences[0]
+            non_zero_coords = sample_sequence[sample_sequence != 0]
+            if len(non_zero_coords) > 0:
+                print(f"Coordinate range: [{non_zero_coords.min():.3f}, {non_zero_coords.max():.3f}]")
+                print(f"Sample coordinates: {non_zero_coords[:10]}")
+                print(f"Non-zero ratio: {(sample_sequence != 0).float().mean():.3f}")
+            else:
+                print("ERROR: All coordinates are zero!")
+            print("=====================================\n")
 
         self._debug_label_distribution()
         self._debug_sample_labels()

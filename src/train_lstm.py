@@ -476,6 +476,7 @@ def main():
     # Create preprocessor
     preprocess_config = PreprocessingConfig(
         max_sequence_length=config.max_sequence_length,
+        normalize_coordinates=False,
         output_format="tensor",
         device=config.device
     )

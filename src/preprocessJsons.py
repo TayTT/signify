@@ -792,7 +792,7 @@ class SignLanguagePreprocessor:
             return np.zeros(self.feature_dims['total'], dtype=np.float32)
 
     def normalize_coordinates(self, features: np.ndarray) -> np.ndarray:
-        """Normalize coordinates - with debugging"""
+        """Properly normalize mixed coordinate ranges"""
         if not self.config.normalize_coordinates:
             return features
 
@@ -801,14 +801,73 @@ class SignLanguagePreprocessor:
             print(f"Before normalization: shape={features.shape}, range=[{features.min():.3f}, {features.max():.3f}]")
             print(f"Before normalization: non-zero ratio={((features != 0).mean()):.3f}")
 
-        min_val, max_val = self.config.coordinate_range
-        normalized = features * (max_val - min_val) + min_val
+        # Only normalize non-zero values
+        mask = features != 0
+        if not np.any(mask):
+            return features
+
+        # SMART normalization - handle different coordinate ranges
+        normalized_features = features.copy()
+
+        # For each coordinate position, normalize based on its range
+        non_zero_features = features[mask]
+
+        # Separate handling for likely x,y vs z coordinates
+        coord_groups = []
+        current_group = []
+
+        for i, val in enumerate(non_zero_features):
+            current_group.append((i, val))
+
+            # Group coordinates: assume x,y,z pattern
+            if len(current_group) == 3:
+                coord_groups.append(current_group)
+                current_group = []
+
+        # Add remaining coordinates
+        if current_group:
+            coord_groups.append(current_group)
+
+        min_val, max_val = self.config.coordinate_range  # (-1, 1)
+
+        for group in coord_groups:
+            if len(group) >= 2:  # At least x,y
+                # Get values for this coordinate group
+                group_vals = [val for _, val in group]
+                group_indices = [idx for idx, _ in group]
+
+                # Check if this looks like x,y coordinates (in [0,1] range)
+                if all(0.0 <= abs(val) <= 1.0 for val in group_vals[:2]):
+                    # Looks like MediaPipe normalized x,y - simple mapping
+                    for i, (idx, val) in enumerate(group[:2]):
+                        mask_idx = list(mask.nonzero()[0])[group_indices[i]]
+                        normalized_features[mask_idx] = val * (max_val - min_val) + min_val
+
+                    # Handle z coordinate separately (if exists)
+                    if len(group) > 2:
+                        z_idx, z_val = group[2]
+                        # Clamp extreme z values and normalize
+                        z_clamped = np.clip(z_val, -10.0, 10.0)  # Reasonable z range
+                        z_normalized = z_clamped / 10.0  # Map to [-1, 1]
+                        mask_idx = list(mask.nonzero()[0])[group_indices[2]]
+                        normalized_features[mask_idx] = z_normalized
+                else:
+                    print(f"   ***Entered else in normalize_coordinates***")
+                    # Unknown coordinate range - use min-max normalization
+                    group_min = min(group_vals)
+                    group_max = max(group_vals)
+                    if group_max > group_min:
+                        for i, (idx, val) in enumerate(group):
+                            normalized_val = ((val - group_min) / (group_max - group_min)) * (
+                                        max_val - min_val) + min_val
+                            mask_idx = list(mask.nonzero()[0])[group_indices[i]]
+                            normalized_features[mask_idx] = normalized_val
 
         if DEBUG:
-            print(f"After normalization: range=[{normalized.min():.3f}, {normalized.max():.3f}]")
-            print(f"After normalization: non-zero ratio={((normalized != 0).mean()):.3f}")
+            print(f"After normalization: range=[{normalized_features.min():.3f}, {normalized_features.max():.3f}]")
+            print(f"After normalization: non-zero ratio={((normalized_features != 0).mean()):.3f}")
 
-        return normalized
+        return normalized_features
 
     def interpolate_missing_frames(self, sequence: np.ndarray,
                                    valid_mask: np.ndarray) -> np.ndarray:
