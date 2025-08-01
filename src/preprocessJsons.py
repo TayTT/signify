@@ -970,7 +970,7 @@ class SignLanguagePreprocessor:
             valid_frames.append(is_valid)
 
             # Normalize coordinates
-            features = self.normalize_coordinates(features)
+            # features = self.normalize_coordinates(features)
 
             sequence_features.append(features)
 
