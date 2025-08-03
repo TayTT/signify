@@ -1093,7 +1093,7 @@ class SignLanguageTrainer:
         return avg_loss, metrics
 
     def _calculate_metrics(self, predictions: List, labels: List) -> Dict:
-        """Calculate evaluation metrics"""
+        """Calculate evaluation metrics for single-token predictions"""
         pred_flat = []
         label_flat = []
 
@@ -1104,18 +1104,30 @@ class SignLanguageTrainer:
             if hasattr(label, 'cpu'):
                 label = label.cpu().numpy()
 
-            # Handle dimension mismatch by taking minimum length
-            min_len = min(len(pred), len(label))
-            pred_trimmed = pred[:min_len]
-            label_trimmed = label[:min_len]
+            # Check if pred and label are single values (scalars) or sequences
+            if np.isscalar(pred) and np.isscalar(label):
+                # Single predictions (typical for ASL single-word signs)
+                if label != 0:  # Skip padding tokens
+                    pred_flat.append(int(pred))
+                    label_flat.append(int(label))
+            else:
+                # Sequence predictions (for multi-word sequences)
+                # Ensure both are arrays
+                pred = np.atleast_1d(pred)
+                label = np.atleast_1d(label)
 
-            # Create mask for non-padding tokens
-            mask = label_trimmed != 0
+                # Handle dimension mismatch by taking minimum length
+                min_len = min(len(pred), len(label))
+                pred_trimmed = pred[:min_len]
+                label_trimmed = label[:min_len]
 
-            # Only add valid (non-padding) tokens
-            if mask.any():
-                pred_flat.extend(pred_trimmed[mask])
-                label_flat.extend(label_trimmed[mask])
+                # Create mask for non-padding tokens
+                mask = label_trimmed != 0
+
+                # Only add valid (non-padding) tokens
+                if mask.any():
+                    pred_flat.extend(pred_trimmed[mask].tolist())
+                    label_flat.extend(label_trimmed[mask].tolist())
 
         # Handle empty predictions/labels
         if not pred_flat or not label_flat:
@@ -1123,10 +1135,15 @@ class SignLanguageTrainer:
                 'accuracy': 0.0,
                 'precision': 0.0,
                 'recall': 0.0,
-                'f1': 0.0
+                'f1': 0.0,
+                'total_samples': 0
             }
 
         try:
+            # Convert to numpy arrays for sklearn
+            pred_flat = np.array(pred_flat)
+            label_flat = np.array(label_flat)
+
             # Calculate accuracy
             accuracy = accuracy_score(label_flat, pred_flat)
 
@@ -1135,20 +1152,100 @@ class SignLanguageTrainer:
                 label_flat, pred_flat, average='weighted', zero_division=0
             )
 
+            # Calculate additional metrics for debugging
+            total_samples = len(pred_flat)
+            unique_predictions = len(np.unique(pred_flat))
+            unique_labels = len(np.unique(label_flat))
+
+            # Check for degenerate predictions (all same token)
+            most_common_pred = np.bincount(pred_flat).max()
+            prediction_diversity = 1.0 - (most_common_pred / total_samples)
+
             return {
-                'accuracy': accuracy,
-                'precision': precision,
-                'recall': recall,
-                'f1': f1
+                'accuracy': float(accuracy),
+                'precision': float(precision),
+                'recall': float(recall),
+                'f1': float(f1),
+                'total_samples': total_samples,
+                'unique_predictions': unique_predictions,
+                'unique_labels': unique_labels,
+                'prediction_diversity': float(prediction_diversity)
             }
+
         except Exception as e:
             print(f"Error calculating metrics: {e}")
+            print(f"pred_flat shape: {np.array(pred_flat).shape if pred_flat else 'empty'}")
+            print(f"label_flat shape: {np.array(label_flat).shape if label_flat else 'empty'}")
             return {
                 'accuracy': 0.0,
                 'precision': 0.0,
                 'recall': 0.0,
-                'f1': 0.0
+                'f1': 0.0,
+                'total_samples': 0,
+                'unique_predictions': 0,
+                'unique_labels': 0,
+                'prediction_diversity': 0.0
             }
+
+    # for phoenix v, for aslcitizen ^
+
+    # def _calculate_metrics(self, predictions: List, labels: List) -> Dict:
+    #     """Calculate evaluation metrics"""
+    #     pred_flat = []
+    #     label_flat = []
+    #
+    #     for pred, label in zip(predictions, labels):
+    #         # Convert to numpy if they're tensors
+    #         if hasattr(pred, 'cpu'):
+    #             pred = pred.cpu().numpy()
+    #         if hasattr(label, 'cpu'):
+    #             label = label.cpu().numpy()
+    #
+    #         # Handle dimension mismatch by taking minimum length
+    #         min_len = min(len(pred), len(label))
+    #         pred_trimmed = pred[:min_len]
+    #         label_trimmed = label[:min_len]
+    #
+    #         # Create mask for non-padding tokens
+    #         mask = label_trimmed != 0
+    #
+    #         # Only add valid (non-padding) tokens
+    #         if mask.any():
+    #             pred_flat.extend(pred_trimmed[mask])
+    #             label_flat.extend(label_trimmed[mask])
+    #
+    #     # Handle empty predictions/labels
+    #     if not pred_flat or not label_flat:
+    #         return {
+    #             'accuracy': 0.0,
+    #             'precision': 0.0,
+    #             'recall': 0.0,
+    #             'f1': 0.0
+    #         }
+    #
+    #     try:
+    #         # Calculate accuracy
+    #         accuracy = accuracy_score(label_flat, pred_flat)
+    #
+    #         # Calculate precision, recall, F1
+    #         precision, recall, f1, _ = precision_recall_fscore_support(
+    #             label_flat, pred_flat, average='weighted', zero_division=0
+    #         )
+    #
+    #         return {
+    #             'accuracy': accuracy,
+    #             'precision': precision,
+    #             'recall': recall,
+    #             'f1': f1
+    #         }
+    #     except Exception as e:
+    #         print(f"Error calculating metrics: {e}")
+    #         return {
+    #             'accuracy': 0.0,
+    #             'precision': 0.0,
+    #             'recall': 0.0,
+    #             'f1': 0.0
+    #         }
 
     # def get_curriculum_sampler(self, epoch):
     #     """Create curriculum learning sampler"""

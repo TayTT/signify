@@ -39,12 +39,12 @@ class EnhancedHandTracker:
     """Enhanced hand tracker with flickering reduction and false positive filtering"""
 
     def __init__(self,
-                 # min_detection_confidence: float = 0.7,
-                 # min_tracking_confidence: float = 0.5,
-                 # temporal_smoothing_frames: int = 5,
-                 # confidence_threshold: float = 0.6,
-                 # max_hand_distance_threshold: float = 0.3,
-                 # frame_border_margin: float = 0.1):
+                 min_detection_confidence: float = 0.7,
+                 min_tracking_confidence: float = 0.5,
+                 temporal_smoothing_frames: int = 5,
+                 confidence_threshold: float = 0.6,
+                 max_hand_distance_threshold: float = 0.3,
+                 frame_border_margin: float = 0.1):
 
                  # min_detection_confidence: float = 0.5,
                  # min_tracking_confidence: float = 0.3,
@@ -53,12 +53,12 @@ class EnhancedHandTracker:
                  # max_hand_distance_threshold: float = 0.3,
                  # frame_border_margin: float = 0.1):
 
-                 min_detection_confidence: float = 0.2,
-                 min_tracking_confidence: float = 0.2,
-                 temporal_smoothing_frames: int = 3,
-                 confidence_threshold: float = 0.2,
-                 max_hand_distance_threshold: float = 0.4,
-                 frame_border_margin: float = 0.1):
+                 # min_detection_confidence: float = 0.2,
+                 # min_tracking_confidence: float = 0.2,
+                 # temporal_smoothing_frames: int = 3,
+                 # confidence_threshold: float = 0.2,
+                 # max_hand_distance_threshold: float = 0.4,
+                 # frame_border_margin: float = 0.1):
 
         """
         Initialize enhanced hand tracker
