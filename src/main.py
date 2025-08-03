@@ -4,11 +4,12 @@ import json
 import mediapipe as mp
 from pathlib import Path
 from typing import List, Dict, Any
+from gloss_analyzer import process_microsoftasl_20
 
 import numpy as np
 
 from processing import process_image, process_video, enhance_image_for_hand_detection
-
+from preprocessJsons import PreprocessingConfig, SignLanguagePreprocessor
 
 # TODO: visualise full mesh TODO: not all points present in all frames:
 #  1) count missing points frames (how?) and delete them if treshold is not exceeded -> in processJsons, not processing
@@ -44,6 +45,8 @@ Examples:
   python main.py --process-single ./videos_dir     # Process directory of videos
   python main.py --process-single ./mixed_dir      # Process directory with mixed content
   python main.py --full-mesh --enhance             # Use full face mesh and image enhancement
+  python main.py --process-aslcitizen ./asl_videos # Process ASL Citizen dataset videos (JSON only)
+  python main.py --process-microsoftasl-20         # Process only videos of 20 most common words in the dataset
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -87,6 +90,17 @@ Examples:
     parser.add_argument('--process-phoenix', type=str,
                         help='Process Phoenix weather forecast dataset from dev folder')
 
+    parser.add_argument('--process-aslcitizen', type=str,
+                        help='Process ASL Citizen dataset videos from directory (JSON only, no frames/videos)')
+
+    parser.add_argument('--process-microsoftasl-20', type=str,
+                        help='Process Microsoft ASL dataset: extract data for 20 most common glosses from CSV file and save to gloss_20.csv')
+
+    parser.add_argument('--video-directory', type=str,
+                        help='Directory containing video files (required when using --process-microsoftasl-20 for video processing)')
+
+    parser.add_argument('--process-videos', action='store_true',
+                        help='Also process the actual video files mentioned in the filtered CSV (use with --process-microsoftasl-20)')
 
     parser.add_argument('--disable-mirroring', action='store_true',
                         help='Disable coordinate mirroring during processing')
@@ -607,17 +621,14 @@ def process_batch(input_dir: Path, output_dir: Path, args) -> None:
 
 
 def process_single_video_file_with_calibration(video_path: Path, output_dir: Path, args) -> None:
-    """Process a single video file with calibration"""
+    """Process a single video file - aligned with Phoenix processing"""
     print(f"Processing single video: {video_path}")
     output_subdir = output_dir / f"video_{video_path.stem}"
 
     try:
         output_subdir.mkdir(parents=True, exist_ok=True)
 
-        # Determine calibration setting
-        enable_calibration = args.enable_calibration and not args.disable_calibration
-
-        result = process_video(  # Use new function
+        result = process_video(
             str(video_path),
             output_dir=str(output_subdir),
             skip_frames=args.skip_frames,
@@ -628,7 +639,10 @@ def process_single_video_file_with_calibration(video_path: Path, output_dir: Pat
             save_all_frames=args.save_all_frames,
             use_full_mesh=args.full_mesh,
             use_enhancement=args.enhance,
-            enable_calibration=enable_calibration,
+            phoenix_mode=False,  # Regular processing mode (not Phoenix optimized)
+            phoenix_frame_sample_rate=200,  # Default value
+            phoenix_json_only=False,  # Save frames and videos
+            phoenix_json_name=None,  # Use default JSON naming
             disable_mirroring=args.disable_mirroring,
             args=args
         )
@@ -643,7 +657,7 @@ def process_single_video_file_with_calibration(video_path: Path, output_dir: Pat
 
 
 def process_single_image_directory(image_dir: Path, output_dir: Path, args, image_files: list) -> None:
-    """Process a single directory containing image sequences"""
+    """Process a single directory containing image sequences - aligned with Phoenix processing"""
     print(f"Processing image directory: {image_dir} with {len(image_files)} images")
     output_subdir = output_dir / f"images_{image_dir.name}"
 
@@ -661,6 +675,10 @@ def process_single_image_directory(image_dir: Path, output_dir: Path, args, imag
             save_all_frames=args.save_all_frames,
             use_full_mesh=args.full_mesh,
             use_enhancement=args.enhance,
+            phoenix_mode=False,  # Regular processing mode
+            phoenix_frame_sample_rate=200,  # Default value
+            phoenix_json_only=False,  # Save frames and videos
+            phoenix_json_name=None,  # Use default JSON naming
             disable_mirroring=args.disable_mirroring,
             args=args
         )
@@ -675,7 +693,7 @@ def process_single_image_directory(image_dir: Path, output_dir: Path, args, imag
 
 
 def process_multiple_videos_from_directory(video_files: list, output_dir: Path, args) -> None:
-    """Process multiple video files found in a directory"""
+    """Process multiple video files found in a directory - aligned with Phoenix processing"""
     print(f"Processing {len(video_files)} video files:")
     for video_file in video_files:
         print(f"  - {video_file}")
@@ -704,6 +722,10 @@ def process_multiple_videos_from_directory(video_files: list, output_dir: Path, 
                 save_all_frames=args.save_all_frames,
                 use_full_mesh=args.full_mesh,
                 use_enhancement=args.enhance,
+                phoenix_mode=False,  # Regular processing mode
+                phoenix_frame_sample_rate=200,  # Default value
+                phoenix_json_only=False,  # Save frames and videos
+                phoenix_json_name=None,  # Use default JSON naming
                 disable_mirroring=args.disable_mirroring,
                 args=args
             )
@@ -724,6 +746,251 @@ def process_multiple_videos_from_directory(video_files: list, output_dir: Path, 
     print(f"Successfully processed: {successful_count}")
     print(f"Failed: {failed_count}")
 
+
+# Additional function to fix batch processing calls
+def process_batch_videos_fixed(video_files: list, output_dir: Path, args) -> tuple:
+    """Process multiple videos in batch processing - fixed version"""
+    processed_count = 0
+    failed_count = 0
+
+    for idx, video_path in enumerate(video_files):
+        print(f"\n=== Processing video [{idx + 1}/{len(video_files)}]: {video_path.name} ===")
+
+        output_subdir = output_dir / f"video_{video_path.stem}"
+        try:
+            output_subdir.mkdir(parents=True, exist_ok=True)
+            print(f"Created video output dir: {output_subdir}")
+
+            result = process_video(
+                str(video_path),
+                output_dir=str(output_subdir),
+                skip_frames=args.skip_frames,
+                extract_face=True,
+                extract_pose=True,
+                is_image_sequence=False,
+                image_extension=args.image_extension,
+                save_all_frames=args.save_all_frames,
+                use_full_mesh=args.full_mesh,
+                use_enhancement=args.enhance,
+                phoenix_mode=False,  # Regular processing mode
+                phoenix_frame_sample_rate=200,  # Default value
+                phoenix_json_only=False,  # Save frames and videos
+                phoenix_json_name=None,  # Use default JSON naming
+                disable_mirroring=args.disable_mirroring,
+                args=args
+            )
+
+            if result is None:
+                print(f"WARNING: process_video returned None for {video_path}")
+                failed_count += 1
+            else:
+                print(f"SUCCESS: process_video completed for {video_path}")
+                processed_count += 1
+
+        except Exception as e:
+            print(f"ERROR: Exception processing {video_path}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            failed_count += 1
+
+    return processed_count, failed_count
+
+
+def process_aslcitizen_dataset(videos_dir: Path, output_dir: Path, args) -> None:
+    """Process ASL Citizen dataset videos from directory - JSON only mode"""
+    print(f"\n=== ASL Citizen Dataset Processing (JSON-Only Mode) ===")
+    print(f"Videos directory: {videos_dir}")
+    print(f"Output directory: {output_dir}")
+    print(f"Optimizations: JSON files only, no frames/videos, single output folder")
+
+    if not videos_dir.exists():
+        print(f"ERROR: Videos directory not found: {videos_dir}")
+        return
+
+    # Create single output directory for all JSONs
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Define video file extensions
+    video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'}
+
+    # Find all video files in the directory
+    video_files = []
+    for ext in video_extensions:
+        video_files.extend(list(videos_dir.glob(f"*{ext}")))
+        video_files.extend(list(videos_dir.glob(f"*{ext.upper()}")))  # Also check uppercase
+
+    if not video_files:
+        print(f"ERROR: No video files found in {videos_dir}")
+        print(f"Supported extensions: {', '.join(video_extensions)}")
+        return
+
+    print(f"Found {len(video_files)} video files")
+    print(f"All JSON files will be saved to: {output_dir}")
+
+    processed_count = 0
+    failed_count = 0
+
+    for idx, video_path in enumerate(video_files):
+        video_name = video_path.stem  # Filename without extension
+        print(f"\n=== Processing video {idx + 1}/{len(video_files)}: {video_name} ===")
+
+        try:
+            # Process video with ASL Citizen optimizations (JSON-only mode)
+            print(f"Starting JSON-only processing...")
+
+            result = process_video(
+                str(video_path),  # Path to video file
+                output_dir=str(output_dir),  # Use main output dir, not subfolder
+                skip_frames=args.skip_frames,
+                extract_face=True,
+                extract_pose=True,
+                is_image_sequence=False,  # This is a video file, not image sequence
+                image_extension=args.image_extension,
+                save_all_frames=False,  # Force to False for ASL Citizen
+                use_full_mesh=args.full_mesh,
+                use_enhancement=args.enhance,
+                phoenix_mode=True,  # Enable optimizations
+                phoenix_json_only=True,  # JSON-only mode
+                phoenix_json_name=video_name,  # Custom JSON filename
+                disable_mirroring=args.disable_mirroring,
+                args=args
+            )
+
+            if result is None:
+                print(f"WARNING: Processing failed for {video_name}")
+                failed_count += 1
+            else:
+                print(f"SUCCESS: Processed {video_name} -> {video_name}.json")
+                processed_count += 1
+
+        except Exception as e:
+            print(f"ERROR: Exception processing {video_name}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            failed_count += 1
+
+    print(f"\n=== ASL Citizen Dataset Processing Summary ===")
+    print(f"Total videos: {len(video_files)}")
+    print(f"Successfully processed: {processed_count}")
+    print(f"Failed: {failed_count}")
+    print(f"JSON files saved to: {output_dir}")
+
+    # List the JSON files created
+    json_files = list(output_dir.glob("*.json"))
+    print(f"Total JSON files created: {len(json_files)}")
+
+    if json_files and len(json_files) <= 10:
+        print("Created JSON files:")
+        for json_file in json_files:
+            print(f"  - {json_file.name}")
+    elif len(json_files) > 10:
+        print("Created JSON files (showing first 10):")
+        for json_file in sorted(json_files)[:10]:
+            print(f"  - {json_file.name}")
+        print(f"  ... and {len(json_files) - 10} more files")
+
+def process_batch_image_dirs_fixed(image_dirs: list, output_dir: Path, args) -> tuple:
+    """Process multiple image directories in batch processing - fixed version"""
+    processed_count = 0
+    failed_count = 0
+
+    for idx, img_dir in enumerate(image_dirs):
+        print(f"\n=== Processing image directory [{idx + 1}/{len(image_dirs)}]: {img_dir.name} ===")
+
+        output_subdir = output_dir / f"images_{img_dir.name}"
+        try:
+            output_subdir.mkdir(parents=True, exist_ok=True)
+            print(f"Created image dir output: {output_subdir}")
+
+            result = process_video(
+                str(img_dir),
+                output_dir=str(output_subdir),
+                skip_frames=args.skip_frames,
+                extract_face=True,
+                extract_pose=True,
+                is_image_sequence=True,
+                image_extension=args.image_extension,
+                save_all_frames=args.save_all_frames,
+                use_full_mesh=args.full_mesh,
+                use_enhancement=args.enhance,
+                phoenix_mode=False,  # Regular processing mode
+                phoenix_frame_sample_rate=200,  # Default value
+                phoenix_json_only=False,  # Save frames and videos
+                phoenix_json_name=None,  # Use default JSON naming
+                disable_mirroring=args.disable_mirroring,
+                args=args
+            )
+
+            if result is None:
+                print(f"WARNING: process_video returned None for {img_dir}")
+                failed_count += 1
+            else:
+                print(f"SUCCESS: process_video completed for {img_dir}")
+                processed_count += 1
+
+        except Exception as e:
+            print(f"ERROR: Exception processing {img_dir}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            failed_count += 1
+
+    return processed_count, failed_count
+
+
+def process_microsoftasl_20_data(csv_file_path: str, output_dir: Path, args) -> None:
+    """Process Microsoft ASL dataset for 20 most common glosses and optionally process video files"""
+    print(f"\n=== Microsoft ASL-20 Processing ===")
+    print(f"CSV file: {csv_file_path}")
+    print(f"Output directory: {output_dir}")
+
+    # Check if CSV file exists
+    csv_path = Path(csv_file_path)
+    if not csv_path.exists():
+        print(f"ERROR: CSV file not found: {csv_path}")
+        return
+
+    # Check video directory if video processing is requested
+    video_dir = None
+    process_videos = args.process_videos if hasattr(args, 'process_videos') else False
+
+    if process_videos:
+        if not args.video_directory:
+            print(f"ERROR: --video-directory is required when using --process-videos")
+            return
+
+        video_dir = Path(args.video_directory)
+        if not video_dir.exists():
+            print(f"ERROR: Video directory not found: {video_dir}")
+            return
+
+        print(f"Video directory: {video_dir}")
+        print(f"Video processing: ENABLED")
+    else:
+        print(f"Video processing: DISABLED (use --process-videos to enable)")
+
+    try:
+        # Process the dataset
+        results = process_microsoftasl_20(
+            csv_file_path=str(csv_path),
+            output_dir=str(output_dir),
+            video_dir=str(video_dir) if video_dir else None,
+            process_videos=process_videos
+        )
+
+        print(f"\nMicrosoft ASL-20 processing completed successfully!")
+        print(f"Created filtered dataset with {results['statistics']['filtered_rows']} samples")
+        print(f"Top 20 glosses: {', '.join(results['top_20_glosses'][:10])}...")
+
+        if results.get('video_processing'):
+            video_stats = results['video_processing']
+            if 'error' not in video_stats:
+                print(
+                    f"Video processing: {video_stats['successful']}/{video_stats['videos_found']} videos processed successfully")
+
+    except Exception as e:
+        print(f"ERROR: Microsoft ASL-20 processing failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 def main() -> None:
     """Main function with simplified processing logic"""
@@ -781,9 +1048,18 @@ def main_with_calibration():
     if args.process_phoenix:
         dev_folder = Path(args.process_phoenix)
         process_phoenix_dataset(dev_folder, output_dir, args)
+        return
+    elif args.process_aslcitizen:
+        videos_dir = Path(args.process_aslcitizen)
+        process_aslcitizen_dataset(videos_dir, output_dir, args)
+        return
     elif args.process_single:
         item_path = Path(args.process_single)
         process_single_item(item_path, output_dir, args)
+        return
+    elif args.process_microsoftasl_20:
+        process_microsoftasl_20_data(args.process_microsoftasl_20, output_dir, args)
+        return
     else:
         input_dir = Path(args.input_directory)
         process_batch(input_dir, output_dir, args)

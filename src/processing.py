@@ -2391,7 +2391,10 @@ def process_video(
         print(f"JSON file size: {json_path.stat().st_size} bytes")
         print(f"Total frames in source: {total_frames}")
         print(f"Total frames processed: {processed_frame_count}")
-        print(f"Frames saved to disk: {len(list(frames_dir.glob('frame_*.png')))}")
+        if frames_dir is not None:
+            print(f"Frames saved to disk: {len(list(frames_dir.glob('frame_*.png')))}")
+        else:
+            print("JSON-only mode: No frames saved to disk")
 
         # Count saved frames only if frames directory exists
         if frames_dir and frames_dir.exists():
