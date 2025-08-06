@@ -27,6 +27,7 @@ import math
 from curriculum_learning import CurriculumDataset, CurriculumSampler
 from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
 
+
 DEBUG = True
 
 @dataclass
@@ -1790,6 +1791,67 @@ class BatchBucketing:
     def __len__(self):
         return len(self.batches)
 
+
+def test_saved_model(model_path, data_dir, annotations_path):
+    """Test a saved model on validation data"""
+
+    # Load model
+    checkpoint = torch.load(model_path, map_location='cpu',weights_only=False)
+    config = checkpoint['config']
+    vocab_size = checkpoint['vocab_size']
+
+    # Initialize model
+    model = SignLanguageLSTM(config, vocab_size)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+
+    print(f"Model loaded from {model_path}")
+    print(f"Best validation loss: {checkpoint['best_val_loss']}")
+    from train_lstm import PhoenixDatasetManager
+    # Load dataset for testing
+    dataset_manager = PhoenixDatasetManager(
+        data_dir=data_dir,
+        annotations_path=annotations_path
+    )
+
+    preprocess_config = PreprocessingConfig(
+        max_sequence_length=config.max_sequence_length,
+        normalize_coordinates=False,
+        output_format="tensor",
+        device=config.device
+    )
+    preprocessor = SignLanguagePreprocessor(preprocess_config)
+    dataset = dataset_manager.create_dataset(preprocessor)
+
+    # Create trainer for testing
+    trainer = SignLanguageTrainer(config)
+    trainer.model = model
+    trainer.dataset = dataset
+    trainer.train_loader, trainer.val_loader = trainer._create_data_loaders()
+
+    # Run comprehensive validation
+    val_loss, metrics = trainer.validate_epoch()
+
+    print(f"\n=== Test Results ===")
+    print(f"Validation Loss: {val_loss:.4f}")
+    print(f"Accuracy: {metrics['accuracy']:.4f}")
+    print(f"Precision: {metrics['precision']:.4f}")
+    print(f"Recall: {metrics['recall']:.4f}")
+    print(f"F1 Score: {metrics['f1']:.4f}")
+    print(f"Total Samples: {metrics['total_samples']}")
+    print(f"Prediction Diversity: {metrics['prediction_diversity']:.4f}")
+
+    # Test individual samples
+    print(f"\n=== Sample Predictions ===")
+    for i in range(min(5, len(dataset))):
+        pred_text, true_text = trainer.evaluate_sample(i)
+        print(f"Sample {i}:")
+        print(f"  True: {true_text}")
+        print(f"  Pred: {pred_text}")
+        print()
+
+    return metrics
+
 def main():
     """Main training script"""
     parser = argparse.ArgumentParser(description='Train LS model for sign language recognition')
@@ -1830,5 +1892,10 @@ def main():
     trainer.evaluate_sample(0)
 
 
+
+
 if __name__ == "__main__":
-    main()
+    # main()
+    test_saved_model("C:/Users/Tay/PycharmProjects/signify/models/lstm_sign2gloss.pth",
+                     "C:/Users/Tay/PycharmProjects/signify/aslcitizen_processed_strict/asl20_landmarks_trimmed",
+                     "C:/Users/Tay/PycharmProjects/signify/aslcitizen_processed_strict/gloss_20_processed.csv")
