@@ -14,9 +14,9 @@ Usage:
 """
 
 import os
-import sys
+
 import argparse
-import json
+
 import pandas as pd
 import torch
 import wandb
@@ -26,11 +26,10 @@ import numpy as np
 from dataclasses import asdict
 import yaml
 
-# Add current directory to path for imports
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 
 from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
-from lstm_model import SignLanguageLSTM, SignLanguageTrainer, ModelConfig
+from lstm_model import SignLanguageTrainer, ModelConfig
 
 
 class PhoenixDatasetManager:
@@ -52,7 +51,7 @@ class PhoenixDatasetManager:
         try:
             print(f"Loading annotations from: {self.annotations_path}")
 
-            # Step 1: Try to load file with automatic separator detection
+            # Try to load file with automatic separator detection
             df = None
             successful_separator = None
 
@@ -61,7 +60,7 @@ class PhoenixDatasetManager:
                 print("Loaded Excel file")
             else:
                 # For CSV files, try different separators
-                separators = ['|', ',', '\t', ';']  # Put | first since it's most common for Phoenix
+                separators = ['|', ',', '\t', ';']
 
                 print("Trying different separators...")
                 for sep in separators:
@@ -78,17 +77,6 @@ class PhoenixDatasetManager:
                         print(f"  Separator '{sep}': Failed - {str(e)[:50]}...")
                         continue
 
-                if df is None:
-                    # Last resort: try reading without separator detection
-                    print("All separators failed, trying fallback methods...")
-                    try:
-                        # Try reading as pipe-separated without inferring separator
-                        df = pd.read_csv(self.annotations_path, sep='|', engine='python')
-                        successful_separator = '|'
-                        print(" Fallback method worked with pipe separator")
-                    except Exception as e:
-                        print(f"Fallback method also failed: {e}")
-                        raise ValueError(f"Could not parse CSV file with any separator")
 
             if df is None:
                 raise ValueError("Failed to load annotations file")
@@ -96,7 +84,7 @@ class PhoenixDatasetManager:
             print(f"Initial shape: {df.shape}")
             print(f"Columns found: {list(df.columns)}")
 
-            # Step 2: Validate and fix column names
+            # Validate and fix column names
             required_columns = ['id', 'folder', 'signer', 'annotation']
 
             # Check if we have the exact column names
@@ -121,7 +109,7 @@ class PhoenixDatasetManager:
                 print(f"Column mapping: {column_mapping}")
                 df = df.rename(columns=column_mapping)
 
-            # Step 3: Keep only required columns and clean data
+            # Keep only required columns and clean data
             df = df[required_columns].copy()
 
             # Clean the data
@@ -261,11 +249,11 @@ def create_config_from_args(args) -> ModelConfig:
         num_epochs=args.num_epochs,
         patience=args.patience,
 
-        # Model parameters (unidirectional LSTM for real-time)
+        # Model parameters
         hidden_size=args.hidden_size,
         num_layers=args.num_layers,
         dropout=args.dropout,
-        bidirectional=False,  # Always False for real-time processing
+        bidirectional=False,
 
         # Sequence parameters
         max_sequence_length=args.max_sequence_length,

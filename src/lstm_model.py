@@ -9,29 +9,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
-from transformers import AutoTokenizer, AutoModel
 import wandb
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Tuple
 import json
 import argparse
 from dataclasses import dataclass, asdict
 from tqdm import tqdm
-import pickle
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 import matplotlib.pyplot as plt
-import seaborn as sns
-from torch.optim.lr_scheduler import LambdaLR
-import math
 from curriculum_learning import CurriculumDataset, CurriculumSampler
 from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
 
 
 DEBUG = True
 
-@dataclass
-@dataclass
 @dataclass
 class ModelConfig:
     """Configuration for LSTM model"""
@@ -113,7 +106,7 @@ class SignLanguageLSTM(nn.Module):
         # Positional encoding
         self.pos_encoding = PositionalEncoding(config.hidden_size, config.max_sequence_length)
 
-        # LSTM layers (unidirectional for real-time processing)
+        # LSTM layers
         self.lstm = nn.LSTM(
             input_size=config.hidden_size,
             hidden_size=config.hidden_size,
@@ -132,9 +125,9 @@ class SignLanguageLSTM(nn.Module):
             batch_first=True
         )
 
-        # Output layers - ADD THE MISSING LAYER_NORM HERE
+        # Output layers
         self.dropout = nn.Dropout(config.dropout)
-        self.layer_norm = nn.LayerNorm(lstm_output_size)  # ADD THIS LINE
+        self.layer_norm = nn.LayerNorm(lstm_output_size)
 
         # Classification head
         self.classifier = nn.Sequential(
@@ -173,7 +166,7 @@ class SignLanguageLSTM(nn.Module):
             key_padding_mask=key_padding_mask
         )
 
-        # Residual connection and layer norm - FIXED TO USE CORRECT ATTRIBUTE
+        # Residual connection and layer norm
         x = self.layer_norm(lstm_out + attn_out)
         x = self.dropout(x)
 
@@ -361,54 +354,6 @@ class SignLanguageLSTM(nn.Module):
             output = self.forward(x, attention_mask)
             return output['predictions']
 
-    def predict_realtime(self, frame_features, hidden_state=None):
-        """
-        Real-time prediction for a single frame
-
-        Args:
-            frame_features: Single frame features (1, 1, input_size)
-            hidden_state: Previous LSTM hidden state (optional)
-
-        Returns:
-            Dictionary with prediction, confidence, and new hidden state
-        """
-        self.eval()
-        with torch.no_grad():
-            # Ensure correct input shape
-            if frame_features.dim() == 2:
-                frame_features = frame_features.unsqueeze(1)  # Add sequence dimension
-            if frame_features.dim() == 1:
-                frame_features = frame_features.unsqueeze(0).unsqueeze(1)  # Add batch and sequence
-
-            # Input projection
-            x = self.input_projection(frame_features)
-
-            # LSTM forward pass with hidden state
-            if hidden_state is not None:
-                lstm_out, new_hidden_state = self.lstm(x, hidden_state)
-            else:
-                lstm_out, new_hidden_state = self.lstm(x)
-
-            # Classification
-            logits = self.classifier(lstm_out)
-
-            # Get prediction and confidence
-            probabilities = F.softmax(logits, dim=-1)
-            prediction = torch.argmax(logits, dim=-1)
-            confidence = torch.max(probabilities, dim=-1)[0]
-
-            return {
-                'prediction': prediction.squeeze().item(),
-                'confidence': confidence.squeeze().item(),
-                'hidden_state': new_hidden_state,
-                'logits': logits.squeeze()
-            }
-
-    def reset_hidden_state(self):
-        """Reset hidden state for new sequence"""
-        return None  # LSTM will initialize hidden state automatically
-
-
 class SignLanguageTrainer:
     """Training pipeline for sign language LSTM model"""
 
@@ -436,7 +381,7 @@ class SignLanguageTrainer:
         )
         self.preprocessor = SignLanguagePreprocessor(preprocess_config)
 
-        # Load dataset FIRST to get actual feature dimensions
+        # Load dataset to get actual feature dimensions
         self.dataset = self._load_dataset()
 
         # Update config with actual input size from preprocessor
@@ -448,15 +393,15 @@ class SignLanguageTrainer:
 
         self.train_loader, self.val_loader = self._create_data_loaders()
 
-        # Initialize model AFTER getting correct input size
+        # Initialize model
         self.model = SignLanguageLSTM(config, self.dataset.vocab_size).to(self.device)
 
         # Initialize optimizer and scheduler
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=config.learning_rate,  # Higher starting rate but not too high
+            lr=config.learning_rate,
             weight_decay=config.weight_decay,
-            betas=(0.9, 0.98),  # Slightly higher beta2 for stability
+            betas=(0.9, 0.98),
             eps=1e-8
         )
 
@@ -464,8 +409,8 @@ class SignLanguageTrainer:
             self.optimizer,
             mode='min',
             factor=0.7,  # Less aggressive reduction
-            patience=8,  # More patience
-            min_lr=1e-6  # Don't go too low
+            patience=8,
+            min_lr=1e-6
         )
 
 
@@ -543,23 +488,6 @@ class SignLanguageTrainer:
                 shuffle=False  # Don't shuffle validation
             )
 
-            # Create data loaders with both grouping and dynamic padding
-            train_loader = DataLoader(
-                train_dataset,
-                batch_sampler=train_sampler,  # Use our custom sampler
-                num_workers=0,
-                pin_memory=False,
-                collate_fn=self._dynamic_collate_fn  # Plus dynamic padding
-            )
-
-            val_loader = DataLoader(
-                val_dataset,
-                batch_sampler=val_sampler,
-                num_workers=0,
-                pin_memory=False,
-                collate_fn=self._dynamic_collate_fn
-            )
-
             print(f"Train samples: {len(train_dataset)} -> {len(train_sampler)} batches")
             print(f"Validation samples: {len(val_dataset)} -> {len(val_sampler)} batches")
 
@@ -625,7 +553,6 @@ class SignLanguageTrainer:
 
     def _create_data_loaders_original(self) -> Tuple[DataLoader, DataLoader]:
         """Original data loader creation (renamed from existing method)"""
-        # Move your existing _create_data_loaders implementation here
         # Split dataset
         train_size = int(0.8 * len(self.dataset))
         val_size = len(self.dataset) - train_size
@@ -681,8 +608,7 @@ class SignLanguageTrainer:
             annotations = [item['annotation'] for item in batch]
             metadata = [item['metadata'] for item in batch]
 
-            # For curriculum learning, all sequences should already be the same length
-            # But double-check and pad to batch maximum just in case
+            # Double-check and pad to batch maximum just in case
             actual_lengths = [mask.sum().item() for mask in attention_masks]
 
             if len(set(seq.shape[0] for seq in sequences)) > 1:
@@ -711,7 +637,7 @@ class SignLanguageTrainer:
                 resized_sequences = sequences
                 resized_attention_masks = attention_masks
 
-            # Handle labels (keep original logic)
+            # Handle labels
             max_label_length = max(label.shape[0] for label in labels)
             resized_labels = []
 
@@ -854,7 +780,7 @@ class SignLanguageTrainer:
                         'learning_rate_boost': new_lr
                     })
                 except:
-                    pass  # Don't fail if wandb isn't available
+                    pass
 
             return True
 
@@ -881,19 +807,19 @@ class SignLanguageTrainer:
         """Execute nuclear reset (called after backward pass)"""
         print("    EXECUTING NUCLEAR RESET...")
 
-        # 1. RESET classifier weights
+        # Reset classifier weights
         for layer in self.model.classifier:
             if hasattr(layer, 'weight'):
                 torch.nn.init.xavier_uniform_(layer.weight)
                 if hasattr(layer, 'bias') and layer.bias is not None:
                     torch.nn.init.zeros_(layer.bias)
 
-        # 2. MASSIVE learning rate boost
+        # Massice learning rate boost
         new_lr = 5e-3
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = new_lr
 
-        # 3. Enable gradient noise
+        # Enable gradient noise
         self._enable_gradient_noise = True
         self._noise_steps_remaining = 50
 
@@ -915,7 +841,7 @@ class SignLanguageTrainer:
             print("\n=== ENHANCED PADDING DEBUG ===")
             test_batch_count = 0
             for batch in self.train_loader:
-                if test_batch_count >= 1:  # Just check first batch
+                if test_batch_count >= 1:
                     break
 
                 sequences = batch['sequence'].to(self.device)
@@ -1105,9 +1031,9 @@ class SignLanguageTrainer:
             if hasattr(label, 'cpu'):
                 label = label.cpu().numpy()
 
-            # Check if pred and label are single values (scalars) or sequences
+            # Check if pred and label are single values  or sequences
             if np.isscalar(pred) and np.isscalar(label):
-                # Single predictions (typical for ASL single-word signs)
+                # Single predictions
                 if label != 0:  # Skip padding tokens
                     pred_flat.append(int(pred))
                     label_flat.append(int(label))
@@ -1433,7 +1359,7 @@ class SignLanguageTrainer:
 
             # Boost learning rate (smaller boost than collapse detection)
             current_lr = self.optimizer.param_groups[0]['lr']
-            new_lr = min(current_lr * 2.0, 1e-3)  # Double LR (less aggressive than collapse)
+            new_lr = min(current_lr * 2.0, 1e-3)  # Double LR
 
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = new_lr
@@ -1450,7 +1376,7 @@ class SignLanguageTrainer:
                         'learning_rate_boost': new_lr
                     })
             except:
-                pass  # Don't fail if wandb isn't available
+                pass
 
             return True
 
@@ -1470,19 +1396,19 @@ class SignLanguageTrainer:
                     print(f"*** DEEP MINIMUM ESCAPE at batch {batch_idx}!")
                     print(f"    Repetition: {repetition_ratio:.1%}")
 
-                    # 1. RESET classifier weights (nuclear option)
+                    # Reset classifier weights (nuclear option)
                     for layer in self.model.classifier:
                         if hasattr(layer, 'weight'):
                             torch.nn.init.xavier_uniform_(layer.weight)
                             if hasattr(layer, 'bias') and layer.bias is not None:
                                 torch.nn.init.zeros_(layer.bias)
 
-                    # 2. MASSIVE learning rate boost
-                    new_lr = 5e-3  # Much higher than max 1e-3
+                    # Massive learning rate boost
+                    new_lr = 5e-3
                     for param_group in self.optimizer.param_groups:
                         param_group['lr'] = new_lr
 
-                    # 3. Add gradient noise for several steps
+                    # Add gradient noise for several steps
                     self._enable_gradient_noise = True
                     self._noise_steps_remaining = 50
 
@@ -1564,7 +1490,7 @@ class SignLanguageTrainer:
             print(f"Val Accuracy: {metrics['accuracy']:.4f}")
             print(f"Val F1: {metrics['f1']:.4f}")
 
-            # Optional analysis (with error handling)
+            # Optional analysis
             if (epoch + 1) % 3 == 0:
                 try:
                     self.analyze_predictions(num_samples=2)
@@ -1588,13 +1514,13 @@ class SignLanguageTrainer:
 
         print("Training completed!")
 
-        # Plot training curves (with error handling)
+        # Plot training curves
         try:
             self._plot_training_curves()
         except Exception as e:
             print(f"Could not plot training curves: {e}")
 
-        # Final evaluation (with error handling)
+        # Final evaluation
         print("\n=== Final Evaluation ===")
         try:
             self.evaluate_sample(0)
@@ -1687,7 +1613,7 @@ class SignLanguageTrainer:
         print(f"\n=== Prediction Analysis ===")
 
         try:
-            # Create id_to_vocab mapping safely
+            # Create id_to_vocab mapping
             id_to_vocab = {v: k for k, v in self.dataset.vocab.items()}
 
             with torch.no_grad():
@@ -1707,7 +1633,7 @@ class SignLanguageTrainer:
                     print(f"  True: {sample['annotation']}")
                     print(f"  Prediction token distribution: {dict(zip(unique_tokens, counts))}")
 
-                    # Show token meanings safely
+                    # Show token meanings
                     for token_id, count in zip(unique_tokens[:5], counts[:5]):  # Only first 5
                         token_text = id_to_vocab.get(int(token_id), f'UNK_{token_id}')
                         print(f"    ID {token_id} ('{token_text}'): {count} times")
@@ -1779,19 +1705,10 @@ class BatchBucketing:
         print(f"Created {len(self.batches)} batches")
         print(f"Sample batch length ranges: {batch_length_ranges}")
 
-    def __iter__(self):
-        """Generate batch indices"""
-        batches = self.batches.copy()
-        if self.shuffle:
-            np.random.shuffle(batches)  # Shuffle batch order
-
-        for batch_indices in batches:
-            yield batch_indices
-
     def __len__(self):
         return len(self.batches)
 
-
+# FIX
 def test_saved_model(model_path, data_dir, annotations_path):
     """Test a saved model on validation data"""
 

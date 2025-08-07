@@ -11,16 +11,15 @@ import numpy as np
 import torch
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Union, Any
+from typing import Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass
-from collections import defaultdict
 import warnings
 from sklearn.preprocessing import LabelEncoder
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import pickle
 from curriculum_learning import (
-    CurriculumDataset, CurriculumScheduler, CurriculumSampler,
-    analyze_dataset_difficulty, SampleDifficulty
+    CurriculumDataset, CurriculumScheduler,
+    analyze_dataset_difficulty
 )
 
 CORE_POSE_LANDMARKS = [
@@ -63,6 +62,7 @@ class PreprocessingConfig:
     coordinate_range: Tuple[float, float] = (-1.0, 1.0)
 
     # Data augmentation
+    # TODO test
     apply_augmentation: bool = False
     rotation_range: float = 0.1  # radians
     scale_range: Tuple[float, float] = (0.9, 1.1)
@@ -78,8 +78,8 @@ class PreprocessingConfig:
     device: str = "cpu"
 
     # Phoenix dataset specific
-    phoenix_data_path: Optional[str] = None
-    phoenix_annotations_path: Optional[str] = None
+    phoenix_data_path = None
+    phoenix_annotations_path = None
     vocab_size: int = 1000  # Maximum vocabulary size for glosses
 
 
@@ -107,12 +107,11 @@ class PhoenixDataset(Dataset):
         # DEBUG: Test the first sample
         if DEBUG:
             if len(json_paths) > 0:
-                self.preprocessor.debug_single_sample(json_paths[0])  # Pass the json_path
+                self.preprocessor.debug_single_sample(json_paths[0])
 
         # Build vocabulary
         self.vocab = self._build_vocabulary(vocab_path)
         self.label_encoder = LabelEncoder()
-        # self.id_to_vocab = {v: k for k, v in self.vocab.items()}
 
         # Create label mappings
         all_glosses = []
@@ -217,7 +216,7 @@ class PhoenixDataset(Dataset):
             }
         )
 
-        # Create curriculum dataset - ADD the missing preprocessor argument
+        # Create curriculum dataset
         curriculum_dataset = CurriculumDataset(
             base_dataset=self,
             difficulty_metrics=difficulty_metrics,
@@ -240,7 +239,8 @@ class PhoenixDataset(Dataset):
             non_zero_count = (sequence != 0).sum()
             total_elements = sequence.numel()
 
-            if idx < 5:  # Print first 5 samples
+            # Print first 5 samples
+            if idx < 5:
                 print(f"Sample {idx}: shape={sequence.shape}, "
                       f"non_zero={non_zero_count}/{total_elements} ({non_zero_ratio:.3f})")
 
@@ -259,7 +259,7 @@ class PhoenixDataset(Dataset):
             encoded_annotation = self.encode_annotation(self.annotations[idx])
 
             # Pad annotation to max length
-            max_annotation_length = 50  # Adjust based on your data
+            max_annotation_length = 50
             if len(encoded_annotation) > max_annotation_length:
                 encoded_annotation = encoded_annotation[:max_annotation_length]
             else:
@@ -274,7 +274,7 @@ class PhoenixDataset(Dataset):
             expected_mask_shape = (self.preprocessor.config.max_sequence_length,)
 
             if sequence.shape != expected_seq_shape:
-                if idx % 50 == 0:  # Only warn every 50 samples
+                if idx % 50 == 0:
                     print(
                         f"Info: Truncating sequence at idx {idx}: {sequence.shape[0]} -> {expected_seq_shape[0]} frames")
                 # Create properly shaped tensor
@@ -303,7 +303,6 @@ class PhoenixDataset(Dataset):
             }
         except Exception as e:
             print(f"Error loading sample {idx} (file: {self.json_paths[idx]}): {e}")
-            # Return a dummy sample with correct shapes
             return {
                 'sequence': torch.zeros(self.preprocessor.config.max_sequence_length,
                                         self.preprocessor.feature_dims['total']),
@@ -408,7 +407,7 @@ class SignLanguagePreprocessor:
             file_path = Path(excel_path)
             print(f"Loading Phoenix annotations from: {file_path}")
 
-            # Step 1: Try to load file with automatic format detection
+            # Try to load file with automatic format detection
             df = None
 
             if file_path.suffix.lower() in ['.xlsx', '.xls']:
@@ -416,7 +415,7 @@ class SignLanguagePreprocessor:
                 print(" Loaded Excel file")
             else:
                 # For CSV files, try different separators
-                separators = ['|', ',', '\t', ';']  # Put | first since it's common for Phoenix
+                separators = ['|', ',', '\t', ';']
 
                 print(" Trying different separators...")
                 for sep in separators:
@@ -424,7 +423,7 @@ class SignLanguagePreprocessor:
                         test_df = pd.read_csv(file_path, sep=sep, nrows=3)
                         print(f"  Separator '{sep}': {len(test_df.columns)} columns")
 
-                        if len(test_df.columns) >= 4:  # Need at least 4 columns
+                        if len(test_df.columns) >= 4:  # For each column in  Phoenix
                             df = pd.read_csv(file_path, sep=sep)
                             print(f" Successfully loaded with separator '{sep}'")
                             break
@@ -432,43 +431,24 @@ class SignLanguagePreprocessor:
                         print(f"  Separator '{sep}': Failed")
                         continue
 
-                if df is None:
-                    # Last resort: try reading as pipe-separated
-                    try:
-                        df = pd.read_csv(file_path, sep='|', engine='python')
-                        print(" Fallback: loaded with pipe separator")
-                    except Exception as e:
-                        raise ValueError(f"Could not parse file with any separator: {e}")
-
             if df is None:
                 raise ValueError("Failed to load annotations file")
 
-            # Step 2: Validate and fix column names
+            # Validate and fix column names
             expected_columns = ['id', 'folder', 'signer', 'annotation']
 
             print(f" Initial shape: {df.shape}")
             print(f" Columns found: {list(df.columns)}")
 
-            # Check if we have the exact column names
             if all(col in df.columns for col in expected_columns):
                 print(" All expected columns found")
             else:
-                print("️  Column names don't match exactly, attempting to map...")
+                print("️  Column names don't match exactly")
 
                 if len(df.columns) < 4:
                     raise ValueError(f"Insufficient columns: expected 4, found {len(df.columns)}")
 
-                # Map first 4 columns to expected names
-                column_mapping = {}
-                for i, expected_col in enumerate(expected_columns):
-                    if i < len(df.columns):
-                        old_col = df.columns[i]
-                        column_mapping[old_col] = expected_col
-
-                print(f" Column mapping: {column_mapping}")
-                df = df.rename(columns=column_mapping)
-
-            # Step 3: Keep only expected columns and clean data
+            # Keep only expected columns
             df = df[expected_columns].copy()
 
             # Clean the data
@@ -484,7 +464,7 @@ class SignLanguagePreprocessor:
 
             final_rows = len(df)
             if final_rows < initial_rows:
-                print(f"⚠  Removed {initial_rows - final_rows} rows with missing/empty data")
+                print(f"  Removed {initial_rows - final_rows} rows with missing/empty data")
 
             print(f" Final shape: {df.shape}")
             print(f" Unique signers: {df['signer'].nunique()}")
@@ -497,7 +477,7 @@ class SignLanguagePreprocessor:
         except Exception as e:
             print(f" Error loading Phoenix annotations: {e}")
 
-            # Enhanced debugging
+            # DEBUG
             if Path(excel_path).exists():
                 try:
                     print(" File debugging info:")
@@ -515,7 +495,7 @@ class SignLanguagePreprocessor:
             else:
                 print(f"   File does not exist: {excel_path}")
 
-            return pd.DataFrame()  # Return empty DataFrame instead of raising
+            return pd.DataFrame()
 
     def create_phoenix_dataset(self,
                               data_dir: str,
@@ -566,7 +546,7 @@ class SignLanguagePreprocessor:
         return dataset
 
     def extract_hand_features(self, hand_data: Dict) -> np.ndarray:
-        """Extract hand features from hand data - with debugging"""
+        """Extract hand features from hand data"""
         features = []
 
       #  print(f"  extract_hand_features called with: {type(hand_data)}")
@@ -577,12 +557,12 @@ class SignLanguagePreprocessor:
             hand_info = hand_data.get(hand_type, {})
 
             if isinstance(hand_info, dict) and 'landmarks' in hand_info:
-                # New format with confidence
+                # With confidence
                 landmarks = hand_info['landmarks']
                 confidence = hand_info.get('confidence', 1.0)
             #    print(f"      Found {len(landmarks)} landmarks (dict format)")
             elif isinstance(hand_info, list) and len(hand_info) > 0:
-                # Old format - direct list
+                # Old format - direct list, mock confidence
                 landmarks = hand_info
                 confidence = 1.0
               #  print(f"      Found {len(landmarks)} landmarks (list format)")
@@ -681,7 +661,6 @@ class SignLanguagePreprocessor:
 
         #---BEGIN DEBUG----
         if DEBUG:
-            # Debug: Print what we're starting with
             hands_data = frame_data.get('hands', {})
             face_data = frame_data.get('face', {})
             pose_data = frame_data.get('pose', {})
@@ -806,7 +785,6 @@ class SignLanguagePreprocessor:
         if not np.any(mask):
             return features
 
-        # SMART normalization - handle different coordinate ranges
         normalized_features = features.copy()
 
         # For each coordinate position, normalize based on its range
@@ -819,7 +797,7 @@ class SignLanguagePreprocessor:
         for i, val in enumerate(non_zero_features):
             current_group.append((i, val))
 
-            # Group coordinates: assume x,y,z pattern
+            # Group coordinates: x,y,z pattern
             if len(current_group) == 3:
                 coord_groups.append(current_group)
                 current_group = []
@@ -831,7 +809,7 @@ class SignLanguagePreprocessor:
         min_val, max_val = self.config.coordinate_range  # (-1, 1)
 
         for group in coord_groups:
-            if len(group) >= 2:  # At least x,y
+            if len(group) >= 2:  # At least x,y if hands not attached to pose
                 # Get values for this coordinate group
                 group_vals = [val for _, val in group]
                 group_indices = [idx for idx, _ in group]
@@ -847,7 +825,7 @@ class SignLanguagePreprocessor:
                     if len(group) > 2:
                         z_idx, z_val = group[2]
                         # Clamp extreme z values and normalize
-                        z_clamped = np.clip(z_val, -10.0, 10.0)  # Reasonable z range
+                        z_clamped = np.clip(z_val, -10.0, 10.0)
                         z_normalized = z_clamped / 10.0  # Map to [-1, 1]
                         mask_idx = list(mask.nonzero()[0])[group_indices[2]]
                         normalized_features[mask_idx] = z_normalized
@@ -984,7 +962,7 @@ class SignLanguagePreprocessor:
         # Pad sequence
         sequence = self.pad_sequence(sequence)
 
-        # Create attention mask based on actual sequence content (AFTER padding)
+        # Create attention mask
         attention_mask = self._create_proper_attention_mask(sequence)
 
         # Ensure mask length matches sequence length
@@ -1152,7 +1130,7 @@ def validate_feature_dimensions(self, frame_data: Dict) -> bool:
     return True
 
 
-# Example usage and utility functions
+
 def create_default_config(**kwargs) -> PreprocessingConfig:
     """Create a default configuration with optional overrides"""
     config = PreprocessingConfig()
@@ -1198,6 +1176,5 @@ def preprocess_single(json_path: str):
 
 
 if __name__ == "__main__":
-    # Example usage
     json_file = "../output/images_sample/video_landmarks.json"
     preprocess_single(json_file)
