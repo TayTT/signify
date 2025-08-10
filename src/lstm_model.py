@@ -142,7 +142,7 @@ class SignLanguageLSTM(nn.Module):
 
     def forward(self, x, attention_mask=None, labels=None):
         """
-        Forward pass with focal loss and L2 regularization
+        Forward pass
         """
         batch_size, seq_len, _ = x.shape
 
@@ -245,7 +245,7 @@ class SignLanguageLSTM(nn.Module):
             #     else:
             #         loss = focal_loss.mean() + diversity_penalty
             else:
-                # EXPERIMENT 1: Target EOS, SOS, and padding collapse
+                #Target EOS, SOS, and padding collapse
                 logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
                 labels_flat = labels.reshape(-1)
 
@@ -357,7 +357,7 @@ class SignLanguageLSTM(nn.Module):
 class SignLanguageTrainer:
     """Training pipeline for sign language LSTM model"""
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, feature_config: dict = None):
         self.config = config
         self.device = torch.device(config.device)
         self.use_curriculum_learning = False
@@ -377,7 +377,8 @@ class SignLanguageTrainer:
         preprocess_config = PreprocessingConfig(
             max_sequence_length=config.max_sequence_length,
             output_format="tensor",
-            device=config.device
+            device=config.device,
+            include_face=feature_config.get('include_face', True) if feature_config else True,
         )
         self.preprocessor = SignLanguagePreprocessor(preprocess_config)
 
@@ -1709,7 +1710,7 @@ class BatchBucketing:
         return len(self.batches)
 
 # FIX
-def test_saved_model(model_path, data_dir, annotations_path):
+def test_saved_model(model_path, data_dir, annotations_path, feature_config: dict = None):
     """Test a saved model on validation data"""
 
     # Load model
@@ -1732,10 +1733,13 @@ def test_saved_model(model_path, data_dir, annotations_path):
     )
 
     preprocess_config = PreprocessingConfig(
-        max_sequence_length=config.max_sequence_length,
-        normalize_coordinates=False,
-        output_format="tensor",
-        device=config.device
+        max_sequence_length=feature_config.max_sequence_length,
+        include_hands=True,
+        include_face=not getattr(feature_config, 'no_faces', False),
+        include_pose=True,
+        use_face_subset=True,
+        include_hand_confidence=True,
+        include_pose_visibility=True
     )
     preprocessor = SignLanguagePreprocessor(preprocess_config)
     dataset = dataset_manager.create_dataset(preprocessor)
@@ -1793,9 +1797,12 @@ def main():
             annotations_path=args.annotations_path
         )
 
+    # In main() function
+    feature_config = {
+        'include_face': not getattr(args, 'no_faces', False)}
 
     # Initialize trainer
-    trainer = SignLanguageTrainer(config)
+    trainer = SignLanguageTrainer(config, feature_config)
 
     # Resume training if checkpoint provided
     if args.resume:

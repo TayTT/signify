@@ -271,12 +271,29 @@ def create_config_from_args(args) -> ModelConfig:
 
     return config
 
+
+def create_preprocessor_from_args(args) -> SignLanguagePreprocessor:
+    """Create preprocessor with configuration from command line arguments"""
+    preprocess_config = PreprocessingConfig(
+        max_sequence_length=args.max_sequence_length,
+        include_hands=not getattr(args, 'no_hands', False),
+        include_face=not getattr(args, 'no_faces', False),
+        include_pose=not getattr(args, 'no_pose', False),
+        use_face_subset=True,
+        include_hand_confidence=True,
+        include_pose_visibility=True,
+        normalize_coordinates=True,
+        interpolate_missing=True
+    )
+
+    return SignLanguagePreprocessor(preprocess_config)
+
 def calculate_input_size(config_args) -> int:
     """Calculate the correct input size based on preprocessor configuration"""
     preprocess_config = PreprocessingConfig(
         max_sequence_length=config_args.max_sequence_length,
         include_hands=True,
-        include_face=True,
+        include_face=not getattr(config_args, 'no_faces', False),
         include_pose=True,
         use_face_subset=True,
         include_hand_confidence=True,
@@ -383,6 +400,10 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.3,
                         help='Dropout rate')
 
+    # Feature arguments
+    parser.add_argument('--no-faces', action='store_true',
+                        help='Exclude face landmarks from training (ignore face data)')
+
     # Training arguments
     parser.add_argument('--batch_size', type=int, default=16,
                         help='Batch size')
@@ -466,7 +487,11 @@ def main():
         max_sequence_length=config.max_sequence_length,
         normalize_coordinates=False,
         output_format="tensor",
-        device=config.device
+        device=config.device,
+        include_face=not getattr(args, 'no_faces', False),
+        use_face_subset=True,
+        include_hand_confidence=True,
+        include_pose_visibility=True
     )
     preprocessor = SignLanguagePreprocessor(preprocess_config)
 
