@@ -230,18 +230,24 @@ class PhoenixDatasetManager:
 def create_config_from_args(args) -> ModelConfig:
     """Create model configuration from command line arguments"""
 
-    # Calculate the correct input size
+    # Calculate the correct input size with feature selection flags
     actual_input_size = calculate_input_size(args)
 
+    # Create output directory and paths
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     config = ModelConfig(
-        # Use calculated input size instead of hardcoded value
+        # Use calculated input size
         input_size=actual_input_size,
 
         # Data paths
         data_dir=args.data_dir,
         annotations_path=args.annotations_path,
-        model_save_path=args.model_save_path,
-        vocab_path=args.vocab_path,
+
+        # Use output_dir for model and vocab paths
+        model_save_path=str(output_dir / "lstm_sign2gloss.pth"),
+        vocab_path=str(output_dir / "vocab.pkl"),
 
         # Training parameters
         batch_size=args.batch_size,
@@ -249,7 +255,7 @@ def create_config_from_args(args) -> ModelConfig:
         num_epochs=args.num_epochs,
         patience=args.patience,
 
-        # Model parameters
+        # Model parameters (unidirectional LSTM for real-time)
         hidden_size=args.hidden_size,
         num_layers=args.num_layers,
         dropout=args.dropout,
@@ -268,9 +274,12 @@ def create_config_from_args(args) -> ModelConfig:
     )
 
     print(f"Model will be initialized with input_size={actual_input_size}")
+    print(f"Feature configuration:")
+    print(f"  - Include hands: {not getattr(args, 'no_hands', False)}")
+    print(f"  - Include faces: {not getattr(args, 'no_faces', False)}")
+    print(f"  - Include pose: {not getattr(args, 'no_pose', False)}")
 
     return config
-
 
 def create_preprocessor_from_args(args) -> SignLanguagePreprocessor:
     """Create preprocessor with configuration from command line arguments"""
@@ -421,10 +430,8 @@ def main():
                         help='Maximum annotation length')
 
     # Output arguments
-    parser.add_argument('--model_save_path', type=str, default='./models/lstm_sign2gloss.pth',
-                        help='Path to save trained model')
-    parser.add_argument('--config_save_path', type=str, default='./models/config.yaml',
-                        help='Path to save configuration')
+    parser.add_argument('--output_dir', type=str, default='./models',
+                        help='Directory to save model, vocabulary, and config files')
 
     # WandB arguments
     parser.add_argument('--project_name', type=str, default='sign-language-lstm',
@@ -447,8 +454,28 @@ def main():
     if args.wandb_offline:
         os.environ['WANDB_MODE'] = 'offline'
 
+    # feature config
+    feature_config = {
+        'include_face': not getattr(args, 'no_faces', False)
+    }
+
     # Create configuration
     config = create_config_from_args(args)
+
+    # Create config save path in same output directory
+    output_dir = Path(args.output_dir)
+    config_save_path = output_dir / "config.yaml"
+
+    # Create output directory
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save configuration
+    config_dict = asdict(config)
+
+    with open(config_save_path, 'w') as f:
+        yaml.dump(config_dict, f, default_flow_style=False)
+
+    print(f"Configuration will be saved to: {config_save_path}")
 
     # Debug: Print configuration
     print("=== Model Configuration ===")
@@ -460,12 +487,14 @@ def main():
     print()
 
     # Create output directories
-    Path(config.model_save_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.config_save_path).parent.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save configuration
-    with open(args.config_save_path, 'w') as f:
-        yaml.dump(asdict(config), f, default_flow_style=False)
+    config_dict = asdict(config)
+    config_dict['feature_config'] = feature_config
+
+    with open(config_save_path, 'w') as f:
+        yaml.dump(config_dict, f, default_flow_style=False)
 
     print("=== LSTM Sign Language Training ===")
     print(f"Data directory: {config.data_dir}")
@@ -519,7 +548,7 @@ def main():
 
     # Initialize trainer
     print("Initializing trainer...")
-    trainer = SignLanguageTrainer(config)
+    trainer = SignLanguageTrainer(config, feature_config)
     trainer.dataset = dataset  # Override dataset
     trainer.train_loader, trainer.val_loader = trainer._create_data_loaders()
 
@@ -542,7 +571,7 @@ def main():
     print(f"\nTraining complete!")
     print(f"Model saved to: {config.model_save_path}")
     print(f"Vocabulary saved to: {config.vocab_path}")
-    print(f"Configuration saved to: {args.config_save_path}")
+    print(f"Configuration saved to: {args.config_save_path}") #TODO fix
 
 
 if __name__ == "__main__":

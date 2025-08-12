@@ -462,37 +462,43 @@ class SignLanguageTrainer:
             raise
 
     def _create_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
-        """Create data loaders with simple length grouping and dynamic padding"""
-        if self.use_curriculum_learning:
-            return self._create_data_loaders_with_curriculum()
-        else:
-            # Split dataset
-            train_size = int(0.8 * len(self.dataset))
-            val_size = len(self.dataset) - train_size
+        """Create data loaders with simple approach to avoid BatchBucketing issues"""
 
-            train_dataset, val_dataset = random_split(
-                self.dataset,
-                [train_size, val_size],
-                generator=torch.Generator().manual_seed(42)
-            )
+        # Split dataset
+        train_size = int(0.8 * len(self.dataset))
+        val_size = len(self.dataset) - train_size
 
-            # Create simple length grouping samplers
-            train_sampler = BatchBucketing(
-                train_dataset,
-                self.config.batch_size,
-                shuffle=True
-            )
+        train_dataset, val_dataset = random_split(
+            self.dataset,
+            [train_size, val_size],
+            generator=torch.Generator().manual_seed(42)
+        )
 
-            val_sampler = BatchBucketing(
-                val_dataset,
-                self.config.batch_size,
-                shuffle=False  # Don't shuffle validation
-            )
+        # Use simple DataLoader without custom batch sampler
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            num_workers=0,
+            pin_memory=False,
+            collate_fn=self._dynamic_collate_fn,
+            drop_last=True  # Drop incomplete batches
+        )
 
-            print(f"Train samples: {len(train_dataset)} -> {len(train_sampler)} batches")
-            print(f"Validation samples: {len(val_dataset)} -> {len(val_sampler)} batches")
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=False,
+            collate_fn=self._dynamic_collate_fn,
+            drop_last=False
+        )
 
-            return self._create_data_loaders_original()
+        print(f"Train samples: {len(train_dataset)} -> ~{len(train_loader)} batches")
+        print(f"Validation samples: {len(val_dataset)} -> ~{len(val_loader)} batches")
+
+        return train_loader, val_loader
 
     def _create_data_loaders_with_curriculum(self) -> Tuple[DataLoader, DataLoader]:
         """Create data loaders with curriculum learning support"""
