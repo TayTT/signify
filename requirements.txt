@@ -1,33 +1,11 @@
-# Core dependencies
-torch>=2.0.0
-torchvision>=0.15.0
-transformers>=4.30.0
-numpy>=1.21.0
-pandas>=1.5.0
-scikit-learn>=1.2.0
-
-# Data processing
-opencv-python>=4.8.0
-mediapipe>=0.10.0
-Pillow>=9.0.0
-
-# Machine learning and visualization
-matplotlib>=3.5.0
-seaborn>=0.11.0
-tqdm>=4.64.0
-
-# Experiment tracking
-wandb>=0.15.0
-
-# File processing
-openpyxl>=3.1.0  # For Excel file support
-PyYAML>=6.0
-
-# Development and debugging
-ipython>=8.0.0
-jupyter>=1.0.0
-
-# Optional: for advanced features
-# huggingface_hub>=0.15.0
-# datasets>=2.12.0
-# tokenizers>=0.13.0
+matplotlib==3.10.5
+mediapipe==0.10.21
+numpy==2.3.2
+opencv_contrib_python==4.11.0.86
+opencv_python==4.11.0.86
+pandas==2.3.1
+PyYAML==6.0.2
+PyYAML==6.0.2
+scikit_learn==1.7.1
+torch==2.7.1
+tqdm==4.67.1
