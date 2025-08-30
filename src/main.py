@@ -45,7 +45,7 @@ Examples:
   python main.py --process-single ./videos_dir     # Process directory of videos
   python main.py --process-single ./mixed_dir      # Process directory with mixed content
   python main.py --full-mesh --enhance             # Use full face mesh and image enhancement
-  python main.py --process-aslcitizen ./asl_videos # Process ASL Citizen dataset videos (JSON only)
+  python main.py gir ./asl_videos # Process ASL Citizen dataset videos (JSON only)
   python main.py --process-microsoftasl-20         # Process only videos of 20 most common words in the dataset
         ''',
         formatter_class=argparse.RawDescriptionHelpFormatter
