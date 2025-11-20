@@ -1537,6 +1537,7 @@ class SignLanguageTrainer:
 
     def save_model(self):
         """Save model checkpoint"""
+        """Save model checkpoint"""
         checkpoint = {
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
