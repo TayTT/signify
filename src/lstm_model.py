@@ -35,7 +35,7 @@ class ModelConfig:
     curriculum_stages: int = 4
     curriculum_overlap_ratio: float = 0.3
 
-    # Model architecture - will be updated dynamically
+    # Model architecture
     input_size: int = 356  # Updated default based on calculated dimensions
     hidden_size: int = 256
     num_layers: int = 2
@@ -100,13 +100,9 @@ class SignLanguageLSTM(nn.Module):
         print(f"  - Hidden size: {config.hidden_size}")
         print(f"  - Vocab size: {vocab_size}")
 
-        # Input projection
         self.input_projection = nn.Linear(config.input_size, config.hidden_size)
-
-        # Positional encoding
         self.pos_encoding = PositionalEncoding(config.hidden_size, config.max_sequence_length)
 
-        # LSTM layers
         self.lstm = nn.LSTM(
             input_size=config.hidden_size,
             hidden_size=config.hidden_size,
@@ -116,7 +112,6 @@ class SignLanguageLSTM(nn.Module):
             batch_first=True
         )
 
-        # Attention mechanism
         lstm_output_size = config.hidden_size
         self.attention = nn.MultiheadAttention(
             embed_dim=lstm_output_size,
@@ -125,11 +120,9 @@ class SignLanguageLSTM(nn.Module):
             batch_first=True
         )
 
-        # Output layers
         self.dropout = nn.Dropout(config.dropout)
         self.layer_norm = nn.LayerNorm(lstm_output_size)
 
-        # Classification head
         self.classifier = nn.Sequential(
             nn.Linear(lstm_output_size, lstm_output_size // 2),
             nn.ReLU(),
@@ -137,8 +130,7 @@ class SignLanguageLSTM(nn.Module):
             nn.Linear(lstm_output_size // 2, vocab_size)
         )
 
-        # CTC loss for sequence alignment
-        self.use_ctc = False
+        self.use_ctc = False # Experiment
 
     def forward(self, x, attention_mask=None, labels=None):
         """
@@ -146,16 +138,11 @@ class SignLanguageLSTM(nn.Module):
         """
         batch_size, seq_len, _ = x.shape
 
-        # Input projection
         x = self.input_projection(x)
-
-        # Add positional encoding
         x = self.pos_encoding(x.transpose(0, 1)).transpose(0, 1)
 
-        # LSTM forward pass
-        lstm_out, (hidden, cell) = self.lstm(x)
+        lstm_out, (hidden, cell) = self.lstm(x) # Forward pass
 
-        # Apply attention
         if attention_mask is not None:
             key_padding_mask = ~attention_mask
         else:
@@ -170,13 +157,10 @@ class SignLanguageLSTM(nn.Module):
         x = self.layer_norm(lstm_out + attn_out)
         x = self.dropout(x)
 
-        # Classification
         logits = self.classifier(x)
 
-        # Get predictions for evaluation
         predictions = torch.argmax(logits, dim=-1)
 
-        # Calculate loss if labels are provided
         loss = None
         if labels is not None:
             if self.use_ctc:
@@ -193,67 +177,14 @@ class SignLanguageLSTM(nn.Module):
                     blank=0,
                     reduction='mean'
                 )
-            # else:
-            #     # FOCAL LOSS: Focus on hard examples to prevent easy convergence
-            #     logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
-            #     labels_flat = labels.reshape(-1)
-            #
-            #     # Calculate cross-entropy without reduction
-            #     ce_loss = F.cross_entropy(logits_flat, labels_flat, ignore_index=0, reduction='none')
-            #
-            #     # Apply focal loss weighting
-            #     pt = torch.exp(-ce_loss)  # Probability of true class
-            #     focal_weight = (1 - pt) ** 2  # Focus on hard examples (low pt)
-            #     focal_loss = focal_weight * ce_loss
-            #
-            #     # Only average over non-padding tokens
-            #     mask = labels_flat != 0
-            #     if mask.sum() > 0:
-            #         loss = focal_loss[mask].mean()
-            #     else:
-            #         loss = focal_loss.mean()  # Fallback if all padding
-            #-----------------------------
-            # else:
-            #     # ENHANCED LOSS: Class-weighted focal loss + diversity penalty
-            #     logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
-            #     labels_flat = labels.reshape(-1)
-            #
-            #     # Calculate class weights dynamically
-            #     mask = labels_flat != 0
-            #     non_padding_ratio = mask.float().mean()
-            #
-            #     # Strong class weighting to discourage padding predictions
-            #     class_weights = torch.ones(self.vocab_size, device=logits.device)
-            #     class_weights[0] = 0.1  # Very low weight for padding token
-            #
-            #     # Calculate weighted cross-entropy
-            #     ce_loss = F.cross_entropy(logits_flat, labels_flat, weight=class_weights, reduction='none')
-            #
-            #     # STRONGER focal loss (gamma=3 instead of 2)
-            #     pt = torch.exp(-ce_loss)
-            #     focal_weight = (1 - pt) ** 3  # Stronger focus on hard examples
-            #     focal_loss = focal_weight * ce_loss
-            #
-            #     # Add diversity penalty to encourage non-padding predictions
-            #     probs = F.softmax(logits_flat, dim=-1)
-            #     padding_prob = probs[:, 0]  # Probability of predicting padding
-            #     diversity_penalty = torch.mean(padding_prob) * 2.0  # Penalty for high padding predictions
-            #
-            #     # Combine losses
-            #     if mask.sum() > 0:
-            #         loss = focal_loss[mask].mean() + diversity_penalty
-            #     else:
-            #         loss = focal_loss.mean() + diversity_penalty
             else:
                 #Target EOS, SOS, and padding collapse
                 logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
                 labels_flat = labels.reshape(-1)
 
-                # Class weights to discourage padding predictions
-                class_weights = torch.ones(self.vocab_size, device=logits.device)
+                class_weights = torch.ones(self.vocab_size, device=logits.device) # Class weights to discourage padding predictions
                 class_weights[0] = 0.1  # Low weight for padding token
 
-                # Initialize penalty weights
                 penalty_weights = torch.ones_like(labels_flat, device=logits.device, dtype=torch.float)
 
                 for batch_idx in range(labels.shape[0]):
@@ -270,10 +201,10 @@ class SignLanguageLSTM(nn.Module):
                                          min(early_eos_threshold, labels.shape[1])):  # Start at 1 to skip SOS position
                             global_pos = batch_start + pos
                             if global_pos < len(labels_flat):
-                                # Heavy penalty for early EOS
+                                # heavy penalty for early EOS
                                 if labels_flat[global_pos] == 3:  # EOS token
                                     penalty_weights[global_pos] = 5.0
-                                # Heavy penalty for SOS after position 0
+                                # heavy penalty for SOS after position 0
                                 elif labels_flat[global_pos] == 2:  # SOS token
                                     penalty_weights[global_pos] = 6.0
 
@@ -282,7 +213,7 @@ class SignLanguageLSTM(nn.Module):
                                           reduction='none')
                 weighted_loss = ce_loss * penalty_weights
 
-                # Diversity penalty against padding predictions
+                # diversity penalty against padding predictions
                 probs = F.softmax(logits_flat, dim=-1)
                 padding_prob = probs[:, 0]  # Probability of predicting padding
                 diversity_penalty = torch.mean(padding_prob) * 1.0
@@ -294,8 +225,8 @@ class SignLanguageLSTM(nn.Module):
                 else:
                     loss = weighted_loss.mean() + diversity_penalty
 
-                # Log both EOS and padding metrics for comprehensive experiment tracking
-                if batch_idx % 20 == 0:  # Log every 20 batches consistently
+                # Log both EOS and padding metrics
+                if batch_idx % 20 == 0:
                     predictions = torch.argmax(logits_flat, dim=-1)
 
                     total_preds = predictions.numel()
@@ -321,25 +252,6 @@ class SignLanguageLSTM(nn.Module):
                     if sos_ratio > 0.3:
                         print(f"    WARNING: High SOS predictions ({sos_ratio:.1%})")
 
-            # # L2 REGULARIZATION: Prevent overfitting and force harder learning
-            # l2_penalty = 0
-            #
-            # # Regularize classifier layers
-            # for param in self.classifier.parameters():
-            #     l2_penalty += torch.norm(param, 2)
-            #
-            # # Regularize LSTM parameters
-            # for param in self.lstm.parameters():
-            #     l2_penalty += torch.norm(param, 2)
-            #
-            # # Regularize input projection
-            # for param in self.input_projection.parameters():
-            #     l2_penalty += torch.norm(param, 2)
-            #
-            # # Add L2 penalty to loss
-            # l2_lambda = 0.001  # L2 regularization strength
-            # loss = loss + l2_lambda * l2_penalty
-
         return {
             'logits': logits,
             'loss': loss,
@@ -363,17 +275,14 @@ class SignLanguageTrainer:
         self.use_curriculum_learning = False
         self.curriculum_dataset = None
 
-        # Initialize WandB
         wandb.init(
             project=config.project_name,
             name=config.experiment_name,
             config=asdict(config)
         )
 
-        # Create model save directory
         Path(config.model_save_path).parent.mkdir(parents=True, exist_ok=True)
 
-        # Initialize preprocessor
         preprocess_config = PreprocessingConfig(
             max_sequence_length=config.max_sequence_length,
             output_format="tensor",
@@ -382,10 +291,8 @@ class SignLanguageTrainer:
         )
         self.preprocessor = SignLanguagePreprocessor(preprocess_config)
 
-        # Load dataset to get actual feature dimensions
         self.dataset = self._load_dataset()
 
-        # Update config with actual input size from preprocessor
         actual_input_size = self.preprocessor.feature_dims['total']
         if config.input_size != actual_input_size:
             print(f"Updating input_size from {config.input_size} to {actual_input_size}")
@@ -394,10 +301,8 @@ class SignLanguageTrainer:
 
         self.train_loader, self.val_loader = self._create_data_loaders()
 
-        # Initialize model
         self.model = SignLanguageLSTM(config, self.dataset.vocab_size).to(self.device)
 
-        # Initialize optimizer and scheduler
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=config.learning_rate,
@@ -414,9 +319,6 @@ class SignLanguageTrainer:
             min_lr=1e-6
         )
 
-
-
-        # Training tracking
         self.best_val_loss = float('inf')
         self.patience_counter = 0
         self.train_losses = []
@@ -426,8 +328,8 @@ class SignLanguageTrainer:
             warmup_steps = 20
             total_steps = 200
 
+            #Warmup
             if step < warmup_steps:
-                # Warmup phase
                 return max(0.1, step / warmup_steps)  # Minimum 10% of base LR
             else:
                 # Cosine decay phase with safety checks
@@ -449,7 +351,6 @@ class SignLanguageTrainer:
                 vocab_path=self.config.vocab_path if Path(self.config.vocab_path).exists() else None
             )
 
-            # Save vocabulary
             dataset.save_vocabulary(self.config.vocab_path)
 
             print(f"Loaded dataset with {len(dataset)} samples")
@@ -464,7 +365,6 @@ class SignLanguageTrainer:
     def _create_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """Create data loaders with simple approach to avoid BatchBucketing issues"""
 
-        # Split dataset
         train_size = int(0.8 * len(self.dataset))
         val_size = len(self.dataset) - train_size
 
@@ -474,7 +374,6 @@ class SignLanguageTrainer:
             generator=torch.Generator().manual_seed(42)
         )
 
-        # Use simple DataLoader without custom batch sampler
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.config.batch_size,
@@ -504,22 +403,18 @@ class SignLanguageTrainer:
         """Create data loaders with curriculum learning support"""
         print("Creating curriculum learning data loaders...")
 
-        # Create curriculum dataset
         self.curriculum_dataset = self.dataset.create_curriculum_dataset(
             total_epochs=self.config.num_epochs,
             warmup_epochs=min(5, self.config.num_epochs // 4)
         )
 
-        # Split curriculum dataset for training
         curriculum_size = len(self.curriculum_dataset.difficulty_metrics)
         train_size = int(0.8 * curriculum_size)
         val_size = curriculum_size - train_size
 
-        # Create train/val splits based on difficulty ranking
         train_difficulties = self.curriculum_dataset.difficulty_metrics[:train_size]
         val_difficulties = self.curriculum_dataset.difficulty_metrics[train_size:]
 
-        # Create separate curriculum datasets for train/val
         train_curriculum = CurriculumDataset(
             base_dataset=self.dataset,
             difficulty_metrics=train_difficulties,
@@ -532,7 +427,7 @@ class SignLanguageTrainer:
                        if 0.2 < d.overall_difficulty < 0.8][:len(val_difficulties) // 2]
         val_subset = torch.utils.data.Subset(self.dataset, val_indices)
 
-        # Create data loaders
+
         train_sampler = CurriculumSampler(train_curriculum, self.config.batch_size)
 
         train_loader = DataLoader(
@@ -560,7 +455,6 @@ class SignLanguageTrainer:
 
     def _create_data_loaders_original(self) -> Tuple[DataLoader, DataLoader]:
         """Original data loader creation (renamed from existing method)"""
-        # Split dataset
         train_size = int(0.8 * len(self.dataset))
         val_size = len(self.dataset) - train_size
 
@@ -570,7 +464,6 @@ class SignLanguageTrainer:
             generator=torch.Generator().manual_seed(42)
         )
 
-        # Create simple length grouping samplers
         train_sampler = BatchBucketing(
             train_dataset,
             self.config.batch_size,
@@ -583,7 +476,6 @@ class SignLanguageTrainer:
             shuffle=False
         )
 
-        # Create data loaders with both grouping and dynamic padding
         train_loader = DataLoader(
             train_dataset,
             batch_sampler=train_sampler,
@@ -608,18 +500,15 @@ class SignLanguageTrainer:
     def _dynamic_collate_fn(self, batch):
         """Dynamic collate function with curriculum-aware sequence lengths"""
         try:
-            # Extract all components
             sequences = [item['sequence'] for item in batch]
             attention_masks = [item['attention_mask'] for item in batch]
             labels = [item['labels'] for item in batch]
             annotations = [item['annotation'] for item in batch]
             metadata = [item['metadata'] for item in batch]
 
-            # Double-check and pad to batch maximum just in case
             actual_lengths = [mask.sum().item() for mask in attention_masks]
 
             if len(set(seq.shape[0] for seq in sequences)) > 1:
-                # Sequences have different lengths - pad to maximum in batch
                 batch_max_seq_length = max(seq.shape[0] for seq in sequences)
 
                 resized_sequences = []
@@ -640,11 +529,9 @@ class SignLanguageTrainer:
                     resized_sequences.append(resized_seq)
                     resized_attention_masks.append(resized_mask)
             else:
-                # All sequences same length - use as is
                 resized_sequences = sequences
                 resized_attention_masks = attention_masks
 
-            # Handle labels
             max_label_length = max(label.shape[0] for label in labels)
             resized_labels = []
 
@@ -657,14 +544,13 @@ class SignLanguageTrainer:
                     resized_label = torch.cat([label, padding], dim=0)
                 resized_labels.append(resized_label)
 
-            # Log curriculum efficiency
             if hasattr(self, 'curriculum_dataset') and self.curriculum_dataset:
                 total_tokens = sum(seq.numel() for seq in resized_sequences)
                 actual_tokens = sum(
                     mask.sum().item() * seq.shape[1] for seq, mask in zip(resized_sequences, resized_attention_masks))
                 efficiency = (actual_tokens / total_tokens) * 100
 
-                if np.random.random() < 0.02:  # Occasionally log
+                if np.random.random() < 0.02: # Random check
                     print(f"Curriculum efficiency: {efficiency:.1f}% ({actual_tokens}/{total_tokens} tokens)")
 
             return {
@@ -680,24 +566,13 @@ class SignLanguageTrainer:
             return self._safe_collate_fn(batch)
 
     def _calculate_padding_ratio(self, sequences: torch.Tensor, attention_mask: torch.Tensor) -> float:
-        """
-        Calculate padding ratio consistently across all methods
-
-        Args:
-            sequences: Input sequences tensor [batch_size, seq_len, feature_dims]
-            attention_mask: Attention mask [batch_size, seq_len]
-
-        Returns:
-            Padding ratio as percentage (0-100)
-        """
+        """ Calculate padding ratio """
         total_elements = sequences.numel()  # batch_size × seq_len × feature_dims
 
-        # Count actual (non-padding) elements
         non_padding_positions = attention_mask.sum().item()  # Count of True values (positions only)
         feature_dims = sequences.shape[2]
         actual_elements = non_padding_positions * feature_dims
 
-        # Calculate padding ratio
         padding_elements = total_elements - actual_elements
         padding_ratio = (padding_elements / total_elements) * 100 if total_elements > 0 else 0
 
@@ -712,7 +587,6 @@ class SignLanguageTrainer:
             seq = sequences[i]
             mask = attention_mask[i]
 
-            # Calculate different padding ratios
             mask_based_padding = (1 - mask.float().mean()) * 100
             data_based_padding = (1 - (seq != 0).float().mean()) * 100
 
@@ -776,7 +650,6 @@ class SignLanguageTrainer:
 
             print(f"   Increased LR from {current_lr:.2e} to {new_lr:.2e}")
 
-            # Log to wandb if available
             if hasattr(self, 'wandb') or 'wandb' in globals():
                 try:
                     wandb.log({
@@ -838,7 +711,6 @@ class SignLanguageTrainer:
         total_loss = 0
         num_batches = len(self.train_loader)
 
-        # Padding ratio tracking
         padding_ratios = []
         sample_frequency = max(1, num_batches // 10)  # Sample ~10 batches per epoch
 
@@ -862,7 +734,6 @@ class SignLanguageTrainer:
                 print(f"Attention mask min/max: {attention_mask.min().item()}/{attention_mask.max().item()}")
                 print(f"Total elements in sequences: {sequences.numel()}")
 
-                # Test calculations
                 total_elements = sequences.numel()
                 mask_sum = attention_mask.sum().item()
                 feature_dims = sequences.shape[2]
@@ -884,12 +755,10 @@ class SignLanguageTrainer:
             self._padding_debug_done = True
 
         for batch_idx, batch in enumerate(pbar):
-            # Move batch to device
             sequences = batch['sequence'].to(self.device)
             attention_mask = batch['attention_mask'].to(self.device)
             labels = batch['labels'].to(self.device)
 
-            # Calculate padding ratio for this batch
             padding_ratio = self._calculate_padding_ratio(sequences, attention_mask)
 
             padding_ratios.append(padding_ratio)
@@ -917,7 +786,6 @@ class SignLanguageTrainer:
                 self._debug_attention_mask_mismatch(batch)
                 self._mask_debug_done = True
 
-            # Zero gradients
             self.optimizer.zero_grad()
 
             # Forward pass
@@ -955,7 +823,6 @@ class SignLanguageTrainer:
                 'lr': f'{self.optimizer.param_groups[0]["lr"]:.2e}'
             })
 
-            # Log to WandB
             wandb.log({
                 'train_loss_step': loss.item(),
                 'padding_ratio_batch': padding_ratio,
@@ -965,7 +832,6 @@ class SignLanguageTrainer:
         avg_loss = total_loss / num_batches
         self.train_losses.append(avg_loss)
 
-        # Calculate and display epoch padding statistics
         avg_padding_ratio = np.mean(padding_ratios)
         min_padding_ratio = np.min(padding_ratios)
         max_padding_ratio = np.max(padding_ratios)
@@ -976,7 +842,6 @@ class SignLanguageTrainer:
         print(f"Batches with <20% padding: {sum(1 for r in padding_ratios if r < 20)}/{len(padding_ratios)}")
         print(f"Batches with >50% padding: {sum(1 for r in padding_ratios if r > 50)}/{len(padding_ratios)}")
 
-        # Log epoch statistics to WandB
         wandb.log({
             'epoch_avg_padding_ratio': avg_padding_ratio,
             'epoch_min_padding_ratio': min_padding_ratio,
@@ -996,32 +861,26 @@ class SignLanguageTrainer:
             pbar = tqdm(self.val_loader, desc="Validation")
 
             for batch in pbar:
-                # Move batch to device
                 sequences = batch['sequence'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['labels'].to(self.device)
 
-                # Forward pass
                 outputs = self.model(sequences, attention_mask, labels)
                 loss = outputs['loss']
 
-                # Update metrics
                 total_loss += loss.item()
 
-                # Collect predictions and labels
                 predictions = outputs['predictions'].cpu().numpy()
                 labels_np = labels.cpu().numpy()
 
                 all_predictions.extend(predictions)
                 all_labels.extend(labels_np)
 
-                # Update progress bar
                 pbar.set_postfix({'loss': loss.item()})
 
         avg_loss = total_loss / len(self.val_loader)
         self.val_losses.append(avg_loss)
 
-        # Calculate metrics
         metrics = self._calculate_metrics(all_predictions, all_labels)
 
         return avg_loss, metrics
@@ -1058,7 +917,6 @@ class SignLanguageTrainer:
                 # Create mask for non-padding tokens
                 mask = label_trimmed != 0
 
-                # Only add valid (non-padding) tokens
                 if mask.any():
                     pred_flat.extend(pred_trimmed[mask].tolist())
                     label_flat.extend(label_trimmed[mask].tolist())
@@ -1074,24 +932,19 @@ class SignLanguageTrainer:
             }
 
         try:
-            # Convert to numpy arrays for sklearn
             pred_flat = np.array(pred_flat)
             label_flat = np.array(label_flat)
 
-            # Calculate accuracy
             accuracy = accuracy_score(label_flat, pred_flat)
 
-            # Calculate precision, recall, F1
             precision, recall, f1, _ = precision_recall_fscore_support(
                 label_flat, pred_flat, average='weighted', zero_division=0
             )
 
-            # Calculate additional metrics for debugging
             total_samples = len(pred_flat)
             unique_predictions = len(np.unique(pred_flat))
             unique_labels = len(np.unique(label_flat))
 
-            # Check for degenerate predictions (all same token)
             most_common_pred = np.bincount(pred_flat).max()
             prediction_diversity = 1.0 - (most_common_pred / total_samples)
 
@@ -1198,7 +1051,6 @@ class SignLanguageTrainer:
         """Compare padding ratios with and without dynamic batching"""
         print("\n=== Padding Ratio Analysis ===")
 
-        # Sample a few batches to show the improvement
         sample_batches = 0
         total_original_padding = 0
         total_dynamic_padding = 0
@@ -1212,13 +1064,11 @@ class SignLanguageTrainer:
                 sequences = batch['sequence']
                 attention_mask = batch['attention_mask']
 
-                # Calculate current (dynamic) padding
                 current_padding_ratio = self._calculate_padding_ratio(sequences, attention_mask)
                 current_total_tokens = sequences.numel()
                 current_actual_tokens = attention_mask.sum().item() * sequences.shape[2]
                 current_padding = current_total_tokens - current_actual_tokens
 
-                # Calculate what padding would be with original max_sequence_length
                 batch_size = sequences.shape[0]
                 original_total_tokens = batch_size * self.config.max_sequence_length * sequences.shape[2]
                 original_padding = original_total_tokens - current_actual_tokens
@@ -1266,7 +1116,6 @@ class SignLanguageTrainer:
                     token_counts[token_id] = token_counts.get(token_id, 0) + 1
                     total_tokens += 1
 
-        # Sort by frequency
         sorted_tokens = sorted(token_counts.items(), key=lambda x: x[1], reverse=True)
 
         print(f"Total tokens analyzed: {total_tokens}")
@@ -1279,7 +1128,6 @@ class SignLanguageTrainer:
             percentage = (count / total_tokens) * 100
             print(f"  ID {token_id:3d} ('{token_name}'): {count:5d} times ({percentage:5.1f}%)")
 
-        # Calculate special token ratio
         special_tokens = [0, 1, 2, 3]  # PAD, UNK, SOS, EOS
         special_count = sum(token_counts.get(tid, 0) for tid in special_tokens)
         vocab_count = total_tokens - special_count
@@ -1297,7 +1145,6 @@ class SignLanguageTrainer:
             labels = sample['labels']
             annotation = sample['annotation']
 
-            # Show raw label sequence
             non_zero_labels = labels[labels != 0]  # Remove padding
             print(f"\nSample {i}:")
             print(f"  Annotation: '{annotation}'")
@@ -1330,31 +1177,25 @@ class SignLanguageTrainer:
         """Detect when model gets stuck predicting the same words repeatedly"""
         predictions = outputs['predictions'].flatten()
 
-        # Filter to vocabulary predictions only (exclude special tokens)
         vocab_predictions = predictions[predictions > 3]
 
-        # Need at least some vocab predictions to analyze
         if len(vocab_predictions) == 0:
             return False  # No vocab predictions to analyze
 
-        # Count occurrences of each vocabulary word
         unique_preds, counts = torch.unique(vocab_predictions, return_counts=True)
 
         if len(counts) == 0:
             return False
 
-        # Find the most frequently predicted word
         max_count = counts.max().item()
         total_vocab_preds = len(vocab_predictions)
         repetition_ratio = max_count / total_vocab_preds
 
         # Detect if any single word dominates predictions
         if repetition_ratio > 0.4:  # More than 40% of vocab predictions are the same word
-            # Find which word is dominating (for logging)
             most_common_idx = torch.argmax(counts)
             dominant_word_id = unique_preds[most_common_idx].item()
 
-            # Get word name if possible
             word_name = "UNKNOWN"
             if hasattr(self.dataset, 'vocab'):
                 id_to_vocab = {v: k for k, v in self.dataset.vocab.items()}
@@ -1373,7 +1214,6 @@ class SignLanguageTrainer:
 
             print(f"    >>> Boosted LR from {current_lr:.2e} to {new_lr:.2e}")
 
-            # Log to wandb if available
             try:
                 if 'wandb' in globals():
                     wandb.log({
@@ -1455,11 +1295,9 @@ class SignLanguageTrainer:
 
             # Update curriculum for this epoch
             if self.use_curriculum_learning and self.curriculum_dataset:
-                # Update the curriculum dataset for current epoch
                 if hasattr(self.train_loader.dataset, 'update_epoch'):
                     self.train_loader.dataset.update_epoch(epoch)
 
-                # Log curriculum statistics
                 current_samples = len(self.train_loader.dataset)
                 total_samples = len(
                     self.curriculum_dataset.difficulty_metrics) if self.curriculum_dataset else current_samples
@@ -1471,16 +1309,12 @@ class SignLanguageTrainer:
                         epoch) if self.curriculum_dataset else 1.0
                 })
 
-            # Train
             train_loss = self.train_epoch()
 
-            # Validate
             val_loss, metrics = self.validate_epoch()
 
-            # Update learning rate
             self.scheduler.step()
 
-            # Log to WandB
             wandb.log({
                 'epoch': epoch + 1,
                 'train_loss': train_loss,
@@ -1491,13 +1325,11 @@ class SignLanguageTrainer:
                 'val_f1': metrics['f1']
             })
 
-            # Print metrics
             print(f"Train Loss: {train_loss:.4f}")
             print(f"Val Loss: {val_loss:.4f}")
             print(f"Val Accuracy: {metrics['accuracy']:.4f}")
             print(f"Val F1: {metrics['f1']:.4f}")
 
-            # Optional analysis
             if (epoch + 1) % 3 == 0:
                 try:
                     self.analyze_predictions(num_samples=2)
@@ -1664,7 +1496,6 @@ class BatchBucketing:
         """Group dataset indices by sequence length"""
         print("Analyzing sequence lengths for grouping...")
 
-        # Get all sequence lengths
         length_to_indices = {}
         for idx in range(len(self.dataset)):
             try:
@@ -1679,7 +1510,6 @@ class BatchBucketing:
                 print(f"Error processing sample {idx}: {e}")
                 continue
 
-        # Sort by length and group into batches
         self.batches = []
         sorted_lengths = sorted(length_to_indices.keys())
 
@@ -1694,13 +1524,11 @@ class BatchBucketing:
                 np.random.shuffle(indices)  # Shuffle within same length
             all_indices.extend(indices)
 
-        # Create batches from grouped indices
         for i in range(0, len(all_indices), self.batch_size):
             batch_indices = all_indices[i:i + self.batch_size]
             if len(batch_indices) > 0:
                 self.batches.append(batch_indices)
 
-        # Print statistics
         batch_length_ranges = []
         for batch_indices in self.batches[:5]:  # Sample first 5 batches
             lengths = []
@@ -1733,7 +1561,7 @@ def test_saved_model(model_path, data_dir, annotations_path, feature_config: dic
     print(f"Model loaded from {model_path}")
     print(f"Best validation loss: {checkpoint['best_val_loss']}")
     from train_lstm import PhoenixDatasetManager
-    # Load dataset for testing
+
     dataset_manager = PhoenixDatasetManager(
         data_dir=data_dir,
         annotations_path=annotations_path
@@ -1751,13 +1579,11 @@ def test_saved_model(model_path, data_dir, annotations_path, feature_config: dic
     preprocessor = SignLanguagePreprocessor(preprocess_config)
     dataset = dataset_manager.create_dataset(preprocessor)
 
-    # Create trainer for testing
     trainer = SignLanguageTrainer(config)
     trainer.model = model
     trainer.dataset = dataset
     trainer.train_loader, trainer.val_loader = trainer._create_data_loaders()
 
-    # Run comprehensive validation
     val_loss, metrics = trainer.validate_epoch()
 
     print(f"\n=== Test Results ===")
@@ -1804,21 +1630,14 @@ def main():
             annotations_path=args.annotations_path
         )
 
-    # In main() function
     feature_config = {
         'include_face': not getattr(args, 'no_faces', False)}
-
-    # Initialize trainer
     trainer = SignLanguageTrainer(config, feature_config)
-
-    # Resume training if checkpoint provided
     if args.resume:
         trainer.load_model(args.resume)
 
-    # Start training
     trainer.train()
 
-    # Evaluate a sample
     print("\nEvaluating sample:")
     trainer.evaluate_sample(0)
 

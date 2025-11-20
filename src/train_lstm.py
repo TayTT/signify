@@ -25,8 +25,6 @@ from typing import Dict, List, Tuple, Optional
 import numpy as np
 from dataclasses import asdict
 import yaml
-
-# Add current directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
@@ -52,16 +50,13 @@ class PhoenixDatasetManager:
         try:
             print(f"Loading annotations from: {self.annotations_path}")
 
-            # Step 1: Try to load file with automatic separator detection
             df = None
-            successful_separator = None
 
             if self.annotations_path.suffix.lower() == '.xlsx':
                 df = pd.read_excel(self.annotations_path)
                 print("Loaded Excel file")
             else:
-                # For CSV files, try different separators
-                separators = ['|', ',', '\t', ';']  # Put | first since it's most common for Phoenix
+                separators = ['|', ',', '\t', ';']
 
                 print("Trying different separators...")
                 for sep in separators:
@@ -78,28 +73,15 @@ class PhoenixDatasetManager:
                         print(f"  Separator '{sep}': Failed - {str(e)[:50]}...")
                         continue
 
-                if df is None:
-                    # Last resort: try reading without separator detection
-                    print("All separators failed, trying fallback methods...")
-                    try:
-                        # Try reading as pipe-separated without inferring separator
-                        df = pd.read_csv(self.annotations_path, sep='|', engine='python')
-                        successful_separator = '|'
-                        print(" Fallback method worked with pipe separator")
-                    except Exception as e:
-                        print(f"Fallback method also failed: {e}")
-                        raise ValueError(f"Could not parse CSV file with any separator")
-
             if df is None:
                 raise ValueError("Failed to load annotations file")
 
             print(f"Initial shape: {df.shape}")
             print(f"Columns found: {list(df.columns)}")
 
-            # Step 2: Validate and fix column names
             required_columns = ['id', 'folder', 'signer', 'annotation']
 
-            # Check if we have the exact column names
+            # check if we have the exact column names
             if all(col in df.columns for col in required_columns):
                 print(" All required columns found with exact names")
             else:
@@ -111,7 +93,7 @@ class PhoenixDatasetManager:
                 if len(df.columns) < 4:
                     raise ValueError(f"Insufficient columns: expected 4, found {len(df.columns)}")
 
-                # Map first 4 columns to required names
+
                 column_mapping = {}
                 for i, req_col in enumerate(required_columns):
                     if i < len(df.columns):
@@ -121,10 +103,8 @@ class PhoenixDatasetManager:
                 print(f"Column mapping: {column_mapping}")
                 df = df.rename(columns=column_mapping)
 
-            # Step 3: Keep only required columns and clean data
             df = df[required_columns].copy()
 
-            # Clean the data
             initial_rows = len(df)
             df = df.dropna()  # Remove rows with missing values
             df['id'] = df['id'].astype(str).str.strip()
@@ -132,8 +112,7 @@ class PhoenixDatasetManager:
             df['signer'] = df['signer'].astype(str).str.strip()
             df['folder'] = df['folder'].astype(str).str.strip()
 
-            # Remove empty annotations
-            df = df[df['annotation'].str.len() > 0]
+            df = df[df['annotation'].str.len() > 0] #remove empty annotations
 
             final_rows = len(df)
             if final_rows < initial_rows:
@@ -167,7 +146,6 @@ class PhoenixDatasetManager:
                         line_preview = line[:100] + "..." if len(line) > 100 else line
                         print(f"     {i + 1}: {line_preview}")
 
-                        # Check separators in first line
                         if i == 0:
                             separators = {'|': line.count('|'), ',': line.count(','), '\t': line.count('\t'),
                                           ';': line.count(';')}
@@ -182,9 +160,7 @@ class PhoenixDatasetManager:
         """Find all JSON files in the data directory"""
         json_files = {}
 
-        # Search for JSON files
         for json_file in self.data_dir.rglob("*.json"):
-            # Extract identifier from filename
             identifier = json_file.stem
             json_files[identifier] = str(json_file)
 
@@ -207,7 +183,6 @@ class PhoenixDatasetManager:
                 matched_json_paths.append(json_files[identifier])
                 matched_annotations.append(annotation)
             else:
-                # Try partial matches
                 matches = [path for id_key, path in json_files.items() if identifier in id_key or id_key in identifier]
                 if matches:
                     matched_json_paths.append(matches[0])
@@ -220,10 +195,8 @@ class PhoenixDatasetManager:
 
     def create_dataset(self, preprocessor: SignLanguagePreprocessor) -> PhoenixDataset:
         """Create Phoenix dataset"""
-        # Load annotations
         annotations_df = self.load_annotations()
 
-        # Match annotations to JSON files
         json_paths, annotations = self.match_annotations_to_json(annotations_df)
 
         if not json_paths:
@@ -242,11 +215,9 @@ class PhoenixDatasetManager:
 def create_config_from_args(args) -> ModelConfig:
     """Create model configuration from command line arguments"""
 
-    # Calculate the correct input size
     actual_input_size = calculate_input_size(args)
 
     config = ModelConfig(
-        # Use calculated input size instead of hardcoded value
         input_size=actual_input_size,
 
         # Data paths
@@ -261,11 +232,11 @@ def create_config_from_args(args) -> ModelConfig:
         num_epochs=args.num_epochs,
         patience=args.patience,
 
-        # Model parameters (unidirectional LSTM for real-time)
+        # Model parameters
         hidden_size=args.hidden_size,
         num_layers=args.num_layers,
         dropout=args.dropout,
-        bidirectional=False,  # Always False for real-time processing
+        bidirectional=False,
 
         # Sequence parameters
         max_sequence_length=args.max_sequence_length,
@@ -318,7 +289,6 @@ def setup_wandb(config: ModelConfig, args):
         notes=f"Training real-time LSTM model on Phoenix dataset with {config.batch_size} batch size"
     )
 
-    # Log additional information
     wandb.config.update({
         'data_dir': config.data_dir,
         'annotations_path': config.annotations_path,
@@ -337,14 +307,13 @@ def validate_dataset(dataset: PhoenixDataset) -> Dict:
 
     print("Validating dataset...")
 
-    # Sample a few items to check
-    sample_size = min(10, len(dataset))
+    sample_size = min(10, len(dataset)) #sample a few items to check
 
     for i in range(sample_size):
         try:
             sample = dataset[i]
 
-            # Check sequence length
+            # check sequence length
             seq_length = sample['attention_mask'].sum().item()
             stats['sequence_lengths'].append(seq_length)
 
@@ -352,7 +321,7 @@ def validate_dataset(dataset: PhoenixDataset) -> Dict:
             ann_length = (sample['labels'] != 0).sum().item()
             stats['annotation_lengths'].append(ann_length)
 
-            if i < 3:  # Print first 3 samples
+            if i < 3:
                 print(f"Sample {i}:")
                 print(f"  Sequence length: {seq_length}")
                 print(f"  Annotation length: {ann_length}")
@@ -435,11 +404,10 @@ def main():
 
     args = parser.parse_args()
 
-    # Set up WandB mode
     if args.wandb_offline:
         os.environ['WANDB_MODE'] = 'offline'
 
-    # Handle resume training - load checkpoint config first
+    # for resume training - load checkpoint config first
     checkpoint_vocab = None
     if args.resume:
         print("\n=== Loading Checkpoint for Resume ===")
@@ -448,7 +416,7 @@ def main():
         if not Path(args.resume).exists():
             raise FileNotFoundError(f"Checkpoint not found: {args.resume}")
 
-        # Load checkpoint to get original config and vocabulary
+        # get config and vocab size
         checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
         config = checkpoint['config']
         checkpoint_vocab = checkpoint.get('vocab_size')
@@ -459,7 +427,6 @@ def main():
         print(f"  Vocabulary size: {checkpoint_vocab}")
         print(f"  Original max sequence length: {config.max_sequence_length}")
 
-        # Update only training parameters from args (keep model architecture unchanged)
         config.data_dir = args.data_dir
         config.annotations_path = args.annotations_path
         config.model_save_path = args.model_save_path
@@ -483,10 +450,9 @@ def main():
         print("         are fixed from the checkpoint. The new dataset must be compatible.")
         print()
     else:
-        # Create new configuration for fresh training
+        # create new
         config = create_config_from_args(args)
 
-    # Debug: Print configuration
     print("=== Model Configuration ===")
     print(f"Input size: {config.input_size}")
     print(f"Hidden size: {config.hidden_size}")
@@ -495,11 +461,10 @@ def main():
     print(f"Device: {config.device}")
     print()
 
-    # Create output directories
+    # Create output directories and save
     Path(config.model_save_path).parent.mkdir(parents=True, exist_ok=True)
     Path(args.config_save_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # Save configuration
     with open(args.config_save_path, 'w') as f:
         yaml.dump(asdict(config), f, default_flow_style=False)
 
@@ -512,13 +477,11 @@ def main():
     print(f"Max sequence length: {config.max_sequence_length}")
     print()
 
-    # Initialize dataset manager
     dataset_manager = PhoenixDatasetManager(
         data_dir=config.data_dir,
         annotations_path=config.annotations_path
     )
 
-    # Create preprocessor matching the model's expected input
     preprocess_config = PreprocessingConfig(
         max_sequence_length=config.max_sequence_length,
         normalize_coordinates=False,
@@ -527,7 +490,7 @@ def main():
     )
     preprocessor = SignLanguagePreprocessor(preprocess_config)
 
-    # Verify input size matches when resuming
+    # Is size same?
     if args.resume:
         actual_input_size = preprocessor.feature_dims['total']
         if actual_input_size != config.input_size:
@@ -538,15 +501,12 @@ def main():
             print("Check the PreprocessingConfig parameters (include_hands, include_face, etc.)")
             raise ValueError(f"Input size mismatch: checkpoint={config.input_size}, current={actual_input_size}")
 
-    # Create dataset
     print("Creating dataset...")
     dataset = dataset_manager.create_dataset(preprocessor)
 
-    # When resuming, load and apply checkpoint vocabulary
     if args.resume and checkpoint_vocab:
         print("\nLoading vocabulary from checkpoint...")
 
-        # Check if vocab.pkl exists from original training
         original_vocab_path = Path(args.resume).parent / "vocab.pkl"
         if original_vocab_path.exists():
             import pickle
@@ -558,7 +518,6 @@ def main():
             dataset.idx_to_gloss = vocab_data['idx_to_gloss']
             dataset.vocab_size = checkpoint_vocab
 
-            # Check for OOV glosses in new dataset
             oov_glosses = set()
             for annotation in dataset.annotations:
                 for gloss in annotation.split():
@@ -576,17 +535,14 @@ def main():
             print(f"WARNING: Could not find vocabulary file at {original_vocab_path}")
             print("Using vocabulary from new dataset, which may cause issues.")
 
-    # Validate dataset
     dataset_stats = validate_dataset(dataset)
 
     if args.validate_only:
         print("Dataset validation complete. Exiting.")
         return
 
-    # Setup WandB
     setup_wandb(config, args)
 
-    # Log dataset statistics
     wandb.log({
         'dataset/total_samples': dataset_stats['total_samples'],
         'dataset/vocab_size': dataset_stats['vocab_size'],
@@ -594,26 +550,22 @@ def main():
         'dataset/avg_annotation_length': dataset_stats.get('avg_annotation_length', 0)
     })
 
-    # Initialize trainer
+    # Training part
     print("Initializing trainer...")
     trainer = SignLanguageTrainer(config)
     trainer.dataset = dataset  # Override dataset
     trainer.train_loader, trainer.val_loader = trainer._create_data_loaders()
 
-    # Resume training if checkpoint provided
     if args.resume:
         print(f"Resuming training from {args.resume}")
         trainer.load_model(args.resume)
 
-    # Start training
     print("Starting training...")
     trainer.train()
 
-    # Final evaluation
     print("\n=== Final Evaluation ===")
     trainer.evaluate_sample(0)
 
-    # Save final vocabulary
     dataset.save_vocabulary(config.vocab_path)
 
     print(f"\nTraining complete!")
