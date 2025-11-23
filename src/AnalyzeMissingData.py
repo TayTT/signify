@@ -46,8 +46,10 @@ class MissingDataAnalyzer:
 
         # self.output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Find all JSON files
-        self.json_files = list(self.data_directory.glob("*.json"))
+        # Prioritize NPZ, fall back to JSON
+        self.json_files = list(self.data_directory.glob("*.npz"))
+        if not self.json_files:
+            self.json_files = list(self.data_directory.glob("*.json"))
 
         if not self.json_files:
             raise ValueError(f"No JSON files found in {self.data_directory}")

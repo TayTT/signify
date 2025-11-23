@@ -101,7 +101,7 @@ def load_pretrained_model(checkpoint_path: str):
             'include_face': getattr(pretrained_config, 'include_face', False),
             'include_pose': getattr(pretrained_config, 'include_pose', True),
             'use_face_subset': getattr(pretrained_config, 'use_face_subset', True),
-            'include_hand_confidence': getattr(pretrained_config, 'include_hand_confidence', True),
+            'include_hand_confidence': getattr(pretrained_config, 'include_hand_confidence', False),  # NPZ files don't contain confidence scores
             'include_pose_visibility': getattr(pretrained_config, 'include_pose_visibility', False),
         }
 

@@ -116,7 +116,7 @@ class PhoenixDatasetManager:
 
             final_rows = len(df)
             if final_rows < initial_rows:
-                print(f"️  Removed {initial_rows - final_rows} rows with missing/empty data")
+                print(f"ï¸  Removed {initial_rows - final_rows} rows with missing/empty data")
 
             print(f" Final shape after cleaning: {df.shape}")
             print(f" Data summary:")
@@ -157,18 +157,28 @@ class PhoenixDatasetManager:
             raise
 
     def find_json_files(self) -> Dict[str, str]:
-        """Find all JSON files in the data directory"""
-        json_files = {}
+        """Find all landmark files (NPZ or JSON) in the data directory"""
+        landmark_files = {}
 
-        for json_file in self.data_dir.rglob("*.json"):
-            identifier = json_file.stem
-            json_files[identifier] = str(json_file)
+        # Prioritize NPZ files, fallback to JSON
+        npz_files = list(self.data_dir.rglob("*.npz"))
+        if npz_files:
+            print(f"Found {len(npz_files)} NPZ files (using NPZ format)")
+            for npz_file in npz_files:
+                identifier = npz_file.stem
+                landmark_files[identifier] = str(npz_file)
+        else:
+            print("No NPZ files found, searching for JSON files...")
+            json_files = list(self.data_dir.rglob("*.json"))
+            print(f"Found {len(json_files)} JSON files")
+            for json_file in json_files:
+                identifier = json_file.stem
+                landmark_files[identifier] = str(json_file)
 
-        print(f"Found {len(json_files)} JSON files")
-        return json_files
+        return landmark_files
 
     def match_annotations_to_json(self, annotations_df: pd.DataFrame) -> Tuple[List[str], List[str]]:
-        """Match annotations to JSON files"""
+        """Match annotations to landmark files (NPZ or JSON)"""
         json_files = self.find_json_files()
 
         matched_json_paths = []
@@ -188,9 +198,10 @@ class PhoenixDatasetManager:
                     matched_json_paths.append(matches[0])
                     matched_annotations.append(annotation)
                 else:
-                    print(f"Warning: No JSON file found for {identifier}")
+                    print(f"Warning: No landmark file found for {identifier}")
 
-        print(f"Successfully matched {len(matched_json_paths)} annotations to JSON files")
+        file_type = "NPZ" if matched_json_paths and Path(matched_json_paths[0]).suffix == '.npz' else "JSON"
+        print(f"Successfully matched {len(matched_json_paths)} annotations to {file_type} files")
         return matched_json_paths, matched_annotations
 
     def create_dataset(self, preprocessor: SignLanguagePreprocessor) -> PhoenixDataset:
@@ -263,8 +274,8 @@ def calculate_input_size(config_args) -> int:
         include_face=True,
         include_pose=True,
         use_face_subset=True,
-        include_hand_confidence=True,
-        include_pose_visibility=True
+        include_hand_confidence=False,  # NPZ files don't contain confidence scores
+        include_pose_visibility=False  # NPZ files don't contain visibility scores
     )
 
     preprocessor = SignLanguagePreprocessor(preprocess_config)
@@ -486,7 +497,9 @@ def main():
         max_sequence_length=config.max_sequence_length,
         normalize_coordinates=False,
         output_format="tensor",
-        device=config.device
+        device=config.device,
+        include_hand_confidence=False,  # NPZ files don't contain confidence scores
+        include_pose_visibility=False  # NPZ files don't contain visibility scores
     )
     preprocessor = SignLanguagePreprocessor(preprocess_config)
 

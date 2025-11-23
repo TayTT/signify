@@ -1573,8 +1573,8 @@ def test_saved_model(model_path, data_dir, annotations_path, feature_config: dic
         include_face=not getattr(feature_config, 'no_faces', False),
         include_pose=True,
         use_face_subset=True,
-        include_hand_confidence=True,
-        include_pose_visibility=True
+        include_hand_confidence=False,
+        include_pose_visibility=False
     )
     preprocessor = SignLanguagePreprocessor(preprocess_config)
     dataset = dataset_manager.create_dataset(preprocessor)

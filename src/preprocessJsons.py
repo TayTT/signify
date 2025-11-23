@@ -46,7 +46,7 @@ class PreprocessingConfig:
 
     # Hand features
     hand_landmarks_count: int = 21
-    include_hand_confidence: bool = True
+    include_hand_confidence: bool = False
 
     # Face features
     face_landmarks_count: int = 468  # Full MediaPipe face mesh
@@ -55,7 +55,7 @@ class PreprocessingConfig:
 
     # Pose features
     pose_landmarks_count: int = 25
-    include_pose_visibility: bool = True
+    include_pose_visibility: bool = False
 
     # Normalization
     normalize_coordinates: bool = True
@@ -231,7 +231,11 @@ class PhoenixDataset(Dataset):
 
     def __getitem__(self, idx):
         try:
-            result = self.preprocessor.process_file(self.json_paths[idx])
+            # Use fast path for NPZ files
+            if Path(self.json_paths[idx]).suffix == '.npz':
+                result = self.preprocessor.process_file_fast(self.json_paths[idx])
+            else:
+                result = self.preprocessor.process_file(self.json_paths[idx])
             sequence = result['sequence']
 
             # DEBUG: Check feature content
@@ -502,11 +506,11 @@ class SignLanguagePreprocessor:
                               annotations_path: str,
                               vocab_path: Optional[str] = None) -> PhoenixDataset:
         """
-        Create Phoenix dataset from JSON files and annotations
+        Create Phoenix dataset from landmark files (NPZ or JSON) and annotations
 
         Args:
-            data_dir: Directory containing JSON files
-            annotations_path: Path to Excel file with annotations
+            data_dir: Directory containing landmark files (NPZ or JSON)
+            annotations_path: Path to Excel/CSV file with annotations
             vocab_path: Path to vocabulary file (optional)
 
         Returns:
@@ -524,16 +528,32 @@ class SignLanguagePreprocessor:
 
         data_path = Path(data_dir)
 
-        for _, row in annotations_df.iterrows():
-            json_file = data_path / f"{row['id']}.json"
+        # for _, row in annotations_df.iterrows():
+        #     json_file = data_path / f"{row['id']}.json"
+        #
+        #     if json_file.exists():
+        #         json_paths.append(str(json_file))
+        #         valid_annotations.append(row['annotation'])
+        #     else:
+        #         print(f"Warning: JSON file not found for {row['id']}")
 
-            if json_file.exists():
+        for _, row in annotations_df.iterrows():
+            identifier = row['id']
+
+            # Check for NPZ file first (preferred format)
+            npz_file = data_path / f"{identifier}.npz"
+            json_file = data_path / f"{identifier}.json"
+
+            if npz_file.exists():
+                json_paths.append(str(npz_file))
+                valid_annotations.append(row['annotation'])
+            elif json_file.exists():
                 json_paths.append(str(json_file))
                 valid_annotations.append(row['annotation'])
             else:
-                print(f"Warning: JSON file not found for {row['id']}")
+                print(f"Warning: No landmark file (NPZ or JSON) found for {identifier}")
 
-        print(f"Found {len(json_paths)} valid JSON files out of {len(annotations_df)} annotations")
+        print(f"Found {len(json_paths)} valid files out of {len(annotations_df)} annotations")
 
         # Create dataset
         dataset = PhoenixDataset(
@@ -910,12 +930,36 @@ class SignLanguagePreprocessor:
 
         raise ValueError(f"Unknown padding strategy: {self.config.padding_strategy}")
 
-    def load_json_data(self, json_path: Union[str, Path]) -> Dict:
-        """Load landmarks data from JSON file"""
-        json_path = Path(json_path)
-        if not json_path.exists():
-            raise FileNotFoundError(f"JSON file not found: {json_path}")
+    # def load_json_data(self, json_path: Union[str, Path]) -> Dict:
+    #     """Load landmarks data from JSON file"""
+    #     json_path = Path(json_path)
+    #     if not json_path.exists():
+    #         raise FileNotFoundError(f"JSON file not found: {json_path}")
+    #
+    #     with open(json_path, 'r') as f:
+    #         data = json.load(f)
+    #
+    #     if 'frames' not in data:
+    #         raise ValueError("Invalid JSON format: 'frames' key not found")
+    #
+    #     return data
 
+    def load_json_data(self, file_path: Union[str, Path]) -> Dict:
+        """Load landmarks data from NPZ or JSON file (backward compatible)"""
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        # Check file extension
+        if file_path.suffix == '.npz':
+            return self._load_npz_data(file_path)
+        elif file_path.suffix == '.json':
+            return self._load_json_data_legacy(file_path)
+        else:
+            raise ValueError(f"Unsupported file format: {file_path.suffix}")
+
+    def _load_json_data_legacy(self, json_path: Path) -> Dict:
+        """Load landmarks data from JSON file (legacy support)"""
         with open(json_path, 'r') as f:
             data = json.load(f)
 
@@ -923,6 +967,171 @@ class SignLanguagePreprocessor:
             raise ValueError("Invalid JSON format: 'frames' key not found")
 
         return data
+
+    def _load_npz_data(self, npz_path: Path) -> Dict:
+        """Load landmarks data from NPZ file and reconstruct dict format"""
+        data = np.load(npz_path, allow_pickle=True)
+
+        # Reconstruct the format existing code expects
+        num_frames = data['hands'].shape[0]
+        frames_dict = {}
+
+        for i in range(num_frames):
+            frame_num = int(data['frame_numbers'][i])
+
+            # Reconstruct hands data
+            hands_data = {}
+            for hand_idx, hand_type in enumerate(['left_hand', 'right_hand']):
+                if data['hand_tracked'][i, hand_idx]:
+                    hands_data[hand_type] = {
+                        'landmarks': [
+                            {'x': float(data['hands'][i, hand_idx, j, 0]),
+                             'y': float(data['hands'][i, hand_idx, j, 1]),
+                             'z': float(data['hands'][i, hand_idx, j, 2])}
+                            for j in range(21)
+                        ],
+                        'confidence': float(data['hand_confidence'][i, hand_idx])
+                    }
+                else:
+                    hands_data[hand_type] = None
+
+            # Reconstruct face data (ALL 468 landmarks)
+            face_data = {}
+            if data['face_detected'][i]:
+                face_data['all_landmarks'] = [
+                    {'x': float(data['face'][i, j, 0]),
+                     'y': float(data['face'][i, j, 1]),
+                     'z': float(data['face'][i, j, 2])}
+                    for j in range(data['face'].shape[1])  # Will be 468
+                ]
+            else:
+                face_data['all_landmarks'] = []
+
+            # Reconstruct pose data
+            pose_data = {}
+            for j, landmark_name in enumerate(CORE_POSE_LANDMARKS):
+                # Check if landmark has non-zero values
+                if np.any(data['pose'][i, j] != 0):
+                    pose_data[landmark_name] = {
+                        'x': float(data['pose'][i, j, 0]),
+                        'y': float(data['pose'][i, j, 1]),
+                        'z': float(data['pose'][i, j, 2])
+                    }
+
+            frames_dict[str(frame_num)] = {
+                'hands': hands_data,
+                'face': face_data,
+                'pose': pose_data
+            }
+
+        # Reconstruct metadata
+        metadata = {
+            'fps': float(data['metadata_fps'][0]),
+            'total_frames': int(data['metadata_total_frames'][0]),
+            'width': int(data['metadata_width'][0]) if 'metadata_width' in data else 0,
+            'height': int(data['metadata_height'][0]) if 'metadata_height' in data else 0,
+            'input_source': str(data['metadata_input_source'][0]) if 'metadata_input_source' in data else ''
+        }
+
+        return {
+            'frames': frames_dict,
+            'metadata': metadata
+        }
+
+    def _load_npz_data_fast(self, npz_path: Path) -> Tuple[np.ndarray, np.ndarray]:
+        """Load NPZ and directly convert to feature array (FAST PATH)"""
+        data = np.load(npz_path, allow_pickle=True)
+
+        num_frames = data['hands'].shape[0]
+        feature_dim = self.feature_dims['total']
+
+        # Pre-allocate output array
+        sequence = np.zeros((num_frames, feature_dim), dtype=np.float32)
+
+        idx = 0
+
+        # Extract hands features directly
+        if self.config.include_hands:
+            # Flatten hands: (frames, 2, 21, 3) -> (frames, 126)
+            hands_flat = data['hands'].reshape(num_frames, -1)
+            hands_dim = self.feature_dims['hands']
+            sequence[:, idx:idx + hands_dim] = hands_flat[:, :hands_dim]
+            idx += hands_dim
+
+        # Extract face features with subset handling
+        if self.config.include_face:
+            # Face shape in NPZ: (frames, 468, 3)
+            if self.config.use_face_subset and self.config.face_subset_indices:
+                # Extract only subset landmarks
+                subset_indices = self.config.face_subset_indices
+                face_subset = data['face'][:, subset_indices, :]  # (frames, 64, 3)
+                face_flat = face_subset.reshape(num_frames, -1)  # (frames, 192)
+            else:
+                # Use all face landmarks
+                face_flat = data['face'].reshape(num_frames, -1)
+
+            face_dim = self.feature_dims['face']
+            sequence[:, idx:idx + face_dim] = face_flat[:, :face_dim]
+            idx += face_dim
+
+        # Extract pose features directly
+        if self.config.include_pose:
+            # Flatten pose: (frames, 9, 3) -> (frames, 27)
+            pose_flat = data['pose'].reshape(num_frames, -1)
+            pose_dim = self.feature_dims['pose']
+            sequence[:, idx:idx + pose_dim] = pose_flat[:, :pose_dim]
+            idx += pose_dim
+
+        return sequence, data['frame_numbers']
+
+    def process_file_fast(self, file_path: Union[str, Path]) -> Dict:
+        """Fast NPZ processing that bypasses dict reconstruction"""
+        file_path = Path(file_path)
+
+        if file_path.suffix == '.npz':
+            # FAST PATH: Direct array processing
+            sequence, frame_numbers = self._load_npz_data_fast(file_path)
+
+            # Pad sequence
+            sequence = self.pad_sequence(sequence)
+
+            # Create attention mask
+            attention_mask = self._create_proper_attention_mask(sequence)
+
+            # Ensure mask length matches
+            if len(attention_mask) != sequence.shape[0]:
+                corrected_mask = np.zeros(sequence.shape[0], dtype=bool)
+                min_len = min(len(attention_mask), sequence.shape[0])
+                corrected_mask[:min_len] = attention_mask[:min_len]
+                attention_mask = corrected_mask
+
+            # Metadata
+            metadata = {
+                'original_length': len(frame_numbers),
+                'padded_length': self.config.max_sequence_length,
+                'feature_dimensions': self.feature_dims,
+                'attention_mask': attention_mask
+            }
+
+            # Convert to tensor
+            if self.config.output_format == "tensor":
+                sequence_tensor = torch.from_numpy(sequence).to(self.config.device)
+                attention_mask_tensor = torch.from_numpy(attention_mask).to(self.config.device)
+
+                return {
+                    'sequence': sequence_tensor,
+                    'attention_mask': attention_mask_tensor,
+                    'metadata': metadata
+                }
+            else:
+                return {
+                    'sequence': sequence,
+                    'attention_mask': attention_mask,
+                    'metadata': metadata
+                }
+        else:
+            # SLOW PATH: Use existing JSON loading
+            return self.process_file(file_path)
 
     def process_sequence(self, json_data: Dict) -> Tuple[np.ndarray, Dict]:
         """Process a complete sequence from JSON data"""
@@ -1150,7 +1359,7 @@ def preprocess_single(json_path: str):
     config = create_default_config(
         max_sequence_length=256,
         normalize_coordinates=True,
-        include_hand_confidence=True,
+        include_hand_confidence=False,
         apply_augmentation=False,
         output_format="tensor"
     )

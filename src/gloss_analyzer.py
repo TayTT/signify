@@ -522,7 +522,16 @@ def process_filtered_videos(filtered_df, video_dir, output_dir, args=None):
             print(f"  - First few missing files: {missing_files[:3]}")
 
         # List the JSON files created
-        json_files = list(video_output_dir.glob("*.json"))
+        # Prioritize NPZ, fall back to JSON
+        # called json_files for code compatibility
+        json_files = list(output_dir.glob("*.npz"))
+        print(f"Total JSON files created: {len(json_files)}") if (len(json_files) != 0) else print(
+            f"No NPZ files found, "
+            f"JSON fallback")
+        if not json_files:
+            json_files = list(output_dir.glob("*.json"))
+            print(f"Total JSON files created: {len(json_files)}")
+
         print(f"")
         print(f"JSON FILES CREATED:")
         print(f"  - Total JSON files: {len(json_files)}")

@@ -35,6 +35,62 @@ CORE_POSE_LANDMARKS = [
 #     'LEFT_HEEL', 'RIGHT_HEEL', 'LEFT_FOOT_INDEX', 'RIGHT_FOOT_INDEX'
 # ]
 
+def convert_frames_to_numpy(all_frames_data: Dict, frame_keys: List) -> Dict:
+    """Convert frame dict data to numpy arrays for NPZ storage"""
+    num_frames = len(frame_keys)
+
+    # Pre-allocate arrays
+    hands_array = np.zeros((num_frames, 2, 21, 3), dtype=np.float32)
+    face_array = np.zeros((num_frames, 468, 3), dtype=np.float32)
+    pose_array = np.zeros((num_frames, len(CORE_POSE_LANDMARKS), 3), dtype=np.float32)
+
+    # Optional metadata arrays
+    hand_confidence = np.zeros((num_frames, 2), dtype=np.float32)
+    hand_tracked = np.zeros((num_frames, 2), dtype=bool)
+    face_detected = np.zeros(num_frames, dtype=bool)
+
+    # Fill arrays from frame data
+    for i, frame_key in enumerate(frame_keys):
+        frame = all_frames_data[frame_key]
+
+        # Extract hand landmarks
+        if 'hands' in frame:
+            for hand_idx, hand_type in enumerate(['left_hand', 'right_hand']):
+                hand_data = frame['hands'].get(hand_type)
+                if hand_data and 'landmarks' in hand_data:
+                    landmarks = hand_data['landmarks']
+                    for j, lm in enumerate(landmarks):
+                        hands_array[i, hand_idx, j] = [lm['x'], lm['y'], lm['z']]
+                    if 'confidence' in hand_data:
+                        hand_confidence[i, hand_idx] = hand_data['confidence']
+                    hand_tracked[i, hand_idx] = True
+
+        # Extract face landmarks
+        if 'face' in frame and 'all_landmarks' in frame['face']:
+            face_landmarks = frame['face']['all_landmarks']
+            for j, lm in enumerate(face_landmarks[:468]):  # Limit to 468
+                face_array[i, j] = [lm['x'], lm['y'], lm['z']]
+            face_detected[i] = True
+
+        # Extract pose landmarks
+        if 'pose' in frame:
+            pose_data = frame['pose']
+            for j, landmark_name in enumerate(CORE_POSE_LANDMARKS):
+                if landmark_name in pose_data:
+                    lm = pose_data[landmark_name]
+                    pose_array[i, j] = [lm['x'], lm['y'], lm['z']]
+
+    return {
+        'hands': hands_array,
+        'face': face_array,
+        'pose': pose_array,
+        'hand_confidence': hand_confidence,
+        'hand_tracked': hand_tracked,
+        'face_detected': face_detected,
+        'frame_numbers': np.array([int(k) for k in frame_keys], dtype=np.int32)
+    }
+
+
 class EnhancedHandTracker:
     """Enhanced hand tracker with flickering reduction and false positive filtering"""
 
@@ -2373,35 +2429,71 @@ def process_video(
         "face_tracking_stats": face_stats  # This will now have the correct structure
     }
 
-    # Save all frame data to JSON with custom filename
-    if phoenix_json_only and phoenix_json_name:
-        json_filename = f"{phoenix_json_name}.json"
-    else:
-        json_filename = "video_landmarks.json"
+    # # Save all frame data to JSON with custom filename
+    # if phoenix_json_only and phoenix_json_name:
+    #     json_filename = f"{phoenix_json_name}.json"
+    # else:
+    #     json_filename = "video_landmarks.json"
+    #
+    # json_path = output_dir / json_filename
+    #
+    # try:
+    #     print(f"Saving JSON data to: {json_path}")
+    #     print(f"Number of frames in data: {len(all_frames_data)}")
+    #
+    #     with open(json_path, "w") as f:
+    #         json.dump({"metadata": metadata, "frames": all_frames_data}, f, indent=4)
+    #     print(f"Processing complete. Data saved to {json_path}")
+    #     print(f"JSON file size: {json_path.stat().st_size} bytes")
+    #     print(f"Total frames in source: {total_frames}")
+    #     print(f"Total frames processed: {processed_frame_count}")
+    #     if frames_dir is not None:
+    #         print(f"Frames saved to disk: {len(list(frames_dir.glob('frame_*.png')))}")
+    #     else:
+    #         print("JSON-only mode: No frames saved to disk")
+    #
+    #     # Count saved frames only if frames directory exists
+    #     if frames_dir and frames_dir.exists():
+    #         frames_saved = len(list(frames_dir.glob('frame_*.png')))
+    #         print(f"Frames saved to disk: {frames_saved}")
+    #     else:
+    #         print(f"Frames saved to disk: 0 (JSON-only mode)")
 
-    json_path = output_dir / json_filename
+    # Save all frame data to NPZ with custom filename
+    if phoenix_json_only and phoenix_json_name:
+        npz_filename = f"{phoenix_json_name}.npz"
+    else:
+        npz_filename = "video_landmarks.npz"
+
+    npz_path = output_dir / npz_filename
 
     try:
-        print(f"Saving JSON data to: {json_path}")
+        print(f"Saving NPZ data to: {npz_path}")
         print(f"Number of frames in data: {len(all_frames_data)}")
 
-        with open(json_path, "w") as f:
-            json.dump({"metadata": metadata, "frames": all_frames_data}, f, indent=4)
-        print(f"Processing complete. Data saved to {json_path}")
-        print(f"JSON file size: {json_path.stat().st_size} bytes")
-        print(f"Total frames in source: {total_frames}")
-        print(f"Total frames processed: {processed_frame_count}")
-        if frames_dir is not None:
-            print(f"Frames saved to disk: {len(list(frames_dir.glob('frame_*.png')))}")
-        else:
-            print("JSON-only mode: No frames saved to disk")
+        # Convert frames to numpy arrays
+        frame_keys = sorted(all_frames_data.keys(), key=int)
+        numpy_data = convert_frames_to_numpy(all_frames_data, frame_keys)
 
-        # Count saved frames only if frames directory exists
-        if frames_dir and frames_dir.exists():
-            frames_saved = len(list(frames_dir.glob('frame_*.png')))
-            print(f"Frames saved to disk: {frames_saved}")
-        else:
-            print(f"Frames saved to disk: 0 (JSON-only mode)")
+        # Save as compressed NPZ
+        np.savez_compressed(
+            npz_path,
+            hands=numpy_data['hands'],
+            face=numpy_data['face'],
+            pose=numpy_data['pose'],
+            hand_confidence=numpy_data['hand_confidence'],
+            hand_tracked=numpy_data['hand_tracked'],
+            face_detected=numpy_data['face_detected'],
+            frame_numbers=numpy_data['frame_numbers'],
+            # Metadata as arrays (npz doesn't store dicts directly)
+            metadata_fps=np.array([metadata.get('fps', 25.0)], dtype=np.float32),
+            metadata_total_frames=np.array([metadata.get('total_frames', len(frame_keys))], dtype=np.int32),
+            metadata_width=np.array([metadata.get('width', 0)], dtype=np.int32),
+            metadata_height=np.array([metadata.get('height', 0)], dtype=np.int32),
+            metadata_input_source=np.array([str(metadata.get('input_source', ''))], dtype=object)
+        )
+        print(f"Processing complete. Data saved to {npz_path}")
+        print(f"NPZ file size: {npz_path.stat().st_size} bytes")
 
         # Verify output files exist (only if not in Phoenix JSON-only mode)
         if not (phoenix_mode and phoenix_json_only):

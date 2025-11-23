@@ -340,9 +340,14 @@ def process_phoenix_dataset(dev_folder: Path, output_dir: Path, args) -> None:
     print(f"JSON files saved to: {output_dir}")
 
     # List the JSON files created
-    json_files = list(output_dir.glob("*.json"))
-    print(f"Total JSON files created: {len(json_files)}")
-
+    # Prioritize NPZ, fall back to JSON
+    # called json_files for code compatibility
+    json_files = list(output_dir.glob("*.npz"))
+    print(f"Total JSON files created: {len(json_files)}") if (len(json_files) != 0) else print(f"No NPZ files found, "
+                                                                                               f"JSON fallback")
+    if not json_files:
+        json_files = list(output_dir.glob("*.json"))
+        print(f"Total JSON files created: {len(json_files)}")
 
 
 def process_single_image_file(image_path: Path, output_dir: Path, args) -> None:
@@ -876,8 +881,14 @@ def process_aslcitizen_dataset(videos_dir: Path, output_dir: Path, args) -> None
     print(f"JSON files saved to: {output_dir}")
 
     # List the JSON files created
-    json_files = list(output_dir.glob("*.json"))
-    print(f"Total JSON files created: {len(json_files)}")
+    # Prioritize NPZ, fall back to JSON
+    # Called json_files for code compatibility
+    json_files  = list(output_dir.glob("*.npz"))
+    print(f"Total JSON files created: {len(json_files)}") if (len(json_files) != 0) else print(f"No NPZ files found, "
+                                                                                             f"JSON fallback")
+    if not json_files :
+        json_files = list(output_dir.glob("*.json"))
+        print(f"Total JSON files created: {len(json_files)}")
 
     if json_files and len(json_files) <= 10:
         print("Created JSON files:")
