@@ -48,6 +48,7 @@ class ModelConfig:
     weight_decay: float = 1e-4
     num_epochs: int = 50
     patience: int = 8
+    gradient_clip_norm: float = 1.0
 
     # Data parameters
     max_sequence_length: int = 224
@@ -567,7 +568,7 @@ class SignLanguageTrainer:
 
     def _calculate_padding_ratio(self, sequences: torch.Tensor, attention_mask: torch.Tensor) -> float:
         """ Calculate padding ratio """
-        total_elements = sequences.numel()  # batch_size × seq_len × feature_dims
+        total_elements = sequences.numel()  # batch_size Ã— seq_len Ã— feature_dims
 
         non_padding_positions = attention_mask.sum().item()  # Count of True values (positions only)
         feature_dims = sequences.shape[2]
@@ -739,7 +740,7 @@ class SignLanguageTrainer:
                 feature_dims = sequences.shape[2]
 
                 print(f"Feature dimensions: {feature_dims}")
-                print(f"Mask sum × feature dims: {mask_sum * feature_dims}")
+                print(f"Mask sum Ã— feature dims: {mask_sum * feature_dims}")
                 print(f"Total elements: {total_elements}")
 
                 # Check if mask_sum * feature_dims > total_elements
@@ -806,7 +807,7 @@ class SignLanguageTrainer:
 
             # Backward pass
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config.gradient_clip_norm)
             self.optimizer.step()
 
             if nuclear_reset_needed:
@@ -1646,6 +1647,6 @@ def main():
 
 if __name__ == "__main__":
     # main()
-    test_saved_model("C:/Users/Tay/PycharmProjects/signify/models/lstm_sign2gloss.pth",
-                     "C:/Users/Tay/PycharmProjects/signify/aslcitizen_processed_strict/asl20_landmarks_trimmed",
-                     "C:/Users/Tay/PycharmProjects/signify/aslcitizen_processed_strict/gloss_20_processed.csv")
+    test_saved_model("E:/PycharmProjects/signify/models/lstm_sign2gloss.pth",
+                     "E:/PycharmProjects/signify/data/phoenix_jsons_npz/phoenix_train",
+                     "E:/PycharmProjects/signify/data/annotations_phoenix/train_corpus.csv")

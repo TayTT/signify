@@ -1,0 +1,499 @@
+#!/usr/bin/env python3
+"""
+Optuna Hyperparameter Optimization for LSTM Sign Language Recognition
+
+This script uses Optuna to find optimal hyperparameters including:
+- Model architecture (hidden_size, num_layers, dropout, bidirectional)
+- Optimizer choice (Adam, AdamW, SGD, RMSprop)
+- Training parameters (learning_rate, batch_size, weight_decay)
+- Scheduler parameters
+
+Usage:
+    python optuna_optimization.py --data_dir ./output --annotations_path ./annotations.csv
+"""
+
+import os
+import sys
+import argparse
+import torch
+import optuna
+from optuna.integration import WeightsAndBiasesCallback
+from optuna.trial import TrialState
+import wandb
+from pathlib import Path
+import json
+import yaml
+from typing import Dict, Any
+from dataclasses import asdict, replace
+import numpy as np
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
+from lstm_model import SignLanguageLSTM, SignLanguageTrainer, ModelConfig
+from train_lstm import PhoenixDatasetManager
+
+
+class OptunaOptimizer:
+    """Manages Optuna hyperparameter optimization"""
+
+    def __init__(self, base_config: ModelConfig, args: argparse.Namespace):
+        self.base_config = base_config
+        self.args = args
+        self.best_value = float('inf')
+        self.best_params = None
+
+        # Load dataset once to avoid reloading
+        print("Loading dataset for optimization...")
+        self.dataset_manager = PhoenixDatasetManager(
+            data_dir=args.data_dir,
+            annotations_path=args.annotations_path
+        )
+
+        # Create preprocessor
+        self.preprocess_config = PreprocessingConfig(
+            max_sequence_length=base_config.max_sequence_length,
+            normalize_coordinates=False,
+            output_format="tensor",
+            device=base_config.device,
+            include_hand_confidence=False,
+            include_pose_visibility=False
+        )
+        self.preprocessor = SignLanguagePreprocessor(self.preprocess_config)
+
+        # Load dataset
+        self.dataset = self.dataset_manager.create_dataset(self.preprocessor)
+        print(f"Dataset loaded: {len(self.dataset)} samples, vocab size: {self.dataset.vocab_size}")
+
+    def suggest_hyperparameters(self, trial: optuna.Trial) -> Dict[str, Any]:
+        """Suggest hyperparameters for the trial"""
+
+        # Model Architecture
+        hidden_size = trial.suggest_categorical('hidden_size', [128, 256, 512, 768])
+        num_layers = trial.suggest_int('num_layers', 1, 4)
+        dropout = trial.suggest_float('dropout', 0.1, 0.5, step=0.1)
+        bidirectional = trial.suggest_categorical('bidirectional', [False])
+
+        # Training Parameters
+        batch_size = trial.suggest_categorical('batch_size', [4, 8, 16, 32])
+        learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
+        weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
+
+        # Optimizer Choice
+        optimizer_name = trial.suggest_categorical(
+            'optimizer',
+            ['adam', 'adamw', 'sgd', 'rmsprop']
+        )
+
+        # Optimizer-specific parameters
+        if optimizer_name == 'sgd':
+            momentum = trial.suggest_float('momentum', 0.8, 0.99)
+            nesterov = trial.suggest_categorical('nesterov', [True, False])
+        else:
+            momentum = None
+            nesterov = None
+
+        if optimizer_name in ['adam', 'adamw']:
+            beta1 = trial.suggest_float('beta1', 0.85, 0.95)
+            beta2 = trial.suggest_float('beta2', 0.95, 0.999)
+        else:
+            beta1 = None
+            beta2 = None
+
+        # Scheduler Parameters
+        scheduler_type = trial.suggest_categorical(
+            'scheduler_type',
+            ['plateau', 'cosine', 'step', 'exponential']
+        )
+
+        scheduler_factor = None
+        scheduler_patience = None
+        step_size = None
+        gamma = None
+
+        if scheduler_type == 'plateau':
+            scheduler_factor = trial.suggest_float('scheduler_factor', 0.5, 0.9)
+            scheduler_patience = trial.suggest_int('scheduler_patience', 3, 10)
+        elif scheduler_type == 'step':
+            step_size = trial.suggest_int('step_size', 5, 20)
+            gamma = trial.suggest_float('gamma', 0.5, 0.9)
+        else:
+            scheduler_factor = None
+            scheduler_patience = None
+            step_size = None
+            gamma = None
+
+        # Gradient Clipping
+        gradient_clip = trial.suggest_float('gradient_clip', 0.5, 5.0)
+
+        return {
+            'hidden_size': hidden_size,
+            'num_layers': num_layers,
+            'dropout': dropout,
+            'bidirectional': bidirectional,
+            'batch_size': batch_size,
+            'learning_rate': learning_rate,
+            'weight_decay': weight_decay,
+            'optimizer_name': optimizer_name,
+            'momentum': momentum,
+            'nesterov': nesterov,
+            'beta1': beta1,
+            'beta2': beta2,
+            'scheduler_type': scheduler_type,
+            'scheduler_factor': scheduler_factor,
+            'scheduler_patience': scheduler_patience,
+            'step_size': step_size,
+            'gamma': gamma,
+            'gradient_clip': gradient_clip,
+        }
+
+    def create_optimizer(self, model: torch.nn.Module, params: Dict[str, Any]) -> torch.optim.Optimizer:
+        """Create optimizer based on trial parameters"""
+        optimizer_name = params['optimizer_name']
+        lr = params['learning_rate']
+        weight_decay = params['weight_decay']
+
+        if optimizer_name == 'adam':
+            optimizer = torch.optim.Adam(
+                model.parameters(),
+                lr=lr,
+                weight_decay=weight_decay,
+                betas=(params['beta1'], params['beta2']),
+                eps=1e-8
+            )
+        elif optimizer_name == 'adamw':
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=lr,
+                weight_decay=weight_decay,
+                betas=(params['beta1'], params['beta2']),
+                eps=1e-8
+            )
+        elif optimizer_name == 'sgd':
+            optimizer = torch.optim.SGD(
+                model.parameters(),
+                lr=lr,
+                momentum=params['momentum'],
+                weight_decay=weight_decay,
+                nesterov=params['nesterov']
+            )
+        elif optimizer_name == 'rmsprop':
+            optimizer = torch.optim.RMSprop(
+                model.parameters(),
+                lr=lr,
+                weight_decay=weight_decay,
+                alpha=0.99,
+                eps=1e-8
+            )
+        else:
+            raise ValueError(f"Unknown optimizer: {optimizer_name}")
+
+        return optimizer
+
+    def create_scheduler(self, optimizer: torch.optim.Optimizer, params: Dict[str, Any]):
+        """Create learning rate scheduler based on trial parameters"""
+        scheduler_type = params['scheduler_type']
+
+        if scheduler_type == 'plateau':
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=params['scheduler_factor'],
+                patience=params['scheduler_patience'],
+                min_lr=1e-7
+            )
+        elif scheduler_type == 'cosine':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=self.args.max_epochs_per_trial,
+                eta_min=1e-7
+            )
+        elif scheduler_type == 'step':
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=params['step_size'],
+                gamma=params['gamma']
+            )
+        elif scheduler_type == 'exponential':
+            scheduler = torch.optim.lr_scheduler.ExponentialLR(
+                optimizer,
+                gamma=0.95
+            )
+        else:
+            raise ValueError(f"Unknown scheduler: {scheduler_type}")
+
+        return scheduler
+
+    def objective(self, trial: optuna.Trial) -> float:
+        """Objective function for Optuna optimization"""
+
+        # Get hyperparameters for this trial
+        params = self.suggest_hyperparameters(trial)
+
+        # Create config with trial hyperparameters
+        config = replace(
+            self.base_config,
+            hidden_size=params['hidden_size'],
+            num_layers=params['num_layers'],
+            dropout=params['dropout'],
+            bidirectional=params['bidirectional'],
+            batch_size=params['batch_size'],
+            learning_rate=params['learning_rate'],
+            weight_decay=params['weight_decay'],
+            num_epochs=self.args.max_epochs_per_trial,
+            experiment_name=f"optuna_trial_{trial.number}"
+        )
+
+        # Update input size based on preprocessor
+        actual_input_size = self.preprocessor.feature_dims['total']
+        config = replace(config, input_size=actual_input_size)
+
+        # Initialize WandB for this trial
+        wandb.init(
+            project=f"{config.project_name}_optuna",
+            name=f"trial_{trial.number}",
+            config={**asdict(config), **params},
+            reinit=True,
+            tags=["optuna"]
+        )
+
+        try:
+            # Create trainer
+            trainer = SignLanguageTrainer(config)
+            trainer.dataset = self.dataset
+            trainer.train_loader, trainer.val_loader = trainer._create_data_loaders()
+
+            # Replace optimizer with trial optimizer
+            trainer.optimizer = self.create_optimizer(trainer.model, params)
+            trainer.scheduler = self.create_scheduler(trainer.optimizer, params)
+
+            # Store gradient clipping value
+            trainer.gradient_clip = params['gradient_clip']
+
+            # Train with early stopping
+            best_val_loss = float('inf')
+            patience_counter = 0
+            patience = 5  # Early stopping patience for trials
+
+            for epoch in range(config.num_epochs):
+                train_loss = trainer.train_epoch()
+                val_loss, val_metrics = trainer.validate_epoch()
+
+                # Update scheduler
+                if params['scheduler_type'] == 'plateau':
+                    trainer.scheduler.step(val_loss)
+                else:
+                    trainer.scheduler.step()
+
+                # Log to WandB
+                wandb.log({
+                    'epoch': epoch,
+                    'train_loss': train_loss,
+                    'val_loss': val_loss,
+                    'val_accuracy': val_metrics.get('accuracy', 0),
+                    'learning_rate': trainer.optimizer.param_groups[0]['lr']
+                })
+
+                # Report intermediate value for pruning
+                trial.report(val_loss, epoch)
+
+                # Check if trial should be pruned
+                if trial.should_prune():
+                    wandb.finish()
+                    raise optuna.TrialPruned()
+
+                # Early stopping
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+
+                if patience_counter >= patience:
+                    print(f"Early stopping at epoch {epoch}")
+                    break
+
+            # Clean up
+            wandb.finish()
+
+            # Return best validation loss
+            return best_val_loss
+
+        except Exception as e:
+            print(f"Trial {trial.number} failed with error: {e}")
+            wandb.finish()
+            raise
+
+    def run_optimization(self, n_trials: int = 50):
+        """Run the optimization study"""
+
+        # Create study directory
+        study_dir = Path(self.args.study_dir)
+        study_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create or load study
+        storage = f"sqlite:///{study_dir}/optuna_study.db"
+
+        study = optuna.create_study(
+            study_name=self.args.study_name,
+            storage=storage,
+            load_if_exists=True,
+            direction='minimize',
+            pruner=optuna.pruners.MedianPruner(
+                n_startup_trials=5,
+                n_warmup_steps=5,
+                interval_steps=1
+            )
+        )
+
+        print(f"\n{'=' * 60}")
+        print(f"Starting Optuna Optimization Study")
+        print(f"{'=' * 60}")
+        print(f"Study name: {self.args.study_name}")
+        print(f"Number of trials: {n_trials}")
+        print(f"Max epochs per trial: {self.args.max_epochs_per_trial}")
+        print(f"Storage: {storage}")
+        print(f"{'=' * 60}\n")
+
+        # Run optimization
+        study.optimize(
+            self.objective,
+            n_trials=n_trials,
+            timeout=self.args.timeout,
+            catch=(Exception,)
+        )
+
+        # Print results
+        print("\n" + "=" * 60)
+        print("Optimization Complete")
+        print("=" * 60)
+
+        print(f"\nNumber of finished trials: {len(study.trials)}")
+
+        # Get statistics
+        pruned_trials = [t for t in study.trials if t.state == TrialState.PRUNED]
+        complete_trials = [t for t in study.trials if t.state == TrialState.COMPLETE]
+
+        print(f"  Pruned trials: {len(pruned_trials)}")
+        print(f"  Completed trials: {len(complete_trials)}")
+
+        if len(complete_trials) > 0:
+            print("\nBest trial:")
+            trial = study.best_trial
+
+            print(f"  Value (val_loss): {trial.value:.4f}")
+            print(f"  Params:")
+            for key, value in trial.params.items():
+                print(f"    {key}: {value}")
+
+            # Save best parameters
+            best_params_path = study_dir / "best_params.yaml"
+            with open(best_params_path, 'w') as f:
+                yaml.dump(trial.params, f, default_flow_style=False)
+            print(f"\nBest parameters saved to: {best_params_path}")
+
+            # Create best config
+            best_config = self._create_config_from_params(trial.params)
+            best_config_path = study_dir / "best_config.yaml"
+            with open(best_config_path, 'w') as f:
+                yaml.dump(asdict(best_config), f, default_flow_style=False)
+            print(f"Best configuration saved to: {best_config_path}")
+
+            # Plot optimization history
+            try:
+                import plotly.graph_objects as go
+
+                fig = optuna.visualization.plot_optimization_history(study)
+                fig.write_html(study_dir / "optimization_history.html")
+
+                fig = optuna.visualization.plot_param_importances(study)
+                fig.write_html(study_dir / "param_importances.html")
+
+                fig = optuna.visualization.plot_slice(study)
+                fig.write_html(study_dir / "param_slice.html")
+
+                print(f"\nVisualization plots saved to: {study_dir}/")
+            except ImportError:
+                print("\nInstall plotly to generate visualization plots: pip install plotly")
+
+        return study
+
+    def _create_config_from_params(self, params: Dict[str, Any]) -> ModelConfig:
+        """Create ModelConfig from best parameters"""
+        config = replace(
+            self.base_config,
+            hidden_size=params['hidden_size'],
+            num_layers=params['num_layers'],
+            dropout=params['dropout'],
+            bidirectional=params['bidirectional'],
+            batch_size=params['batch_size'],
+            learning_rate=params['learning_rate'],
+            weight_decay=params['weight_decay'],
+            experiment_name=f"{self.base_config.experiment_name}_best"
+        )
+        return config
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Optuna Hyperparameter Optimization for LSTM')
+
+    # Data paths
+    parser.add_argument('--data_dir', type=str, required=True,
+                        help='Directory containing processed landmark files')
+    parser.add_argument('--annotations_path', type=str, required=True,
+                        help='Path to annotations CSV/Excel file')
+    parser.add_argument('--vocab_path', type=str, default='./vocab.pkl',
+                        help='Path to save vocabulary')
+
+    # Optimization settings
+    parser.add_argument('--n_trials', type=int, default=50,
+                        help='Number of optimization trials')
+    parser.add_argument('--max_epochs_per_trial', type=int, default=15,
+                        help='Maximum epochs per trial (with early stopping)')
+    parser.add_argument('--timeout', type=int, default=None,
+                        help='Timeout in seconds for the study (None for no limit)')
+    parser.add_argument('--study_name', type=str, default='lstm_optimization',
+                        help='Name for the Optuna study')
+    parser.add_argument('--study_dir', type=str, default='./optuna_studies',
+                        help='Directory to save study results')
+
+    # Base configuration
+    parser.add_argument('--max_sequence_length', type=int, default=224,
+                        help='Maximum sequence length for padding')
+    parser.add_argument('--device', type=str,
+                        default='cuda' if torch.cuda.is_available() else 'cpu',
+                        help='Device to use for training')
+
+    # WandB settings
+    parser.add_argument('--project_name', type=str, default='sign-language-lstm',
+                        help='WandB project name')
+    parser.add_argument('--wandb_offline', action='store_true',
+                        help='Run WandB in offline mode')
+
+    args = parser.parse_args()
+
+    if args.wandb_offline:
+        os.environ['WANDB_MODE'] = 'offline'
+
+    # Create base configuration
+    base_config = ModelConfig(
+        data_dir=args.data_dir,
+        annotations_path=args.annotations_path,
+        vocab_path=args.vocab_path,
+        max_sequence_length=args.max_sequence_length,
+        device=args.device,
+        project_name=args.project_name,
+        experiment_name='optuna_optimization'
+    )
+
+    # Create optimizer and run study
+    optimizer = OptunaOptimizer(base_config, args)
+    study = optimizer.run_optimization(n_trials=args.n_trials)
+
+    print("\n" + "=" * 60)
+    print("Study complete! Use the best parameters to train your final model.")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
