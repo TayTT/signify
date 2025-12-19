@@ -37,18 +37,18 @@ class ModelConfig:
 
     # Model architecture
     input_size: int = 356  # Updated default based on calculated dimensions
-    hidden_size: int = 256
-    num_layers: int = 2
-    dropout: float = 0.3
+    hidden_size: int = 768  # Optimized by Optuna
+    num_layers: int = 1  # Optimized by Optuna
+    dropout: float = 0.1  # Optimized by Optuna
     bidirectional: bool = False
 
     # Training parameters
-    batch_size: int = 8
-    learning_rate: float = 1e-4
-    weight_decay: float = 1e-4
+    batch_size: int = 4  # Optimized by Optuna
+    learning_rate: float = 6.039e-5  # Optimized by Optuna (6.038963798148516e-05)
+    weight_decay: float = 3.877e-5  # Optimized by Optuna (3.8767699183261476e-05)
     num_epochs: int = 50
     patience: int = 8
-    gradient_clip_norm: float = 1.0
+    gradient_clip_norm: float = 1.0  # Optimized by Optuna
 
     # Data parameters
     max_sequence_length: int = 224
@@ -1647,6 +1647,6 @@ def main():
 
 if __name__ == "__main__":
     # main()
-    test_saved_model("E:/PycharmProjects/signify/models/lstm_sign2gloss.pth",
-                     "E:/PycharmProjects/signify/data/phoenix_jsons_npz/phoenix_train",
-                     "E:/PycharmProjects/signify/data/annotations_phoenix/train_corpus.csv")
+    test_saved_model("C:/Users/Tay/PycharmProjects/signify/models/lstm_sign2gloss.pth",
+                     "C:/Users/Tay/PycharmProjects/signify/aslcitizen_processed_strict/asl20_landmarks_trimmed",
+                     "C:/Users/Tay/PycharmProjects/signify/aslcitizen_processed_strict/gloss_20_processed.csv")

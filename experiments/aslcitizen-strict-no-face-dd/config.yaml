@@ -1,0 +1,25 @@
+annotations_path: ./data/annotations/train_processed.csv
+batch_size: 16
+bidirectional: false
+curriculum_overlap_ratio: 0.3
+curriculum_stages: 4
+curriculum_warmup_epochs: 5
+data_dir: ./data/aslcitizen_processed
+device: cuda
+dropout: 0.3
+experiment_name: aslcitizen-strict-no-face-dd
+feature_config:
+  include_face: false
+hidden_size: 256
+input_size: 164
+learning_rate: 0.001
+max_annotation_length: 50
+max_sequence_length: 256
+model_save_path: output_data/aslcitizen-strict-no-face-dd/lstm_sign2gloss.pth
+num_epochs: 50
+num_layers: 2
+patience: 10
+project_name: sign-language-lstm
+use_curriculum_learning: true
+vocab_path: output_data/aslcitizen-strict-no-face-dd/vocab.pkl
+weight_decay: 0.0001

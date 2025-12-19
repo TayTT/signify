@@ -17,6 +17,7 @@ import sys
 import argparse
 import torch
 import optuna
+import optuna.visualization as vis
 from optuna.integration import WeightsAndBiasesCallback
 from optuna.trial import TrialState
 import wandb
@@ -433,6 +434,29 @@ class OptunaOptimizer:
         )
         return config
 
+def main_vis():
+    storage = "sqlite:///E:/PycharmProjects/signify/optuna_studies/optuna_study.db"
+    study_summaries = optuna.get_all_study_summaries(storage=storage)
+
+    print("Available studies:")
+    for summary in study_summaries:
+        print(f"  - {summary.study_name} ({summary.n_trials} trials)")
+
+    study = optuna.load_study(
+        study_name="lstm_optimization",  # or whatever name you used
+        storage=storage
+    )
+
+    # Display best results
+    print("Best trial:")
+    print(f"  Value: {study.best_trial.value}")
+    print(f"  Params: {study.best_trial.params}")
+
+    # View all trials
+    df = study.trials_dataframe()
+    print(df)
+    print(f"\nTotal trials: {len(study.trials)}")
+
 
 def main():
     parser = argparse.ArgumentParser(description='Optuna Hyperparameter Optimization for LSTM')
@@ -496,4 +520,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main_vis()

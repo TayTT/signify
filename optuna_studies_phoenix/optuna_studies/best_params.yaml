@@ -1,0 +1,12 @@
+batch_size: 4
+bidirectional: false
+dropout: 0.1
+gradient_clip: 0.5174490914557464
+hidden_size: 768
+learning_rate: 6.038963798148516e-05
+num_layers: 1
+optimizer: rmsprop
+scheduler_factor: 0.7216648043029985
+scheduler_patience: 8
+scheduler_type: plateau
+weight_decay: 3.8767699183261476e-05

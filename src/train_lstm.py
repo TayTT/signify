@@ -25,6 +25,7 @@ from typing import Dict, List, Tuple, Optional
 import numpy as np
 from dataclasses import asdict
 import yaml
+
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
@@ -93,7 +94,6 @@ class PhoenixDatasetManager:
                 if len(df.columns) < 4:
                     raise ValueError(f"Insufficient columns: expected 4, found {len(df.columns)}")
 
-
                 column_mapping = {}
                 for i, req_col in enumerate(required_columns):
                     if i < len(df.columns):
@@ -112,11 +112,11 @@ class PhoenixDatasetManager:
             df['signer'] = df['signer'].astype(str).str.strip()
             df['folder'] = df['folder'].astype(str).str.strip()
 
-            df = df[df['annotation'].str.len() > 0] #remove empty annotations
+            df = df[df['annotation'].str.len() > 0]  # remove empty annotations
 
             final_rows = len(df)
             if final_rows < initial_rows:
-                print(f"ï¸  Removed {initial_rows - final_rows} rows with missing/empty data")
+                print(f"Ã¯Â¸Â  Removed {initial_rows - final_rows} rows with missing/empty data")
 
             print(f" Final shape after cleaning: {df.shape}")
             print(f" Data summary:")
@@ -240,6 +240,8 @@ def create_config_from_args(args) -> ModelConfig:
         # Training parameters
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        gradient_clip_norm=args.gradient_clip_norm,
         num_epochs=args.num_epochs,
         patience=args.patience,
 
@@ -318,7 +320,7 @@ def validate_dataset(dataset: PhoenixDataset) -> Dict:
 
     print("Validating dataset...")
 
-    sample_size = min(10, len(dataset)) #sample a few items to check
+    sample_size = min(10, len(dataset))  # sample a few items to check
 
     for i in range(sample_size):
         try:
@@ -358,6 +360,9 @@ def validate_dataset(dataset: PhoenixDataset) -> Dict:
 
 def main():
     """Main training function"""
+    # Create default config to use as argparse defaults
+    default_config = ModelConfig()
+
     parser = argparse.ArgumentParser(description='Train LSTM model for sign language recognition')
 
     # Data arguments
@@ -369,27 +374,31 @@ def main():
                         help='Path to vocabulary file')
 
     # Model arguments
-    parser.add_argument('--hidden_size', type=int, default=256,
+    parser.add_argument('--hidden_size', type=int, default=default_config.hidden_size,
                         help='LSTM hidden size')
-    parser.add_argument('--num_layers', type=int, default=2,
+    parser.add_argument('--num_layers', type=int, default=default_config.num_layers,
                         help='Number of LSTM layers')
-    parser.add_argument('--dropout', type=float, default=0.3,
+    parser.add_argument('--dropout', type=float, default=default_config.dropout,
                         help='Dropout rate')
 
     # Training arguments
-    parser.add_argument('--batch_size', type=int, default=16,
+    parser.add_argument('--batch_size', type=int, default=default_config.batch_size,
                         help='Batch size')
-    parser.add_argument('--learning_rate', type=float, default=1e-3,
+    parser.add_argument('--learning_rate', type=float, default=default_config.learning_rate,
                         help='Learning rate')
-    parser.add_argument('--num_epochs', type=int, default=50,
+    parser.add_argument('--weight_decay', type=float, default=default_config.weight_decay,
+                        help='Weight decay (L2 regularization)')
+    parser.add_argument('--gradient_clip_norm', type=float, default=default_config.gradient_clip_norm,
+                        help='Gradient clipping norm')
+    parser.add_argument('--num_epochs', type=int, default=default_config.num_epochs,
                         help='Number of training epochs')
-    parser.add_argument('--patience', type=int, default=10,
+    parser.add_argument('--patience', type=int, default=default_config.patience,
                         help='Early stopping patience')
 
     # Sequence arguments
-    parser.add_argument('--max_sequence_length', type=int, default=256,
+    parser.add_argument('--max_sequence_length', type=int, default=default_config.max_sequence_length,
                         help='Maximum sequence length')
-    parser.add_argument('--max_annotation_length', type=int, default=50,
+    parser.add_argument('--max_annotation_length', type=int, default=default_config.max_annotation_length,
                         help='Maximum annotation length')
 
     # Output arguments
