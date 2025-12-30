@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from tqdm import tqdm
 import json
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -125,7 +126,7 @@ class ModelTester:
 
         preprocess_config = PreprocessingConfig(
             max_sequence_length=self.config.max_sequence_length,
-            normalize_coordinates=False,
+            normalize_coordinates=True,
             output_format="tensor",
             device=str(self.device),
             include_hand_confidence=False,
@@ -229,7 +230,7 @@ class ModelTester:
     def _calculate_metrics(self, predictions: List, labels: List,
                            dataset: PhoenixDataset) -> Dict:
         """Calculate evaluation metrics"""
-        from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+
 
         pred_flat = []
         label_flat = []

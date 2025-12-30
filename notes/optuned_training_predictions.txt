@@ -1,0 +1,181 @@
+(.venv) PS C:\Users\marle\PycharmProjects\signify> python src/batch_predict.py --model_path ./models/lstm_sign2gloss.pth --input_dir ./data/phoenix_jsons/phoenix_dev --n 5 --annotations_path ./data/annotations_phoenix/dev_corpus.csv --count_prediction
+Loading model from: models\lstm_sign2gloss.pth
+Initializing LSTM model:
+  - Input size: 345
+  - Hidden size: 768
+  - Vocab size: 1235
+Model loaded successfully
+  Vocabulary size: 1235
+  Device: cpu
+Initialized SignLanguagePreprocessor:
+  - Total feature dimensions: 345
+  - Hand features: 126
+  - Face features: 192
+  - Pose features: 27
+Loading annotations from: data\annotations_phoenix\dev_corpus.csv
+Loaded 540 annotations
+Columns: ['id', 'folder', 'signer', 'annotation']
+
+Processing 5 files...
+================================================================================
+
+[1/5] Processing: 01April_2010_Thursday_heute_default-1.json
+Prediction:    HEUTE NACHT WOLKE REGEN IX REGEN __ON__ IX __ON__ REGEN __OFF__ __ON__ __OFF__ IX __ON__ IX REGEN IX
+Ground Truth:  ICH OSTERN WETTER ZUFRIEDEN MITTAG TEMPERATUR  SUED WARM MEIN NICHT
+Match:         No
+
+Word Counts:
+  Word                 Prediction      Ground Truth
+  -------------------- --------------- ---------------
+  <EOS>                119             0
+  <SOS>                4               0
+  HEUTE                1               0
+  ICH                  0               1
+  IX                   42              0
+  MEIN                 0               1
+  MITTAG               0               1
+  NACHT                1               0
+  NICHT                0               1
+  OSTERN               0               1
+  REGEN                36              0
+  SUED                 0               1
+  TEMPERATUR           0               1
+  WARM                 0               1
+  WETTER               0               1
+  WOLKE                1               0
+  ZUFRIEDEN            0               1
+  __OFF__              3               0
+  __ON__               17              0
+  -------------------- --------------- ---------------
+  TOTAL                224             10
+
+[2/5] Processing: 01August_2011_Monday_heute_default-6.json
+Prediction:    HEUTE NACHT REGEN IX REGEN IX REGEN IX REGEN __ON__ __OFF__ REGEN __ON__ __OFF__ REGEN __OFF__ IX REGEN IX __OFF__
+Ground Truth:  VIELLEICHT THUERINGEN REGION AUCH BISSCHEN WOLKE BISSCHEN STARK WOLKE ABER SUED MAINZ FLUSS SUEDWEST VIEL NICHT-KEIN WOLKE VIEL SONNE
+Match:         No
+
+Word Counts:
+  Word                 Prediction      Ground Truth
+  -------------------- --------------- ---------------
+  <EOS>                93              0
+  <SOS>                1               0
+  ABER                 0               1
+  AUCH                 0               1
+  BISSCHEN             0               2
+  FLUSS                0               1
+  HEUTE                1               0
+  IX                   40              0
+  MAINZ                0               1
+  NACHT                1               0
+  NICHT-KEIN           0               1
+  REGEN                47              0
+  REGION               0               1
+  SONNE                0               1
+  STARK                0               1
+  SUED                 0               1
+  SUEDWEST             0               1
+  THUERINGEN           0               1
+  VIEL                 0               2
+  VIELLEICHT           0               1
+  WOLKE                0               3
+  __OFF__              24              0
+  __ON__               17              0
+  -------------------- --------------- ---------------
+  TOTAL                224             19
+
+[3/5] Processing: 01December_2011_Thursday_heute_default-3.json
+Prediction:    SONNTAG IX REGEN SONNE IX REGEN IX REGEN IX REGEN IX __OFF__ SONNE IX __OFF__ REGION IX MORGEN IX __OFF__ IX __OFF__ IX
+Ground Truth:  STUNDE AUCH MEISTENS REGEN ERST WEST DANN REGION SUED BLEIBEN TROCKEN
+Match:         No
+
+Word Counts:
+  Word                 Prediction      Ground Truth
+  -------------------- --------------- ---------------
+  <EOS>                63              0
+  <SOS>                1               0
+  AUCH                 0               1
+  BLEIBEN              0               1
+  DANN                 0               1
+  ERST                 0               1
+  IX                   114             0
+  MEISTENS             0               1
+  MORGEN               10              0
+  REGEN                7               1
+  REGION               3               1
+  SONNE                6               0
+  SONNTAG              1               0
+  STUNDE               0               1
+  SUED                 0               1
+  TROCKEN              0               1
+  WEST                 0               1
+  __OFF__              19              0
+  -------------------- --------------- ---------------
+  TOTAL                224             11
+
+[4/5] Processing: 01December_2011_Thursday_heute_default-5.json
+Prediction:    SONNTAG IX GRAD IX GRAD IX GRAD IX GRAD __OFF__ GRAD
+Ground Truth:  UND TAG BLEIBEN KUEHL SECHS GRAD BAYERN IX REGION AUCH S+H IX AUCH ABER
+Match:         No
+
+Word Counts:
+  Word                 Prediction      Ground Truth
+  -------------------- --------------- ---------------
+  <EOS>                112             0
+  <SOS>                1               0
+  ABER                 0               1
+  AUCH                 0               2
+  BAYERN               0               1
+  BLEIBEN              0               1
+  GRAD                 84              1
+  IX                   12              2
+  KUEHL                0               1
+  REGION               0               1
+  S+H                  0               1
+  SECHS                0               1
+  SONNTAG              1               0
+  TAG                  0               1
+  UND                  0               1
+  __OFF__              14              0
+  -------------------- --------------- ---------------
+  TOTAL                224             14
+
+[5/5] Processing: 01February_2011_Tuesday_heute_default-6.json
+Prediction:    MORGEN IX SONNE REGEN GRAD REGEN IX __ON__ MORGEN __OFF__ __ON__ __OFF__ MORGEN IX MORGEN IX MORGEN REGION MORGEN REGION
+Ground Truth:  MORGEN NORD MEHR MILD WEST SUEDOST BLEIBEN UNTER VIER NULL GRAD __OFF__
+Match:         No
+
+Word Counts:
+  Word                 Prediction      Ground Truth
+  -------------------- --------------- ---------------
+  <EOS>                76              0
+  <SOS>                1               0
+  BLEIBEN              0               1
+  GRAD                 12              1
+  IX                   21              0
+  MEHR                 0               1
+  MILD                 0               1
+  MORGEN               80              1
+  NORD                 0               1
+  NULL                 0               1
+  REGEN                10              0
+  REGION               8               0
+  SONNE                2               0
+  SUEDOST              0               1
+  UNTER                0               1
+  VIER                 0               1
+  WEST                 0               1
+  __OFF__              8               1
+  __ON__               6               0
+  -------------------- --------------- ---------------
+  TOTAL                224             12
+
+================================================================================
+SUMMARY
+================================================================================
+Total files:       5
+Successful:        5
+Failed:            0
+With ground truth: 5
+Matches:           0
+Accuracy:          0.00%
+================================================================================
