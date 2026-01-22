@@ -1,0 +1,162 @@
+# Sign Language Recognition - Configuration File
+# ================================================
+# This file contains all configuration settings for training the LSTM model.
+# Copy this file and modify values as needed for your experiments.
+
+# Model Architecture
+# ------------------
+model:
+  # Input/Output dimensions
+  input_size: 356              # Feature dimension (auto-calculated from preprocessing)
+  hidden_size: 768             # LSTM hidden state size
+  num_layers: 1                # Number of LSTM layers
+  dropout: 0.1                 # Dropout rate
+  bidirectional: false         # Use bidirectional LSTM
+
+  # Attention mechanism
+  num_attention_heads: 1       # Number of attention heads
+  use_attention: true          # Enable attention layer
+
+  # Sequence parameters
+  max_sequence_length: 224     # Maximum input sequence length
+  max_annotation_length: 25    # Maximum output annotation length
+
+  # Loss function
+  use_ctc: false               # Use CTC loss instead of cross-entropy
+
+# Training Configuration
+# ----------------------
+training:
+  # Basic parameters
+  batch_size: 4                # Training batch size
+  num_epochs: 50               # Number of training epochs
+  patience: 8                  # Early stopping patience
+  gradient_clip_norm: 1.0      # Gradient clipping threshold
+
+  # Train/validation split
+  train_split: 0.8             # Fraction of data for training
+  random_seed: 42              # Random seed for reproducibility
+
+  # Gradient accumulation (for larger effective batch sizes on limited GPU memory)
+  gradient_accumulation_steps: 1
+
+  # Optimizer settings
+  optimizer:
+    name: adamw                # Options: adam, adamw, sgd, rmsprop
+    learning_rate: 6.039e-5    # Initial learning rate
+    weight_decay: 3.877e-5     # L2 regularization
+
+    # Adam/AdamW specific
+    beta1: 0.9
+    beta2: 0.98
+    eps: 1.0e-8
+
+    # SGD specific (only used when optimizer.name is 'sgd')
+    momentum: 0.9
+    nesterov: false
+
+  # Learning rate scheduler
+  scheduler:
+    name: lambda               # Options: plateau, cosine, step, exponential, lambda
+
+    # ReduceLROnPlateau settings
+    factor: 0.7                # LR reduction factor
+    patience: 8                # Epochs to wait before reducing LR
+    min_lr: 1.0e-6             # Minimum learning rate
+
+    # StepLR settings
+    step_size: 10              # Epochs between LR reductions
+    gamma: 0.7                 # LR reduction factor
+
+    # LambdaLR (warmup + cosine decay) settings
+    warmup_steps: 20           # Number of warmup steps
+    total_steps: 200           # Total steps for cosine decay
+
+  # Curriculum Learning
+  use_curriculum_learning: false
+  curriculum_warmup_epochs: 5
+  curriculum_stages: 4
+  curriculum_overlap_ratio: 0.3
+
+# Data Configuration
+# ------------------
+data:
+  # Paths (modify these for your setup)
+  data_dir: "./data/phoenix_jsons/phoenix_dev"
+  annotations_path: "./data/annotations_phoenix/dev_corpus.csv"
+  vocab_path: "./vocab.pkl"
+  model_save_path: "./models2/lstm_sign2gloss.pth"
+
+  # Data format
+  data_format: auto            # Options: auto, npz, json
+
+# Preprocessing Configuration
+# ---------------------------
+preprocessing:
+  # Sequence processing
+  max_sequence_length: 224     # Should match model.max_sequence_length
+  min_sequence_length: 5
+  padding_strategy: post       # Options: pre, post, center
+
+  # Feature selection
+  include_hands: true
+  include_face: true
+  include_pose: true
+
+  # Hand features
+  hand_landmarks_count: 21
+  include_hand_confidence: false   # NPZ files typically don't contain this
+
+  # Face features
+  face_landmarks_count: 468
+  use_face_subset: true           # Use subset for efficiency
+
+  # Pose features
+  pose_landmarks_count: 25
+  include_pose_visibility: false  # NPZ files typically don't contain this
+
+  # Normalization
+  normalize_coordinates: true
+  coordinate_range: [-1.0, 1.0]
+
+  # Data augmentation (experimental)
+  apply_augmentation: false
+  rotation_range: 0.1
+  scale_range: [0.9, 1.1]
+  noise_std: 0.01
+
+  # Missing data handling
+  interpolate_missing: true
+  interpolation_method: linear   # Options: linear, cubic, nearest
+  max_missing_frames: 50
+
+  # Output format
+  output_format: tensor
+  device: cpu
+
+# Logging Configuration
+# ---------------------
+logging:
+  # WandB settings
+  project_name: "sign-language-lstm-test"
+  experiment_name: "lstm-sign2gloss-test"
+  tags:
+    - lstm
+    - sign-language
+  notes: ""
+
+  # WandB mode
+  offline: false               # Run in offline mode
+  disabled: false              # Disable WandB entirely
+
+  # Logging frequency
+  log_every_n_steps: 10
+  save_every_n_epochs: 1
+
+  # Verbosity
+  verbose: true
+  debug: false
+
+# Runtime Settings
+# ----------------
+device: cuda                   # Options: cuda, cpu (auto-detected if not specified)
