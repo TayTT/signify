@@ -2,7 +2,7 @@
 Enhanced Sign Language Data Preprocessor with Phoenix Dataset Support
 
 This module provides preprocessing functionality to convert JSON landmark data
-from the sign language processing pipeline into tensor-ready format for ML models,
+from the sign language processing pipeline into tensor-ready format for ML loss14,
 with specific support for Phoenix dataset and LSTM training.
 """
 

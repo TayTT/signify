@@ -625,16 +625,27 @@ class SignLanguageTrainer:
 
     def save_model(self):
         """Save model checkpoint"""
+        # Convert config to dictionary for pickling
+        if hasattr(self.config, 'get_config'):
+            # LegacyModelConfig - get underlying Config object
+            config_dict = self.config.get_config().to_dict()
+        elif hasattr(self.config, 'to_dict'):
+            # Direct Config object
+            config_dict = self.config.to_dict()
+        else:
+            # Old-style dataclass - use asdict
+            from dataclasses import asdict
+            config_dict = asdict(self.config)
+
         checkpoint = {
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'config': self.config,
+            'config': config_dict,  # ✅ Save as dictionary
             'vocab_size': self.dataset.vocab_size,
             'best_val_loss': self.best_val_loss,
             'train_losses': self.train_losses,
             'val_losses': self.val_losses
         }
-
         torch.save(checkpoint, self.config.model_save_path)
 
     def load_model(self, checkpoint_path: str):
@@ -646,6 +657,11 @@ class SignLanguageTrainer:
         self.best_val_loss = checkpoint['best_val_loss']
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
+
+        # Note: config is now a dictionary, not an object
+        # If you need to use it, convert back to Config object:
+        # from config import Config
+        # loaded_config = Config.from_dict(checkpoint['config'])
 
         print(f"Model loaded from {checkpoint_path}")
 

@@ -14,7 +14,7 @@ input_size: 356
 learning_rate: 6.038963798148516e-05
 max_annotation_length: 25
 max_sequence_length: 224
-model_save_path: ./models/lstm-sign2gloss.pth
+model_save_path: ./loss14/lstm-sign2gloss.pth
 num_epochs: 50
 num_layers: 1
 patience: 8

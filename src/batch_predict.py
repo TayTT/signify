@@ -6,9 +6,9 @@ This module processes multiple NPZ/JSON files and outputs predictions
 along with ground truth annotations (if available).
 
 Usage:
-    python batch_predict.py --model_path ./models/lstm_sign2gloss.pth --input_dir ./data --n 5
-    python batch_predict.py --model_path ./models/lstm_sign2gloss.pth --input_dir ./data --annotations_path ./annotations.csv
-    python batch_predict.py --model_path ./models/lstm_sign2gloss.pth --file_list file1.npz file2.json --annotations_path ./annotations.csv
+    python batch_predict.py --model_path ./loss14/lstm_sign2gloss.pth --input_dir ./data --n 5
+    python batch_predict.py --model_path ./loss14/lstm_sign2gloss.pth --input_dir ./data --annotations_path ./annotations.csv
+    python batch_predict.py --model_path ./loss14/lstm_sign2gloss.pth --file_list file1.npz file2.json --annotations_path ./annotations.csv
 """
 
 import os
@@ -482,9 +482,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python batch_predict.py --model_path ./models/model.pth --input_dir ./data --n 5
-  python batch_predict.py --model_path ./models/model.pth --input_dir ./data --annotations_path ./annotations.csv
-  python batch_predict.py --model_path ./models/model.pth --file_list data/f1.npz data/f2.json --annotations_path ./annotations.csv
+  python batch_predict.py --model_path ./loss14/model.pth --input_dir ./data --n 5
+  python batch_predict.py --model_path ./loss14/model.pth --input_dir ./data --annotations_path ./annotations.csv
+  python batch_predict.py --model_path ./loss14/model.pth --file_list data/f1.npz data/f2.json --annotations_path ./annotations.csv
         """
     )
 

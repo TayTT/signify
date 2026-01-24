@@ -100,7 +100,7 @@ preprocessing:
 
   # Feature selection
   include_hands: true
-  include_face: true
+  include_face: false
   include_pose: true
 
   # Hand features
@@ -116,7 +116,7 @@ preprocessing:
   include_pose_visibility: false  # NPZ files typically don't contain this
 
   # Normalization
-  normalize_coordinates: true
+  normalize_coordinates: false
   coordinate_range: [-1.0, 1.0]
 
   # Data augmentation (experimental)

@@ -17,7 +17,7 @@ Usage:
     python train_lstm.py --data_dir ./output --annotations_path ./annotations.csv
 
     # Resume training:
-    python train_lstm.py --config config.yaml --resume ./models/checkpoint.pth
+    python train_lstm.py --config config.yaml --resume ./loss14/checkpoint.pth
 """
 
 import os
@@ -332,7 +332,7 @@ def create_arg_parser() -> argparse.ArgumentParser:
     # Output arguments
     parser.add_argument('--model_save_path', type=str,
                         help='Path to save trained model')
-    parser.add_argument('--config_save_path', type=str, default='./models/config.yaml',
+    parser.add_argument('--config_save_path', type=str, default='./loss14/config.yaml',
                         help='Path to save configuration')
 
     # WandB arguments

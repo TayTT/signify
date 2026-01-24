@@ -11,13 +11,13 @@ This script provides multiple ways to test your trained model:
 Usage:
     # Test on validation set
     python test_model.py \
-        --model_path ./models/lstm_sign2gloss.pth \
+        --model_path ./loss14/lstm_sign2gloss.pth \
         --data_dir ./data/phoenix_test \
         --annotations_path ./data/test_corpus.csv
 
     # Test single video
     python test_model.py \
-        --model_path ./models/lstm_sign2gloss.pth \
+        --model_path ./loss14/lstm_sign2gloss.pth \
         --video_path ./video.mp4 \
         --landmarks_path ./video_landmarks.json
 """
@@ -58,7 +58,35 @@ class ModelTester:
 
         checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
 
-        self.config = checkpoint['config']
+        # Handle config - might be dict, broken object, or working object
+        config_data = checkpoint.get('config')
+
+        if isinstance(config_data, dict):
+            # New format - config saved as dictionary
+            from config import Config, LegacyModelConfig
+            full_config = Config.from_dict(config_data)
+            self.config = LegacyModelConfig(config=full_config)
+        else:
+            # Old format - config saved as object (might be broken)
+            print("Rebuilding config from checkpoint attributes...")
+
+            # Create a minimal config object with just what we need
+            class MinimalConfig:
+                pass
+
+            self.config = MinimalConfig()
+
+            # Copy all attributes from the broken config
+            self.config.input_size = getattr(config_data, 'input_size', 345)
+            self.config.hidden_size = getattr(config_data, 'hidden_size', 768)
+            self.config.num_layers = getattr(config_data, 'num_layers', 1)
+            self.config.dropout = getattr(config_data, 'dropout', 0.1)
+            self.config.bidirectional = getattr(config_data, 'bidirectional', False)
+            self.config.max_sequence_length = getattr(config_data, 'max_sequence_length', 224)
+            self.config.max_annotation_length = getattr(config_data, 'max_annotation_length', 25)
+            self.config.batch_size = getattr(config_data, 'batch_size', 4)
+            self.config.device = str(self.device)  # Use the tester's device
+
         self.vocab_size = checkpoint['vocab_size']
 
         # Load vocabulary - try multiple sources
@@ -86,11 +114,9 @@ class ModelTester:
                         self.gloss_to_idx = vocab_data['gloss_to_idx']
                         self.idx_to_gloss = vocab_data['idx_to_gloss']
                     elif 'vocab' in vocab_data:
-                        # Alternative format: {'vocab': {gloss: idx, ...}}
                         self.gloss_to_idx = vocab_data['vocab']
                         self.idx_to_gloss = {v: k for k, v in self.gloss_to_idx.items()}
                     else:
-                        # Assume the dict itself is gloss_to_idx
                         self.gloss_to_idx = vocab_data
                         self.idx_to_gloss = {v: k for k, v in vocab_data.items()}
 

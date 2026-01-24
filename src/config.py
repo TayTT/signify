@@ -129,10 +129,10 @@ class DataConfig:
     """Dataset paths and data configuration"""
 
     # Paths
-    data_dir: str = "./phoenix_train"
-    annotations_path: str = "./data/train_corpus.csv"
+    data_dir: str = "./data/phoenix_jsons/phoenix_train"
+    annotations_path: str = "./data/annotations_phoenix/train_corpus.csv"
     vocab_path: str = "./vocab.pkl"
-    model_save_path: str = "./models/lstm_sign2gloss.pth"
+    model_save_path: str = "./mode_stash/noNormNoFace/lstm_sign2gloss.pth"
 
     # Data format
     data_format: str = "auto"  # auto, npz, json
@@ -149,7 +149,7 @@ class PreprocessingConfig:
 
     # Feature selection
     include_hands: bool = True
-    include_face: bool = True
+    include_face: bool = False
     include_pose: bool = True
 
     # Hand features
@@ -166,7 +166,7 @@ class PreprocessingConfig:
     include_pose_visibility: bool = False
 
     # Normalization
-    normalize_coordinates: bool = True
+    normalize_coordinates: bool = False
     coordinate_range: Tuple[float, float] = (-1.0, 1.0)
 
     # Data augmentation
@@ -191,7 +191,7 @@ class LoggingConfig:
 
     # WandB settings
     project_name: str = "sign-language-lstm"
-    experiment_name: str = "lstm-sign2gloss"
+    experiment_name: str = "noNormNoFace"
     tags: List[str] = field(default_factory=lambda: ["lstm", "sign-language"])
     notes: str = ""
 

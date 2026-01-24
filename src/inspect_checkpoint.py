@@ -3,7 +3,7 @@
 Inspect Model Checkpoint
 
 This script shows what's saved in your model checkpoint file.
-Usage: python inspect_checkpoint.py ./models/lstm_sign2gloss.pth
+Usage: python inspect_checkpoint.py ./loss14/lstm_sign2gloss.pth
 """
 
 import torch
@@ -131,7 +131,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python inspect_checkpoint.py <path_to_checkpoint.pth>")
         print("\nExample:")
-        print("  python inspect_checkpoint.py ./models/lstm_sign2gloss.pth")
+        print("  python inspect_checkpoint.py ./loss14/lstm_sign2gloss.pth")
         sys.exit(1)
 
     checkpoint_path = sys.argv[1]

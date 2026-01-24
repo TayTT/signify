@@ -1,0 +1,90 @@
+model:
+  input_size: 153
+  hidden_size: 768
+  num_layers: 1
+  dropout: 0.1
+  bidirectional: false
+  num_attention_heads: 1
+  use_attention: true
+  max_sequence_length: 224
+  max_annotation_length: 25
+  use_ctc: false
+training:
+  batch_size: 4
+  num_epochs: 50
+  patience: 8
+  gradient_clip_norm: 1.0
+  train_split: 0.8
+  random_seed: 42
+  gradient_accumulation_steps: 1
+  optimizer:
+    name: adamw
+    learning_rate: 6.039e-05
+    weight_decay: 3.877e-05
+    beta1: 0.9
+    beta2: 0.98
+    eps: 1.0e-08
+    momentum: 0.9
+    nesterov: false
+  scheduler:
+    name: lambda
+    factor: 0.7
+    patience: 8
+    min_lr: 1.0e-06
+    step_size: 10
+    gamma: 0.7
+    warmup_steps: 20
+    total_steps: 200
+  use_curriculum_learning: false
+  curriculum_warmup_epochs: 5
+  curriculum_stages: 4
+  curriculum_overlap_ratio: 0.3
+data:
+  data_dir: ./data/phoenix_jsons/phoenix_train
+  annotations_path: ./data/annotations_phoenix/train_corpus.csv
+  vocab_path: ./vocab.pkl
+  model_save_path: ./mode_stash/noNormNoFace/lstm_sign2gloss.pth
+  data_format: auto
+preprocessing:
+  max_sequence_length: 224
+  min_sequence_length: 5
+  padding_strategy: post
+  include_hands: true
+  include_face: false
+  include_pose: true
+  hand_landmarks_count: 21
+  include_hand_confidence: false
+  face_landmarks_count: 468
+  use_face_subset: true
+  face_subset_indices: null
+  pose_landmarks_count: 25
+  include_pose_visibility: false
+  normalize_coordinates: false
+  coordinate_range: !!python/tuple
+  - -1.0
+  - 1.0
+  apply_augmentation: false
+  rotation_range: 0.1
+  scale_range: !!python/tuple
+  - 0.9
+  - 1.1
+  noise_std: 0.01
+  interpolate_missing: true
+  interpolation_method: linear
+  max_missing_frames: 50
+  output_format: tensor
+  device: cpu
+logging:
+  project_name: sign-language-lstm
+  experiment_name: nonormnoface
+  tags:
+  - lstm
+  - sign-language
+  notes: ''
+  offline: false
+  disabled: false
+  log_every_n_steps: 10
+  save_every_n_epochs: 1
+  verbose: true
+  debug: false
+device: cpu
