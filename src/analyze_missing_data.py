@@ -6,7 +6,7 @@ Analyzes missing landmark data patterns across JSON files to help understand
 data quality and inform preprocessing strategies.
 
 Usage:
-    python src/AnalyzeMissingData.py --data_dir ./phoenix_dev --output missing_data_report.json
+    python src/analyze_missing_data.py --data_dir ./phoenix_dev --output missing_data_report.json
 
 OR:
     from missing_data_analyzer import MissingDataAnalyzer

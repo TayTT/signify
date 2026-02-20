@@ -159,4 +159,4 @@ logging:
 
 # Runtime Settings
 # ----------------
-device: cuda                   # Options: cuda, cpu (auto-detected if not specified)
+device: cpu                   # Options: cuda, cpu (auto-detected if not specified)

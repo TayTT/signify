@@ -36,7 +36,7 @@ from typing import Dict, List
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
+from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
 from lstm_model import SignLanguageLSTM, SignLanguageTrainer, ModelConfig
 from train_lstm import PhoenixDatasetManager, validate_dataset
 

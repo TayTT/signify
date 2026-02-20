@@ -9,7 +9,7 @@ from gloss_analyzer import process_microsoftasl_20
 import numpy as np
 
 from processing import process_image, process_video, enhance_image_for_hand_detection
-from preprocessJsons import PreprocessingConfig, SignLanguagePreprocessor
+from preprocess_jsons import PreprocessingConfig, SignLanguagePreprocessor
 
 # TODO: visualise full mesh TODO: not all points present in all frames:
 #  1) count missing points frames (how?) and delete them if treshold is not exceeded -> in processJsons, not processing

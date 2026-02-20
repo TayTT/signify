@@ -481,7 +481,7 @@ class LegacyModelConfig:
 
 
 # Alias for backward compatibility
-ModelConfig = LegacyModelConfig
+# ModelConfig = LegacyModelConfig
 
 
 def config_from_args(args) -> Config:

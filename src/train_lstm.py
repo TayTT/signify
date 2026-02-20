@@ -38,7 +38,7 @@ from config import (
     Config, load_config, save_config, config_from_args,
     ModelConfig as LegacyModelConfig
 )
-from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
+from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
 from lstm_model import SignLanguageLSTM, SignLanguageTrainer
 
 

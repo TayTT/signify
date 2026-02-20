@@ -18,7 +18,7 @@ import os
 import torch
 import numpy as np
 from train_lstm import PhoenixDatasetManager
-from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig
+from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig
 from test_lstm import ModelTester
 
 print("="*60)

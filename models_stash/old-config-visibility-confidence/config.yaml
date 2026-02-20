@@ -1,5 +1,5 @@
 model:
-  input_size: 345
+  input_size: 164
   hidden_size: 256
   num_layers: 2
   dropout: 0.3
@@ -19,8 +19,8 @@ training:
   gradient_accumulation_steps: 1
   optimizer:
     name: adamw
-    learning_rate: 1e-4
-    weight_decay: 1e-4
+    learning_rate: 0.0001
+    weight_decay: 0.0001
     beta1: 0.9
     beta2: 0.98
     eps: 1.0e-08
@@ -40,8 +40,8 @@ training:
   curriculum_stages: 4
   curriculum_overlap_ratio: 0.3
 data:
-  data_dir: ./data/phoenix_jsons/phoenix_dev
-  annotations_path: ./data/annotations_phoenix/dev_corpus.csv
+  data_dir: ./data/phoenix_train
+  annotations_path: ./data/annotations_phoenix/train_corpus.csv
   vocab_path: ./vocab.pkl
   model_save_path: ./models2/lstm_sign2gloss.pth
   data_format: auto
@@ -50,15 +50,15 @@ preprocessing:
   min_sequence_length: 5
   padding_strategy: post
   include_hands: true
-  include_face: true
+  include_face: false
   include_pose: true
   hand_landmarks_count: 21
-  include_hand_confidence: false
+  include_hand_confidence: true
   face_landmarks_count: 468
   use_face_subset: true
   face_subset_indices: null
   pose_landmarks_count: 25
-  include_pose_visibility: false
+  include_pose_visibility: true
   normalize_coordinates: true
   coordinate_range: !!python/tuple
   - -1.0
@@ -75,7 +75,7 @@ preprocessing:
   output_format: tensor
   device: cpu
 logging:
-  project_name: old-config-test
+  project_name: old-config-pose-vis-hand-conf-164
   experiment_name: lstm-old-defaults
   tags:
   - lstm

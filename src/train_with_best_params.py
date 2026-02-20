@@ -23,7 +23,7 @@ from dataclasses import asdict
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import Config, load_config, save_config
-from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig
+from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig
 from lstm_model import SignLanguageLSTM, SignLanguageTrainer
 from train_lstm import PhoenixDatasetManager, validate_dataset
 

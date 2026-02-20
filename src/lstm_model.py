@@ -29,7 +29,7 @@ from config import (
     load_config, LegacyModelConfig
 )
 
-from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
+from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
 
 
 DEBUG = True
@@ -76,12 +76,12 @@ class SignLanguageLSTM(nn.Module):
         self.vocab_size = vocab_size
 
         # Extract model parameters
-        input_size = getattr(model_cfg, 'input_size', 356)
-        hidden_size = getattr(model_cfg, 'hidden_size', 768)
-        num_layers = getattr(model_cfg, 'num_layers', 1)
-        dropout = getattr(model_cfg, 'dropout', 0.1)
+        input_size = getattr(model_cfg, 'input_size')
+        hidden_size = getattr(model_cfg, 'hidden_size')
+        num_layers = getattr(model_cfg, 'num_layers')
+        dropout = getattr(model_cfg, 'dropout')
         bidirectional = getattr(model_cfg, 'bidirectional', False)
-        max_sequence_length = getattr(model_cfg, 'max_sequence_length', 224)
+        max_sequence_length = getattr(model_cfg, 'max_sequence_length')
 
         print(f"Initializing LSTM model:")
         print(f"  - Input size: {input_size}")
@@ -244,12 +244,22 @@ class SignLanguageTrainer:
         Path(self.config.model_save_path).parent.mkdir(parents=True, exist_ok=True)
 
         # Setup preprocessing
-        include_face = feature_config.get('include_face', True) if feature_config else True
+        if self._full_config:
+            include_hand_confidence = self._full_config.preprocessing.include_hand_confidence
+            include_pose_visibility = self._full_config.preprocessing.include_pose_visibility
+            include_face = self._full_config.preprocessing.include_face
+        else:
+            include_hand_confidence = True
+            include_pose_visibility = True
+            include_face = False
+
         preprocess_config = PreprocessingConfig(
             max_sequence_length=self.config.max_sequence_length,
             output_format="tensor",
             device=self.config.device,
             include_face=include_face,
+            include_hand_confidence=include_hand_confidence,
+            include_pose_visibility=include_pose_visibility,
         )
         self.preprocessor = SignLanguagePreprocessor(preprocess_config)
 

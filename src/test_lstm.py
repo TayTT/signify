@@ -37,7 +37,7 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from lstm_model import SignLanguageLSTM, SignLanguageTrainer, ModelConfig
-from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
+from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
 from train_lstm import PhoenixDatasetManager
 
 
@@ -87,7 +87,9 @@ class ModelTester:
             self.config.batch_size = getattr(config_data, 'batch_size', 4)
             self.config.device = str(self.device)  # Use the tester's device
 
-        self.vocab_size = checkpoint['vocab_size']
+        # self.vocab_size = checkpoint['vocab_size'] #quick fix
+
+        self.vocab_size = checkpoint['model_state_dict']['classifier.3.weight'].shape[0]
 
         # Load vocabulary - try multiple sources
         self.gloss_to_idx = None
@@ -155,8 +157,9 @@ class ModelTester:
             normalize_coordinates=True,
             output_format="tensor",
             device=str(self.device),
-            include_hand_confidence=False,
-            include_pose_visibility=False
+            include_hand_confidence=True,
+            include_pose_visibility=True,
+            include_face=False
         )
         preprocessor = SignLanguagePreprocessor(preprocess_config)
 

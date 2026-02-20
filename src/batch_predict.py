@@ -24,7 +24,7 @@ import json
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from lstm_model import SignLanguageLSTM, ModelConfig
-from preprocessJsons import SignLanguagePreprocessor, PreprocessingConfig
+from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig
 
 
 def remove_consecutive_duplicates(text: str) -> str:

@@ -48,7 +48,7 @@ mkdir -p data/videos data/images data/sequences
 ## Favourite commands
 ```bash
 python src/main.py --save-all-frames --process-single data/01April_frames --skip-frames 1
-python src/landmarksVisualizer3D.py output/images_01Dec/video_landmarks.json --track-hands --mode animated
+python src/landmarks_visualizer_3D.py output/images_01Dec/video_landmarks.json --track-hands --mode animated
 
 ```
 

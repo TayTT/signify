@@ -19,8 +19,8 @@ training:
   gradient_accumulation_steps: 1
   optimizer:
     name: adamw
-    learning_rate: 1e-4
-    weight_decay: 1e-4
+    learning_rate: 0.0001
+    weight_decay: 0.0001
     beta1: 0.9
     beta2: 0.98
     eps: 1.0e-08
@@ -40,7 +40,7 @@ training:
   curriculum_stages: 4
   curriculum_overlap_ratio: 0.3
 data:
-  data_dir: ./data/phoenix_jsons/phoenix_dev
+  data_dir: ./phoenix_dev
   annotations_path: ./data/annotations_phoenix/dev_corpus.csv
   vocab_path: ./vocab.pkl
   model_save_path: ./models2/lstm_sign2gloss.pth
@@ -73,7 +73,7 @@ preprocessing:
   interpolation_method: linear
   max_missing_frames: 50
   output_format: tensor
-  device: cpu
+  device: cuda
 logging:
   project_name: old-config-test
   experiment_name: lstm-old-defaults
