@@ -34,11 +34,8 @@ import yaml
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from config import (
-    Config, load_config, save_config, config_from_args,
-    ModelConfig as LegacyModelConfig
-)
-from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
+from config import Config, load_config, save_config, config_from_args
+from preprocessJsons import SignLanguagePreprocessor, PhoenixDataset
 from lstm_model import SignLanguageLSTM, SignLanguageTrainer
 
 
@@ -260,17 +257,7 @@ def setup_wandb(config: Config):
 
 def calculate_input_size(config: Config) -> int:
     """Calculate the correct input size based on preprocessor configuration"""
-    preprocess_config = PreprocessingConfig(
-        max_sequence_length=config.model.max_sequence_length,
-        include_hands=config.preprocessing.include_hands,
-        include_face=config.preprocessing.include_face,
-        include_pose=config.preprocessing.include_pose,
-        use_face_subset=config.preprocessing.use_face_subset,
-        include_hand_confidence=config.preprocessing.include_hand_confidence,
-        include_pose_visibility=config.preprocessing.include_pose_visibility
-    )
-
-    preprocessor = SignLanguagePreprocessor(preprocess_config)
+    preprocessor = SignLanguagePreprocessor(config.preprocessing)
     actual_input_size = preprocessor.feature_dims['total']
 
     print(f"Calculated input dimensions:")
@@ -379,7 +366,6 @@ def apply_args_to_config(config: Config, args: argparse.Namespace) -> Config:
     if args.dropout:
         config.model.dropout = args.dropout
     if args.max_sequence_length:
-        config.model.max_sequence_length = args.max_sequence_length
         config.preprocessing.max_sequence_length = args.max_sequence_length
     if args.max_annotation_length:
         config.model.max_annotation_length = args.max_annotation_length
@@ -471,7 +457,7 @@ def main():
     print(f"Input size: {config.model.input_size}")
     print(f"Hidden size: {config.model.hidden_size}")
     print(f"Batch size: {config.training.batch_size}")
-    print(f"Max sequence length: {config.model.max_sequence_length}")
+    print(f"Max sequence length: {config.preprocessing.max_sequence_length}")
     print(f"Device: {config.device}")
     print()
 
@@ -495,16 +481,7 @@ def main():
         annotations_path=config.data.annotations_path
     )
 
-    preprocess_config = PreprocessingConfig(
-        max_sequence_length=config.model.max_sequence_length,
-        normalize_coordinates=config.preprocessing.normalize_coordinates,
-        output_format=config.preprocessing.output_format,
-        device=config.device,
-        include_hand_confidence=config.preprocessing.include_hand_confidence,
-        include_pose_visibility=config.preprocessing.include_pose_visibility,
-        include_face=config.preprocessing.include_face,
-    )
-    preprocessor = SignLanguagePreprocessor(preprocess_config)
+    preprocessor = SignLanguagePreprocessor(config.preprocessing)
 
     # Verify input size for resume
     if args.resume:

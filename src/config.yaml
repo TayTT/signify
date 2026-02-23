@@ -18,7 +18,6 @@ model:
   use_attention: true          # Enable attention layer
 
   # Sequence parameters
-  max_sequence_length: 224     # Maximum input sequence length
   max_annotation_length: 25    # Maximum output annotation length
 
   # Loss function
@@ -94,7 +93,7 @@ data:
 # ---------------------------
 preprocessing:
   # Sequence processing
-  max_sequence_length: 224     # Should match model.max_sequence_length
+  max_sequence_length: 224     # owned here, not in model
   min_sequence_length: 5
   padding_strategy: post       # Options: pre, post, center
 
@@ -133,6 +132,17 @@ preprocessing:
   # Output format
   output_format: tensor
   device: cpu
+
+# MediaPipe Processing Configuration
+# ------------------------------------
+processing:
+  hand_min_detection_confidence: 0.7
+  hand_min_tracking_confidence: 0.5
+  face_confidence_threshold: 0.5
+  face_temporal_smoothing_frames: 3
+  pose_min_detection_confidence: 0.7
+  hand_min_size: 0.05
+  hand_max_size: 0.5
 
 # Logging Configuration
 # ---------------------

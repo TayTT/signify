@@ -23,7 +23,7 @@ from dataclasses import asdict
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import Config, load_config, save_config
-from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig
+from preprocess_jsons import SignLanguagePreprocessor
 from lstm_model import SignLanguageLSTM, SignLanguageTrainer
 from train_lstm import PhoenixDatasetManager, validate_dataset
 
@@ -244,15 +244,7 @@ def main():
         annotations_path=config.data.annotations_path
     )
 
-    preprocess_config = PreprocessingConfig(
-        max_sequence_length=config.model.max_sequence_length,
-        normalize_coordinates=config.preprocessing.normalize_coordinates,
-        output_format="tensor",
-        device=config.device,
-        include_hand_confidence=config.preprocessing.include_hand_confidence,
-        include_pose_visibility=config.preprocessing.include_pose_visibility
-    )
-    preprocessor = SignLanguagePreprocessor(preprocess_config)
+    preprocessor = SignLanguagePreprocessor(config.preprocessing)
 
     print("\nCreating dataset...")
     dataset = dataset_manager.create_dataset(preprocessor)

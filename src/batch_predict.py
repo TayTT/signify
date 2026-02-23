@@ -23,8 +23,9 @@ import json
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from lstm_model import SignLanguageLSTM, ModelConfig
-from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig
+from lstm_model import SignLanguageLSTM
+from config import Config, PreprocessingConfig
+from preprocess_jsons import SignLanguagePreprocessor
 
 
 def remove_consecutive_duplicates(text: str) -> str:
@@ -114,7 +115,23 @@ class BatchPredictor:
 
         checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
 
-        self.config = checkpoint['config']
+        config_data = checkpoint['config']
+        if isinstance(config_data, Config):
+            self.config = config_data
+        elif isinstance(config_data, dict):
+            self.config = Config.from_dict(config_data)
+        else:
+            # old flat checkpoint - reconstruct best effort
+            self.config = Config()
+            self.config.model.input_size = getattr(config_data, 'input_size', 164)
+            self.config.model.hidden_size = getattr(config_data, 'hidden_size', 768)
+            self.config.model.num_layers = getattr(config_data, 'num_layers', 1)
+            self.config.model.dropout = getattr(config_data, 'dropout', 0.1)
+            self.config.model.bidirectional = getattr(config_data, 'bidirectional', False)
+            self.config.preprocessing.max_sequence_length = getattr(config_data, 'max_sequence_length', 224)
+            self.config.preprocessing.normalize_coordinates = False  # safe default
+            self.config.device = str(self.device)
+
         self.vocab_size = checkpoint['vocab_size']
 
         self.gloss_to_idx = None
@@ -154,16 +171,8 @@ class BatchPredictor:
         print(f"  Device: {self.device}")
 
     def initialize_preprocessor(self):
-        """Initialize preprocessor with model config"""
-        preprocess_config = PreprocessingConfig(
-            max_sequence_length=self.config.max_sequence_length,
-            normalize_coordinates=True,
-            output_format="tensor",
-            device=str(self.device),
-            include_hand_confidence=False,
-            include_pose_visibility=False
-        )
-        self.preprocessor = SignLanguagePreprocessor(preprocess_config)
+        """Initialize preprocessor using the config from the checkpoint"""
+        self.preprocessor = SignLanguagePreprocessor(self.config.preprocessing)
 
     def load_annotations(self):
         """Load annotations from CSV/Excel file"""

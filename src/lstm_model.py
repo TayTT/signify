@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader, random_split
 import wandb
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional
 import json
 import argparse
 from dataclasses import dataclass, asdict
@@ -24,12 +24,9 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 
 # Import configuration system
-from config import (
-    Config, ModelConfig,
-    load_config, LegacyModelConfig
-)
+from config import Config, ModelConfig, load_config
 
-from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
+from preprocess_jsons import SignLanguagePreprocessor, PhoenixDataset
 
 
 DEBUG = True
@@ -58,30 +55,20 @@ class PositionalEncoding(nn.Module):
 class SignLanguageLSTM(nn.Module):
     """LSTM model for real-time sign language recognition"""
 
-    def __init__(self, config: Union[Config, LegacyModelConfig, 'ModelConfig'], vocab_size: int):
+    def __init__(self, config: Config, vocab_size: int):
         super().__init__()
 
-        # Handle different config types
-        if isinstance(config, Config):
-            self.config = config
-            model_cfg = config.model
-        elif isinstance(config, LegacyModelConfig):
-            self.config = config.get_config() if hasattr(config, 'get_config') else config
-            model_cfg = config
-        else:
-            # Legacy ModelConfig dataclass
-            self.config = config
-            model_cfg = config
-
+        self.config = config
+        model_cfg = config.model
         self.vocab_size = vocab_size
 
         # Extract model parameters
-        input_size = getattr(model_cfg, 'input_size')
-        hidden_size = getattr(model_cfg, 'hidden_size')
-        num_layers = getattr(model_cfg, 'num_layers')
-        dropout = getattr(model_cfg, 'dropout')
-        bidirectional = getattr(model_cfg, 'bidirectional', False)
-        max_sequence_length = getattr(model_cfg, 'max_sequence_length')
+        input_size = model_cfg.input_size
+        hidden_size = model_cfg.hidden_size
+        num_layers = model_cfg.num_layers
+        dropout = model_cfg.dropout
+        bidirectional = model_cfg.bidirectional
+        max_sequence_length = config.preprocessing.max_sequence_length  # owned by preprocessing
 
         print(f"Initializing LSTM model:")
         print(f"  - Input size: {input_size}")
@@ -216,79 +203,47 @@ class SignLanguageLSTM(nn.Module):
 class SignLanguageTrainer:
     """Training pipeline for sign language LSTM model"""
 
-    def __init__(self, config: Union[Config, LegacyModelConfig, 'ModelConfig'], feature_config: dict = None):
-        # Handle different config types
-        if isinstance(config, Config):
-            self._full_config = config
-            self.config = LegacyModelConfig(config=config)
-        elif isinstance(config, LegacyModelConfig):
-            self._full_config = config.get_config() if hasattr(config, 'get_config') else None
-            self.config = config
-        else:
-            # Legacy dataclass - wrap it
-            self._full_config = None
-            self.config = config
-
-        self.device = torch.device(self.config.device)
+    def __init__(self, config: Config, feature_config: dict = None):
+        self.config = config
+        self.device = torch.device(config.device)
         self.use_curriculum_learning = False
         self.curriculum_dataset = None
         self.current_epoch = 0
 
-        # Initialize WandB
         wandb.init(
-            project=self.config.project_name,
-            name=self.config.experiment_name,
-            config=self._get_config_dict()
+            project=self.config.logging.project_name,
+            name=self.config.logging.experiment_name,
+            config=self.config.to_dict()
         )
 
-        Path(self.config.model_save_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.config.data.model_save_path).parent.mkdir(parents=True, exist_ok=True)
 
-        # Setup preprocessing
-        if self._full_config:
-            include_hand_confidence = self._full_config.preprocessing.include_hand_confidence
-            include_pose_visibility = self._full_config.preprocessing.include_pose_visibility
-            include_face = self._full_config.preprocessing.include_face
-        else:
-            include_hand_confidence = True
-            include_pose_visibility = True
-            include_face = False
-
-        preprocess_config = PreprocessingConfig(
-            max_sequence_length=self.config.max_sequence_length,
-            output_format="tensor",
-            device=self.config.device,
-            include_face=include_face,
-            include_hand_confidence=include_hand_confidence,
-            include_pose_visibility=include_pose_visibility,
-        )
-        self.preprocessor = SignLanguagePreprocessor(preprocess_config)
+        self.preprocessor = SignLanguagePreprocessor(self.config.preprocessing)
 
         self.dataset = self._load_dataset()
 
-        # Update input size based on actual feature dimensions
+        # update input size based on actual feature dimensions
         actual_input_size = self.preprocessor.feature_dims['total']
-        if self.config.input_size != actual_input_size:
-            print(f"Updating input_size from {self.config.input_size} to {actual_input_size}")
-            self.config.input_size = actual_input_size
+        if self.config.model.input_size != actual_input_size:
+            print(f"Updating input_size from {self.config.model.input_size} to {actual_input_size}")
+            self.config.model.input_size = actual_input_size
 
         self.train_loader, self.val_loader = self._create_data_loaders()
 
         self.model = SignLanguageLSTM(self.config, self.dataset.vocab_size).to(self.device)
 
-        # Setup optimizer
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
-            lr=self.config.learning_rate,
-            weight_decay=self.config.weight_decay,
-            betas=(0.9, 0.98),
-            eps=1e-8
+            lr=self.config.training.optimizer.learning_rate,
+            weight_decay=self.config.training.optimizer.weight_decay,
+            betas=(self.config.training.optimizer.beta1, self.config.training.optimizer.beta2),
+            eps=self.config.training.optimizer.eps
         )
 
-        # Setup scheduler
-        def lr_lambda_func(step):
-            warmup_steps = 20
-            total_steps = 200
+        warmup_steps = self.config.training.scheduler.warmup_steps
+        total_steps = self.config.training.scheduler.total_steps
 
+        def lr_lambda_func(step):
             if step < warmup_steps:
                 return max(0.1, step / warmup_steps)
             else:
@@ -299,32 +254,22 @@ class SignLanguageTrainer:
 
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda_func)
 
-        # Training state
         self.best_val_loss = float('inf')
         self.patience_counter = 0
         self.train_losses = []
         self.val_losses = []
 
-    def _get_config_dict(self) -> Dict:
-        """Get config as dictionary for logging"""
-        if self._full_config:
-            return self._full_config.to_dict()
-        elif hasattr(self.config, '__dict__'):
-            return vars(self.config)
-        else:
-            return asdict(self.config) if hasattr(self.config, '__dataclass_fields__') else {}
-
     def _load_dataset(self) -> PhoenixDataset:
         """Load and create Phoenix dataset"""
         try:
-            vocab_path = Path(self.config.vocab_path)
+            vocab_path = Path(self.config.data.vocab_path)
             dataset = self.preprocessor.create_phoenix_dataset(
-                data_dir=self.config.data_dir,
-                annotations_path=self.config.annotations_path,
+                data_dir=self.config.data.data_dir,
+                annotations_path=self.config.data.annotations_path,
                 vocab_path=str(vocab_path) if vocab_path.exists() else None
             )
 
-            dataset.save_vocabulary(self.config.vocab_path)
+            dataset.save_vocabulary(self.config.data.vocab_path)
 
             print(f"Loaded dataset with {len(dataset)} samples")
             print(f"Vocabulary size: {dataset.vocab_size}")
@@ -337,18 +282,18 @@ class SignLanguageTrainer:
 
     def _create_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
         """Create data loaders"""
-        train_size = int(0.8 * len(self.dataset))
+        train_size = int(self.config.training.train_split * len(self.dataset))
         val_size = len(self.dataset) - train_size
 
         train_dataset, val_dataset = random_split(
             self.dataset,
             [train_size, val_size],
-            generator=torch.Generator().manual_seed(42)
+            generator=torch.Generator().manual_seed(self.config.training.random_seed)
         )
 
         train_loader = DataLoader(
             train_dataset,
-            batch_size=self.config.batch_size,
+            batch_size=self.config.training.batch_size,
             shuffle=True,
             num_workers=0,
             pin_memory=False,
@@ -358,7 +303,7 @@ class SignLanguageTrainer:
 
         val_loader = DataLoader(
             val_dataset,
-            batch_size=self.config.batch_size,
+            batch_size=self.config.training.batch_size,
             shuffle=False,
             num_workers=0,
             pin_memory=False,
@@ -625,9 +570,9 @@ class SignLanguageTrainer:
                 print("New best model saved!")
             else:
                 self.patience_counter += 1
-                print(f"Patience: {self.patience_counter}/{self.config.patience}")
+                print(f"Patience: {self.patience_counter}/{self.config.training.patience}")
 
-            if self.patience_counter >= self.config.patience:
+            if self.patience_counter >= self.config.training.patience:
                 print("Early stopping triggered!")
                 break
 
@@ -635,28 +580,18 @@ class SignLanguageTrainer:
 
     def save_model(self):
         """Save model checkpoint"""
-        # Convert config to dictionary for pickling
-        if hasattr(self.config, 'get_config'):
-            # LegacyModelConfig - get underlying Config object
-            config_dict = self.config.get_config().to_dict()
-        elif hasattr(self.config, 'to_dict'):
-            # Direct Config object
-            config_dict = self.config.to_dict()
-        else:
-            # Old-style dataclass - use asdict
-            from dataclasses import asdict
-            config_dict = asdict(self.config)
-
         checkpoint = {
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'config': config_dict,  # ✅ Save as dictionary
+            'config': self.config,
             'vocab_size': self.dataset.vocab_size,
             'best_val_loss': self.best_val_loss,
             'train_losses': self.train_losses,
-            'val_losses': self.val_losses
+            'val_losses': self.val_losses,
+            'gloss_to_idx': self.dataset.gloss_to_idx,
+            'idx_to_gloss': self.dataset.idx_to_gloss,
         }
-        torch.save(checkpoint, self.config.model_save_path)
+        torch.save(checkpoint, self.config.data.model_save_path)
 
     def load_model(self, checkpoint_path: str):
         """Load model from checkpoint"""

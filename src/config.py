@@ -50,8 +50,7 @@ class ModelConfig:
     num_attention_heads: int = 1
     use_attention: bool = True
 
-    # Sequence parameters
-    max_sequence_length: int = 224
+    # Sequence parameters - max_sequence_length lives in PreprocessingConfig
     max_annotation_length: int = 25
 
     # CTC loss option
@@ -143,7 +142,7 @@ class PreprocessingConfig:
     """Feature extraction and preprocessing configuration"""
 
     # Sequence processing
-    max_sequence_length: int = 512
+    max_sequence_length: int = 224
     min_sequence_length: int = 5
     padding_strategy: str = "post"  # pre, post, center
 
@@ -209,6 +208,19 @@ class LoggingConfig:
 
 
 @dataclass
+class ProcessingConfig:
+    """MediaPipe and video processing thresholds"""
+
+    hand_min_detection_confidence: float = 0.7
+    hand_min_tracking_confidence: float = 0.5
+    face_confidence_threshold: float = 0.5
+    face_temporal_smoothing_frames: int = 3
+    pose_min_detection_confidence: float = 0.7
+    hand_min_size: float = 0.05
+    hand_max_size: float = 0.5
+
+
+@dataclass
 class Config:
     """Master configuration containing all sub-configurations"""
 
@@ -216,23 +228,24 @@ class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     data: DataConfig = field(default_factory=DataConfig)
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
+    processing: ProcessingConfig = field(default_factory=ProcessingConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     # Runtime settings (not saved to config files)
     device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
 
     def __post_init__(self):
-        """Synchronize settings across sub-configs"""
-        # Sync max_sequence_length
-        if self.model.max_sequence_length != self.preprocessing.max_sequence_length:
-            self.preprocessing.max_sequence_length = self.model.max_sequence_length
-
-        # Sync device
-        self.preprocessing.device = self.device
+        self.preprocessing.device = self.device  # sync device only
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert config to dictionary"""
-        return asdict(self)
+        """Convert config to dictionary - tuples become lists for yaml compat"""
+        def _tuples_to_lists(obj):
+            if isinstance(obj, dict):
+                return {k: _tuples_to_lists(v) for k, v in obj.items()}
+            if isinstance(obj, (tuple, list)):
+                return [_tuples_to_lists(v) for v in obj]
+            return obj
+        return _tuples_to_lists(asdict(self))
 
     def to_yaml(self, path: Union[str, Path]) -> None:
         """Save config to YAML file"""
@@ -260,6 +273,7 @@ class Config:
         training_dict = config_dict.get('training', {})
         data_dict = config_dict.get('data', {})
         preprocessing_dict = config_dict.get('preprocessing', {})
+        processing_dict = config_dict.get('processing', {})
         logging_dict = config_dict.get('logging', {})
 
         # Handle nested optimizer and scheduler configs
@@ -274,11 +288,17 @@ class Config:
         if 'scale_range' in preprocessing_dict:
             preprocessing_dict['scale_range'] = tuple(preprocessing_dict['scale_range'])
 
+        # backward compat: old yamls had max_sequence_length under model
+        old_seq_len = model_dict.pop('max_sequence_length', None)
+        if old_seq_len is not None and 'max_sequence_length' not in preprocessing_dict:
+            preprocessing_dict['max_sequence_length'] = old_seq_len
+
         return cls(
             model=ModelConfig(**model_dict) if model_dict else ModelConfig(),
             training=TrainingConfig(**training_dict) if training_dict else TrainingConfig(),
             data=DataConfig(**data_dict) if data_dict else DataConfig(),
             preprocessing=PreprocessingConfig(**preprocessing_dict) if preprocessing_dict else PreprocessingConfig(),
+            processing=ProcessingConfig(**processing_dict) if processing_dict else ProcessingConfig(),
             logging=LoggingConfig(**logging_dict) if logging_dict else LoggingConfig(),
             device=config_dict.get('device', "cuda" if torch.cuda.is_available() else "cpu")
         )
@@ -378,111 +398,6 @@ def merge_configs(base: Config, override: Config) -> Config:
     return Config.from_dict(merged_dict)
 
 
-# Backward compatibility: Create a ModelConfig-compatible object from new Config
-class LegacyModelConfig:
-    """
-    Backward-compatible ModelConfig that wraps the new Config system.
-    Use this for gradual migration of existing code.
-    """
-
-    def __init__(self, config: Optional[Config] = None, **kwargs):
-        if config is None:
-            config = Config()
-
-        # Apply any kwargs as overrides
-        if kwargs:
-            config_dict = config.to_dict()
-
-            # Map old flat kwargs to new nested structure
-            mapping = {
-                'input_size': ('model', 'input_size'),
-                'hidden_size': ('model', 'hidden_size'),
-                'num_layers': ('model', 'num_layers'),
-                'dropout': ('model', 'dropout'),
-                'bidirectional': ('model', 'bidirectional'),
-                'batch_size': ('training', 'batch_size'),
-                'learning_rate': ('training', 'optimizer', 'learning_rate'),
-                'weight_decay': ('training', 'optimizer', 'weight_decay'),
-                'num_epochs': ('training', 'num_epochs'),
-                'patience': ('training', 'patience'),
-                'gradient_clip_norm': ('training', 'gradient_clip_norm'),
-                'max_sequence_length': ('model', 'max_sequence_length'),
-                'max_annotation_length': ('model', 'max_annotation_length'),
-                'project_name': ('logging', 'project_name'),
-                'experiment_name': ('logging', 'experiment_name'),
-                'data_dir': ('data', 'data_dir'),
-                'annotations_path': ('data', 'annotations_path'),
-                'vocab_path': ('data', 'vocab_path'),
-                'model_save_path': ('data', 'model_save_path'),
-                'use_curriculum_learning': ('training', 'use_curriculum_learning'),
-                'curriculum_warmup_epochs': ('training', 'curriculum_warmup_epochs'),
-                'curriculum_stages': ('training', 'curriculum_stages'),
-                'curriculum_overlap_ratio': ('training', 'curriculum_overlap_ratio'),
-            }
-
-            for old_key, value in kwargs.items():
-                if old_key in mapping:
-                    path = mapping[old_key]
-                    current = config_dict
-                    for part in path[:-1]:
-                        if part not in current:
-                            current[part] = {}
-                        current = current[part]
-                    current[path[-1]] = value
-                elif old_key == 'device':
-                    config_dict['device'] = value
-
-            config = Config.from_dict(config_dict)
-
-        self._config = config
-        self._sync_attributes()
-
-    def _sync_attributes(self):
-        """Sync attributes for backward compatibility"""
-        # Model attributes
-        self.input_size = self._config.model.input_size
-        self.hidden_size = self._config.model.hidden_size
-        self.num_layers = self._config.model.num_layers
-        self.dropout = self._config.model.dropout
-        self.bidirectional = self._config.model.bidirectional
-        self.max_sequence_length = self._config.model.max_sequence_length
-        self.max_annotation_length = self._config.model.max_annotation_length
-
-        # Training attributes
-        self.batch_size = self._config.training.batch_size
-        self.learning_rate = self._config.training.optimizer.learning_rate
-        self.weight_decay = self._config.training.optimizer.weight_decay
-        self.num_epochs = self._config.training.num_epochs
-        self.patience = self._config.training.patience
-        self.gradient_clip_norm = self._config.training.gradient_clip_norm
-
-        # Curriculum learning
-        self.use_curriculum_learning = self._config.training.use_curriculum_learning
-        self.curriculum_warmup_epochs = self._config.training.curriculum_warmup_epochs
-        self.curriculum_stages = self._config.training.curriculum_stages
-        self.curriculum_overlap_ratio = self._config.training.curriculum_overlap_ratio
-
-        # Data attributes
-        self.data_dir = self._config.data.data_dir
-        self.annotations_path = self._config.data.annotations_path
-        self.vocab_path = self._config.data.vocab_path
-        self.model_save_path = self._config.data.model_save_path
-
-        # Logging attributes
-        self.project_name = self._config.logging.project_name
-        self.experiment_name = self._config.logging.experiment_name
-
-        # Device
-        self.device = self._config.device
-
-    def get_config(self) -> Config:
-        """Get the underlying Config object"""
-        return self._config
-
-
-# Alias for backward compatibility
-# ModelConfig = LegacyModelConfig
-
 
 def config_from_args(args) -> Config:
     """
@@ -512,8 +427,8 @@ def config_from_args(args) -> Config:
         config.model.num_layers = args.num_layers
     if hasattr(args, 'dropout'):
         config.model.dropout = args.dropout
-    if hasattr(args, 'max_sequence_length'):
-        config.model.max_sequence_length = args.max_sequence_length
+    if hasattr(args, 'max_sequence_length') and args.max_sequence_length:
+        config.preprocessing.max_sequence_length = args.max_sequence_length
     if hasattr(args, 'max_annotation_length'):
         config.model.max_annotation_length = args.max_annotation_length
 

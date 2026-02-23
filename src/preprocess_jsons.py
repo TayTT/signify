@@ -12,7 +12,6 @@ import torch
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
-from dataclasses import dataclass
 import warnings
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset
@@ -31,56 +30,7 @@ CORE_POSE_LANDMARKS = [
 
 DEBUG = False
 
-@dataclass
-class PreprocessingConfig:
-    """Configuration for preprocessing parameters"""
-    # Sequence processing
-    max_sequence_length: int = 512
-    min_sequence_length: int = 5
-    padding_strategy: str = "post"  # "pre", "post", or "center"
-
-    # Feature selection
-    include_hands: bool = True
-    include_face: bool = True
-    include_pose: bool = True
-
-    # Hand features
-    hand_landmarks_count: int = 21
-    include_hand_confidence: bool = False
-
-    # Face features
-    face_landmarks_count: int = 468  # Full MediaPipe face mesh
-    use_face_subset: bool = True  # Use subset for efficiency
-    face_subset_indices: Optional[List[int]] = None
-
-    # Pose features
-    pose_landmarks_count: int = 25
-    include_pose_visibility: bool = False
-
-    # Normalization
-    normalize_coordinates: bool = True
-    coordinate_range: Tuple[float, float] = (-1.0, 1.0)
-
-    # Data augmentation
-    # TODO test
-    apply_augmentation: bool = False
-    rotation_range: float = 0.1  # radians
-    scale_range: Tuple[float, float] = (0.9, 1.1)
-    noise_std: float = 0.01
-
-    # Missing data handling
-    interpolate_missing: bool = True
-    interpolation_method: str = "linear"  # "linear", "cubic", "nearest"
-    max_missing_frames: int = 50 # Maximum consecutive missing frames to interpolate
-
-    # Output format
-    output_format: str = "tensor"  # "tensor", "numpy", or "dict"
-    device: str = "cpu"
-
-    # Phoenix dataset specific
-    phoenix_data_path = None
-    phoenix_annotations_path = None
-    vocab_size: int = 1000  # Maximum vocabulary size for glosses
+from config import PreprocessingConfig  # single source of truth
 
 
 class PhoenixDataset(Dataset):
@@ -1358,7 +1308,7 @@ def preprocess_single(json_path: str):
     # Create configuration
     config = create_default_config(
         max_sequence_length=256,
-        normalize_coordinates=True,
+        normalize_coordinates=False,
         include_hand_confidence=False,
         apply_augmentation=False,
         output_format="tensor"

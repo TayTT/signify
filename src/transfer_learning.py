@@ -36,9 +36,22 @@ from typing import Dict, List
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
-from lstm_model import SignLanguageLSTM, SignLanguageTrainer, ModelConfig
+from config import Config, load_config, PreprocessingConfig
+from preprocess_jsons import SignLanguagePreprocessor, PhoenixDataset
+from lstm_model import SignLanguageLSTM, SignLanguageTrainer
 from train_lstm import PhoenixDatasetManager, validate_dataset
+
+
+def _cfg_get(cfg, dotted_key, default=None):
+    """safe attribute access for both new Config and old flat checkpoint configs"""
+    try:
+        obj = cfg
+        for k in dotted_key.split('.'):
+            obj = getattr(obj, k)
+        return obj
+    except AttributeError:
+        flat_key = dotted_key.split('.')[-1]
+        return getattr(cfg, flat_key, default)
 
 
 def load_pretrained_model(checkpoint_path: str):
@@ -55,14 +68,14 @@ def load_pretrained_model(checkpoint_path: str):
     pretrained_vocab_size = checkpoint['vocab_size']
 
     # Infer preprocessing config from input size
-    input_size = pretrained_config.input_size
+    input_size = _cfg_get(pretrained_config, 'model.input_size', 164)
 
     print(f"Pre-trained model configuration:")
-    print(f"  Input size: {pretrained_config.input_size}")
-    print(f"  Hidden size: {pretrained_config.hidden_size}")
-    print(f"  Num layers: {pretrained_config.num_layers}")
+    print(f"  Input size: {_cfg_get(pretrained_config, 'model.input_size', '?')}")
+    print(f"  Hidden size: {_cfg_get(pretrained_config, 'model.hidden_size', '?')}")
+    print(f"  Num layers: {_cfg_get(pretrained_config, 'model.num_layers', '?')}")
     print(f"  Vocabulary size: {pretrained_vocab_size}")
-    print(f"  Max sequence length: {pretrained_config.max_sequence_length}")
+    print(f"  Max sequence length: {_cfg_get(pretrained_config, 'preprocessing.max_sequence_length', '?')}")
 
     print(f"\n=== COMPLETE PRE-TRAINED MODEL CONFIG ===")
     if hasattr(pretrained_config, '__dict__'):
@@ -78,11 +91,11 @@ def load_pretrained_model(checkpoint_path: str):
     # Log pre-trained model info to WandB
     if wandb.run is not None:
         wandb.log({
-            "pretrained/input_size": pretrained_config.input_size,
-            "pretrained/hidden_size": pretrained_config.hidden_size,
-            "pretrained/num_layers": pretrained_config.num_layers,
+            "pretrained/input_size": _cfg_get(pretrained_config, 'model.input_size', 0),
+            "pretrained/hidden_size": _cfg_get(pretrained_config, 'model.hidden_size', 0),
+            "pretrained/num_layers": _cfg_get(pretrained_config, 'model.num_layers', 0),
             "pretrained/vocab_size": pretrained_vocab_size,
-            "pretrained/dropout": pretrained_config.dropout,
+            "pretrained/dropout": _cfg_get(pretrained_config, 'model.dropout', 0),
         })
 
         # Log training history if available
@@ -97,12 +110,12 @@ def load_pretrained_model(checkpoint_path: str):
 
         # Extract preprocessing config if available
         preprocessing_info = {
-            'include_hands': getattr(pretrained_config, 'include_hands', True),
-            'include_face': getattr(pretrained_config, 'include_face', False),
-            'include_pose': getattr(pretrained_config, 'include_pose', True),
-            'use_face_subset': getattr(pretrained_config, 'use_face_subset', True),
-            'include_hand_confidence': getattr(pretrained_config, 'include_hand_confidence', False),  # NPZ files don't contain confidence scores
-            'include_pose_visibility': getattr(pretrained_config, 'include_pose_visibility', False),
+            'include_hands': _cfg_get(pretrained_config, 'preprocessing.include_hands', True),
+            'include_face': _cfg_get(pretrained_config, 'preprocessing.include_face', False),
+            'include_pose': _cfg_get(pretrained_config, 'preprocessing.include_pose', True),
+            'use_face_subset': _cfg_get(pretrained_config, 'preprocessing.use_face_subset', True),
+            'include_hand_confidence': _cfg_get(pretrained_config, 'preprocessing.include_hand_confidence', False),
+            'include_pose_visibility': _cfg_get(pretrained_config, 'preprocessing.include_pose_visibility', False),
         }
 
         print(f"\nDetected preprocessing config:")
@@ -113,7 +126,7 @@ def load_pretrained_model(checkpoint_path: str):
 
 
 def create_target_dataset(data_dir: str, annotations_path: str,
-                          pretrained_config: ModelConfig, device: str,
+                          pretrained_config, device: str,
                           preprocessing_info: dict = None):
     """Create dataset for target domain (new sign language)"""
     print(f"\n=== Creating Target Dataset ===")
@@ -151,11 +164,11 @@ def create_target_dataset(data_dir: str, annotations_path: str,
         else:
             pose_features = 0
 
-        face_features = pretrained_config.input_size - hands_features - pose_features
+        face_features = _cfg_get(pretrained_config, 'model.input_size', 164) - hands_features - pose_features
         expected_face_landmarks = face_features // 3
 
         print(
-            f"Calculation: {pretrained_config.input_size} - {hands_features} hands - {pose_features} pose = {face_features} face")
+            f"Calculation: {_cfg_get(pretrained_config, 'model.input_size', 164)} - {hands_features} hands - {pose_features} pose = {face_features} face")
         print(f"Expected face landmarks: {expected_face_landmarks}")
 
         # ACTUALLY CREATE THE LIST!
@@ -166,7 +179,7 @@ def create_target_dataset(data_dir: str, annotations_path: str,
 
     # Create config ONCE with all parameters
     preprocess_config = PreprocessingConfig(
-        max_sequence_length=pretrained_config.max_sequence_length,
+        max_sequence_length=_cfg_get(pretrained_config, 'preprocessing.max_sequence_length', 224),
         include_hands=include_hands,
         include_face=include_face,
         include_pose=include_pose,
@@ -191,8 +204,8 @@ def create_target_dataset(data_dir: str, annotations_path: str,
     print(f"Face: {preprocessor.feature_dims.get('face', 0)}")
     print(f"Pose: {preprocessor.feature_dims.get('pose', 0)}")
     print(f"Total: {preprocessor.feature_dims['total']}")
-    print(f"\nNeeded: {pretrained_config.input_size}")
-    print(f"Difference: {pretrained_config.input_size - preprocessor.feature_dims['total']}")
+    print(f"\nNeeded: {_cfg_get(pretrained_config, 'model.input_size', 0)}")
+    print(f"Difference: {_cfg_get(pretrained_config, 'model.input_size', 0) - preprocessor.feature_dims['total']}")
 
     # Calculate what each should be
     print(f"\n=== CONFIGURATION ===")
@@ -209,17 +222,16 @@ def create_target_dataset(data_dir: str, annotations_path: str,
     print(preprocessing_info)
 
 
-    # Verify input size matches
-    actual_input_size = preprocessor.feature_dims['total']
-    if actual_input_size != pretrained_config.input_size:
+    pretrained_input_size = _cfg_get(pretrained_config, 'model.input_size', 0)
+    if actual_input_size != pretrained_input_size:
         print(f"\nWARNING: Input size mismatch!")
-        print(f"  Pre-trained model expects: {pretrained_config.input_size}")
+        print(f"  Pre-trained model expects: {pretrained_input_size}")
         print(f"  Current preprocessor produces: {actual_input_size}")
         print(f"\nAttempting to adjust preprocessor configuration...")
 
         raise ValueError(
             f"Input size mismatch. Please adjust PreprocessingConfig to produce "
-            f"{pretrained_config.input_size} features instead of {actual_input_size}"
+            f"{pretrained_input_size} features instead of {actual_input_size}"
         )
 
     # Create dataset with new vocabulary
@@ -371,50 +383,47 @@ def transfer_weights(pretrained_checkpoint: dict, new_model: SignLanguageLSTM,
     return new_model
 
 
-def create_transfer_config(pretrained_config: ModelConfig, args) -> ModelConfig:
+def create_transfer_config(pretrained_config, args) -> Config:
     """Create config for transfer learning"""
-    config = ModelConfig(
-        # Keep architecture from pre-trained model
-        input_size=pretrained_config.input_size,
-        hidden_size=pretrained_config.hidden_size,
-        num_layers=pretrained_config.num_layers,
-        dropout=pretrained_config.dropout,
-        bidirectional=pretrained_config.bidirectional,
-        max_sequence_length=pretrained_config.max_sequence_length,
-        max_annotation_length=pretrained_config.max_annotation_length,
+    config = Config()
 
-        # New dataset paths
-        data_dir=args.data_dir,
-        annotations_path=args.annotations_path,
-        vocab_path=os.path.join(args.output_dir, "vocab.pkl"),
-        model_save_path=os.path.join(args.output_dir, "lstm_transferred.pth"),
+    # keep architecture from pre-trained model
+    config.model.input_size = _cfg_get(pretrained_config, 'model.input_size', 164)
+    config.model.hidden_size = _cfg_get(pretrained_config, 'model.hidden_size', 768)
+    config.model.num_layers = _cfg_get(pretrained_config, 'model.num_layers', 1)
+    config.model.dropout = _cfg_get(pretrained_config, 'model.dropout', 0.1)
+    config.model.bidirectional = _cfg_get(pretrained_config, 'model.bidirectional', False)
+    config.model.max_annotation_length = _cfg_get(pretrained_config, 'model.max_annotation_length', 25)
 
-        # Training parameters (can be different for fine-tuning)
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        num_epochs=args.num_epochs,
-        patience=args.patience,
+    config.preprocessing.max_sequence_length = _cfg_get(pretrained_config, 'preprocessing.max_sequence_length', 224)
 
-        # WandB
-        project_name=args.project_name,
-        experiment_name=args.experiment_name,
+    # new dataset paths
+    config.data.data_dir = args.data_dir
+    config.data.annotations_path = args.annotations_path
+    config.data.vocab_path = os.path.join(args.output_dir, "vocab.pkl")
+    config.data.model_save_path = os.path.join(args.output_dir, "lstm_transferred.pth")
 
-        # Device
-        device=args.device
-    )
+    # training params (can differ from pre-training for fine-tuning)
+    config.training.batch_size = args.batch_size
+    config.training.optimizer.learning_rate = args.learning_rate
+    config.training.num_epochs = args.num_epochs
+    config.training.patience = args.patience
+
+    config.logging.project_name = args.project_name
+    config.logging.experiment_name = args.experiment_name
+    config.device = args.device
 
     return config
 
 
-def setup_enhanced_wandb(config: ModelConfig, args, pretrained_checkpoint: dict,
+def setup_enhanced_wandb(config: Config, args, pretrained_checkpoint: dict,
                          target_dataset, transferred_params: dict):
     """Setup WandB with comprehensive configuration"""
 
-    # Initialize WandB
     wandb.init(
-        project=config.project_name,
-        name=config.experiment_name,
-        config=asdict(config),
+        project=config.logging.project_name,
+        name=config.logging.experiment_name,
+        config=config.to_dict(),
         tags=['transfer-learning', 'cross-dataset', 'fine-tuning'],
         notes=f"Transfer learning: freeze_encoder={args.freeze_encoder}, "
               f"pretrained_vocab={pretrained_checkpoint['vocab_size']}, "
@@ -557,8 +566,7 @@ def main():
 
     # Save config
     config_path = os.path.join(args.output_dir, "config.yaml")
-    with open(config_path, 'w') as f:
-        yaml.dump(asdict(config), f, default_flow_style=False)
+    config.to_yaml(config_path)
     print(f"\nSaved config to: {config_path}")
 
     # Step 4: Initialize new model with target vocabulary size

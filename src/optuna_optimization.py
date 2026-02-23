@@ -35,10 +35,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     Config, load_config, save_config,
-    ModelConfig as ConfigModelConfig,
     TrainingConfig, OptimizerConfig, SchedulerConfig
 )
-from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
+from preprocessJsons import SignLanguagePreprocessor, PhoenixDataset
 from lstm_model import SignLanguageLSTM
 from train_lstm import PhoenixDatasetManager
 
@@ -60,16 +59,7 @@ class OptunaOptimizer:
             annotations_path=base_config.data.annotations_path
         )
 
-        # Create preprocessor
-        self.preprocess_config = PreprocessingConfig(
-            max_sequence_length=base_config.model.max_sequence_length,
-            normalize_coordinates=base_config.preprocessing.normalize_coordinates,
-            output_format="tensor",
-            device=base_config.device,
-            include_hand_confidence=base_config.preprocessing.include_hand_confidence,
-            include_pose_visibility=base_config.preprocessing.include_pose_visibility
-        )
-        self.preprocessor = SignLanguagePreprocessor(self.preprocess_config)
+        self.preprocessor = SignLanguagePreprocessor(base_config.preprocessing)
 
         # Store input size
         self.input_size = self.preprocessor.feature_dims['total']
@@ -312,7 +302,7 @@ class OptunaOptimizer:
         trial_config.model.num_layers = params['num_layers']
         trial_config.model.dropout = params['dropout']
         trial_config.model.bidirectional = params['bidirectional']
-        trial_config.model.max_sequence_length = self.base_config.model.max_sequence_length
+        trial_config.preprocessing.max_sequence_length = self.base_config.preprocessing.max_sequence_length
         trial_config.device = str(self.device)
 
         # Initialize WandB for this trial
@@ -513,7 +503,7 @@ class OptunaOptimizer:
         config.model.num_layers = params['num_layers']
         config.model.dropout = params['dropout']
         config.model.bidirectional = params['bidirectional']
-        config.model.max_sequence_length = self.base_config.model.max_sequence_length
+        config.preprocessing.max_sequence_length = self.base_config.preprocessing.max_sequence_length
 
         # Training config
         config.training.batch_size = params['batch_size']
@@ -615,7 +605,7 @@ def main():
 
     # Apply argument overrides
     base_config.data.vocab_path = args.vocab_path
-    base_config.model.max_sequence_length = args.max_sequence_length
+    base_config.preprocessing.max_sequence_length = args.max_sequence_length
     base_config.device = args.device
     base_config.logging.project_name = args.project_name
 

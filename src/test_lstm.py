@@ -36,8 +36,9 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from lstm_model import SignLanguageLSTM, SignLanguageTrainer, ModelConfig
-from preprocess_jsons import SignLanguagePreprocessor, PreprocessingConfig, PhoenixDataset
+from config import Config, load_config
+from lstm_model import SignLanguageLSTM, SignLanguageTrainer
+from preprocess_jsons import SignLanguagePreprocessor, PhoenixDataset
 from train_lstm import PhoenixDatasetManager
 
 
@@ -58,50 +59,34 @@ class ModelTester:
 
         checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
 
-        # Handle config - might be dict, broken object, or working object
         config_data = checkpoint.get('config')
 
-        if isinstance(config_data, dict):
-            # New format - config saved as dictionary
-            from config import Config, LegacyModelConfig
-            full_config = Config.from_dict(config_data)
-            self.config = LegacyModelConfig(config=full_config)
+        if isinstance(config_data, Config):
+            self.config = config_data
         else:
-            # Old format - config saved as object (might be broken)
-            print("Rebuilding config from checkpoint attributes...")
-
-            # Create a minimal config object with just what we need
-            class MinimalConfig:
-                pass
-
-            self.config = MinimalConfig()
-
-            # Copy all attributes from the broken config
-            self.config.input_size = getattr(config_data, 'input_size', 345)
-            self.config.hidden_size = getattr(config_data, 'hidden_size', 768)
-            self.config.num_layers = getattr(config_data, 'num_layers', 1)
-            self.config.dropout = getattr(config_data, 'dropout', 0.1)
-            self.config.bidirectional = getattr(config_data, 'bidirectional', False)
-            self.config.max_sequence_length = getattr(config_data, 'max_sequence_length', 224)
-            self.config.max_annotation_length = getattr(config_data, 'max_annotation_length', 25)
-            self.config.batch_size = getattr(config_data, 'batch_size', 4)
-            self.config.device = str(self.device)  # Use the tester's device
-
-        # self.vocab_size = checkpoint['vocab_size'] #quick fix
+            # old flat checkpoint - reconstruct a Config from whatever attrs exist
+            print("Old checkpoint format, rebuilding config...")
+            self.config = Config()
+            self.config.model.input_size = getattr(config_data, 'input_size', 345)
+            self.config.model.hidden_size = getattr(config_data, 'hidden_size', 768)
+            self.config.model.num_layers = getattr(config_data, 'num_layers', 1)
+            self.config.model.dropout = getattr(config_data, 'dropout', 0.1)
+            self.config.model.bidirectional = getattr(config_data, 'bidirectional', False)
+            self.config.model.max_annotation_length = getattr(config_data, 'max_annotation_length', 25)
+            self.config.preprocessing.max_sequence_length = getattr(config_data, 'max_sequence_length', 224)
+            self.config.training.batch_size = getattr(config_data, 'batch_size', 4)
+            self.config.device = str(self.device)
 
         self.vocab_size = checkpoint['model_state_dict']['classifier.3.weight'].shape[0]
 
-        # Load vocabulary - try multiple sources
         self.gloss_to_idx = None
         self.idx_to_gloss = None
 
-        # Try 1: Load from checkpoint itself
         if 'gloss_to_idx' in checkpoint:
             print("Loading vocabulary from checkpoint...")
             self.gloss_to_idx = checkpoint['gloss_to_idx']
             self.idx_to_gloss = checkpoint['idx_to_gloss']
 
-        # Try 2: Load from vocab.pkl file
         if self.gloss_to_idx is None:
             vocab_path = self.model_path.parent / "vocab.pkl"
             if vocab_path.exists():
@@ -110,7 +95,6 @@ class ModelTester:
                 with open(vocab_path, 'rb') as f:
                     vocab_data = pickle.load(f)
 
-                # Handle different vocab file formats
                 if isinstance(vocab_data, dict):
                     if 'gloss_to_idx' in vocab_data:
                         self.gloss_to_idx = vocab_data['gloss_to_idx']
@@ -123,18 +107,15 @@ class ModelTester:
                         self.idx_to_gloss = {v: k for k, v in vocab_data.items()}
 
         if self.gloss_to_idx is None:
-            print(f"Warning: Vocabulary not found!")
-            print(f"  Checked in checkpoint and {self.model_path.parent / 'vocab.pkl'}")
-            print(f"  Predictions will show token IDs instead of glosses")
+            print(f"Warning: Vocabulary not found - predictions will show token IDs")
 
-        # Initialize and load model
         self.model = SignLanguageLSTM(self.config, self.vocab_size)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.to(self.device)
         self.model.eval()
 
         print(f"Model loaded successfully")
-        print(f"  Architecture: {self.config.num_layers} layers, {self.config.hidden_size} hidden units")
+        print(f"  Architecture: {self.config.model.num_layers} layers, {self.config.model.hidden_size} hidden units")
         print(f"  Vocabulary size: {self.vocab_size}")
         print(f"  Best validation loss: {checkpoint.get('best_val_loss', 'N/A')}")
         print(f"  Device: {self.device}")
@@ -152,16 +133,7 @@ class ModelTester:
             annotations_path=annotations_path
         )
 
-        preprocess_config = PreprocessingConfig(
-            max_sequence_length=self.config.max_sequence_length,
-            normalize_coordinates=True,
-            output_format="tensor",
-            device=str(self.device),
-            include_hand_confidence=True,
-            include_pose_visibility=True,
-            include_face=False
-        )
-        preprocessor = SignLanguagePreprocessor(preprocess_config)
+        preprocessor = SignLanguagePreprocessor(self.config.preprocessing)  # use training config as-is
 
         print("Loading dataset...")
         dataset = dataset_manager.create_dataset(preprocessor)
@@ -348,15 +320,7 @@ class ModelTester:
         print(f"Processing: {landmarks_path}")
 
         # Load and preprocess landmarks
-        preprocess_config = PreprocessingConfig(
-            max_sequence_length=self.config.max_sequence_length,
-            normalize_coordinates=False,
-            output_format="tensor",
-            device=str(self.device),
-            include_hand_confidence=False,
-            include_pose_visibility=False
-        )
-        preprocessor = SignLanguagePreprocessor(preprocess_config)
+        preprocessor = SignLanguagePreprocessor(self.config.preprocessing)  # match training config
 
         # Process the video
         result = preprocessor.process_video_file(landmarks_path)
@@ -505,15 +469,7 @@ def main():
             annotations_path=args.annotations_path
         )
 
-        preprocess_config = PreprocessingConfig(
-            max_sequence_length=tester.config.max_sequence_length,
-            normalize_coordinates=False,
-            output_format="tensor",
-            device=args.device,
-            include_hand_confidence=False,
-            include_pose_visibility=False
-        )
-        preprocessor = SignLanguagePreprocessor(preprocess_config)
+        preprocessor = SignLanguagePreprocessor(tester.config.preprocessing)
         dataset = dataset_manager.create_dataset(preprocessor)
 
         # Apply vocabulary
