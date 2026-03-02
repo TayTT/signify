@@ -16,7 +16,7 @@ from collections import deque
 from typing import Dict, List, Optional, Tuple, Any
 import math
 
-
+#obsolete?
 class EnhancedHandTracker:
     """Enhanced hand tracker with flickering reduction and false positive filtering"""
 

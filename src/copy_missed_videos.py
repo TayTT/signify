@@ -79,7 +79,7 @@ def copy_unlisted_videos():
     # Find all .mp4 files in source directory
     mp4_files = list(source_dir_path.glob("*.mp4"))
 
-    # Debug: Show what we found
+    # Debug: Show what got found
     print(f"Found {len(mp4_files)} .mp4 files in source directory")
 
     if not mp4_files:

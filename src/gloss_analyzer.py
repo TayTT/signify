@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from processing import process_video
 
-TOP_N = 20  # Easy to modify: 1 for testing, 20 for final processing
+TOP_N = 20  # 1 for testing, 20 for final processing
 
 
 def analyze_gloss_frequencies(csv_file_path, output_json_path="gloss_frequencies.json",
@@ -489,7 +489,7 @@ def process_filtered_videos(filtered_df, video_dir, output_dir, args=None):
             "successful": successful_count,
             "failed": failed_count,
             "output_directory": str(video_output_dir),
-            "video_directory": str(video_dir),  # Add this for debugging
+            "video_directory": str(video_dir),  # debugging
             "missing_files": missing_files[:10] if missing_files else [],
             "processing_mode": "JSON_ONLY",  # Indicate the processing mode
             "processing_settings": {

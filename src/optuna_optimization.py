@@ -37,7 +37,7 @@ from config import (
     Config, load_config, save_config,
     TrainingConfig, OptimizerConfig, SchedulerConfig
 )
-from preprocessJsons import SignLanguagePreprocessor, PhoenixDataset
+from preprocess_jsons  import SignLanguagePreprocessor, PhoenixDataset
 from lstm_model import SignLanguageLSTM
 from train_lstm import PhoenixDatasetManager
 

@@ -8,14 +8,6 @@ data quality and inform preprocessing strategies.
 Usage:
     python src/analyze_missing_data.py --data_dir ./phoenix_dev --output missing_data_report.json
 
-OR:
-    from missing_data_analyzer import MissingDataAnalyzer
-
-    analyzer = MissingDataAnalyzer("./phoenix_dev", "phoenix_analysis.json")
-
-    results = analyzer.main()
-
-    print(f"Mean missing data: {results['summary_statistics']['missing_data_percentages']['any_missing']['mean']:.1f}%")
 """
 
 import json
@@ -87,7 +79,7 @@ class MissingDataAnalyzer:
             'any_missing': []
         }
 
-        # CHANGE THIS: Track filenames with sequence lengths
+        # Track filenames with sequence lengths
         sequence_length_data = []  # List of (filename, length) tuples
         total_missing_periods = 0
         successful_files = 0
@@ -100,7 +92,7 @@ class MissingDataAnalyzer:
                 file_analysis = self._analyze_single_json_file(json_file)
                 analysis_results["per_file_analysis"][json_file.name] = file_analysis
 
-                # CHANGE THIS: Collect filename with length
+                # Collect filename with length
                 sequence_length_data.append((json_file.name, file_analysis['total_frames']))
 
                 for component in ['left_hand', 'right_hand', 'face', 'any_missing']:
@@ -127,7 +119,7 @@ class MissingDataAnalyzer:
 
         # Calculate summary statistics
         analysis_results["summary_statistics"] = self._calculate_summary_statistics(
-            sequence_length_data, all_missing_percentages, total_missing_periods  # CHANGE THIS: pass filename data
+            sequence_length_data, all_missing_percentages, total_missing_periods  # pass filename data
         )
 
         return analysis_results
@@ -312,7 +304,7 @@ class MissingDataAnalyzer:
             "files_with_any_missing": sum(1 for p in all_missing_percentages.get('any_missing', []) if p > 0)
         }
 
-        # ADD THIS: Find files with min/max frames
+        #  Find files with min/max frames
         if sequence_length_data:
             # Find min and max
             min_length = min(all_sequence_lengths)
@@ -372,7 +364,7 @@ class MissingDataAnalyzer:
         print(f"   Median: {seq_stats['median']:.1f} frames")
         print(f"   Std dev: {seq_stats['std']:.1f} frames")
 
-        # ADD THIS: Show files with min/max frames
+        #  Show files with min/max frames
         if 'min_frames_file' in seq_stats and 'max_frames_file' in seq_stats:
             print(f"   Shortest sequence: {seq_stats['min_frames_file']} ({seq_stats['min']:.0f} frames)")
             print(f"   Longest sequence: {seq_stats['max_frames_file']} ({seq_stats['max']:.0f} frames)")

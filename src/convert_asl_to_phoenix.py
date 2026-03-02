@@ -52,10 +52,10 @@ def convert_asl_to_phoenix_format(asl_csv_path: str, output_path: str = None, ou
         if missing_columns:
             raise ValueError(f"Missing required columns: {missing_columns}")
 
-        print(f"✓ All required ASL columns found")
+        print(f"All required ASL columns found")
 
     except Exception as e:
-        print(f"✗ Error loading ASL CSV: {e}")
+        print(f" Error loading ASL CSV: {e}")
         return None
 
     # Step 2: Convert to Phoenix format
@@ -83,14 +83,14 @@ def convert_asl_to_phoenix_format(asl_csv_path: str, output_path: str = None, ou
         final_count = len(phoenix_df)
 
         if initial_count != final_count:
-            print(f"⚠ Removed {initial_count - final_count} rows with missing data")
+            print(f" Removed {initial_count - final_count} rows with missing data")
 
-        print(f"✓ Conversion completed successfully")
+        print(f" Conversion completed successfully")
         print(f"Phoenix data shape: {phoenix_df.shape}")
         print(f"Phoenix columns: {list(phoenix_df.columns)}")
 
     except Exception as e:
-        print(f"✗ Error during conversion: {e}")
+        print(f"Error during conversion: {e}")
         return None
 
     # Step 3: Generate output filename if not provided
@@ -112,11 +112,11 @@ def convert_asl_to_phoenix_format(asl_csv_path: str, output_path: str = None, ou
 
         if output_format == 'csv':
             phoenix_df.to_csv(output_path, index=False)
-            print(f"✓ Saved CSV file: {output_path}")
+            print(f"Saved CSV file: {output_path}")
 
         elif output_format == 'xlsx':
             phoenix_df.to_excel(output_path, index=False)
-            print(f"✓ Saved Excel file: {output_path}")
+            print(f" Saved Excel file: {output_path}")
 
         elif output_format == 'both':
             # Save both formats
@@ -126,11 +126,11 @@ def convert_asl_to_phoenix_format(asl_csv_path: str, output_path: str = None, ou
             phoenix_df.to_excel(xlsx_path, index=False)
             phoenix_df.to_csv(csv_path, index=False)
 
-            print(f"✓ Saved Excel file: {xlsx_path}")
-            print(f"✓ Saved CSV file: {csv_path}")
+            print(f"Saved Excel file: {xlsx_path}")
+            print(f" Saved CSV file: {csv_path}")
 
     except Exception as e:
-        print(f"✗ Error saving converted data: {e}")
+        print(f"Error saving converted data: {e}")
         return phoenix_df  # Return DataFrame even if saving failed
 
     # Step 5: Display conversion summary
@@ -193,9 +193,9 @@ def main():
     result = convert_asl_to_phoenix_format(asl_csv_path, output_path, output_format)
 
     if result is not None:
-        print(f"\n✓ Successfully converted {len(result)} entries!")
+        print(f"\nSuccessfully converted {len(result)} entries!")
     else:
-        print(f"\n✗ Conversion failed!")
+        print(f"\nConversion failed!")
         sys.exit(1)
 
 

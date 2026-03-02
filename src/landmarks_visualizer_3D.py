@@ -32,7 +32,8 @@ DEBUG_HAND_DEPTH = False
 class LandmarksVisualizer3D:
     """3D visualizer for sign language landmarks"""
 
-    def __init__(self, json_path: str, frame_rate: float = 10.0, track_hands: bool = False):
+    def __init__(self, json_path: str, frame_rate: float = 10.0, track_hands: bool = False,
+                 interpolate: bool = False, max_missing_frames: int = 50):
         """
         Initialize the 3D visualizer
 
@@ -44,6 +45,13 @@ class LandmarksVisualizer3D:
         self.json_path = Path(json_path)
         self.frame_rate = frame_rate
         self.track_hands = track_hands
+        self.interpolate = interpolate
+        self.max_missing_frames = max_missing_frames
+        self.original_valid_keys = set()  # populated by _apply_interpolation
+        self.interpolated_keys = set()    # frames that got filled in
+        self.interpolated_hand_keys = {'left_hand': set(), 'right_hand': set()}
+        self.interpolated_pose_keys = set()
+        self.interpolated_face_keys = set()
         self.data = None
         self.frames_data = None
         self.metadata = None
@@ -61,6 +69,9 @@ class LandmarksVisualizer3D:
 
         # Load data
         self._load_data()
+
+        if interpolate:
+            self._apply_interpolation()
 
         # Initialize hand tracking after data is loaded
         if track_hands:
@@ -98,6 +109,98 @@ class LandmarksVisualizer3D:
 
         except Exception as e:
             raise Exception(f"Error loading JSON file: {e}")
+
+    def _apply_interpolation(self):
+        """Interpolate missing landmark data using the same linear method as preprocess_jsons.py.
+        operates per-component on raw coordinate arrays, then writes back into frames_data."""
+
+        sorted_keys = sorted(self.frames_data.keys(), key=int)
+        n = len(sorted_keys)
+        key_to_idx = {k: i for i, k in enumerate(sorted_keys)}
+
+        # snapshot which frames had real data before we fill anything in
+        self.original_valid_keys = set(
+            k for k in sorted_keys
+            if any([
+                self.frames_data[k].get('hands', {}).get('left_hand'),
+                self.frames_data[k].get('hands', {}).get('right_hand'),
+            ])
+        )
+        self.interpolated_keys = set()  # frames that got filled in
+
+        def _interp_array(arr, valid_mask):
+            # same logic as SignLanguagePreprocessor.interpolate_missing_frames
+            missing = np.where(~valid_mask)[0]
+            valid = np.where(valid_mask)[0]
+            if len(valid) < 2:
+                return arr
+            out = arr.copy()
+            for idx in missing:
+                left = valid[valid < idx]
+                right = valid[valid > idx]
+                if len(left) == 0 or len(right) == 0:
+                    continue
+                l, r = left[-1], right[0]
+                if r - l > self.max_missing_frames:
+                    continue
+                alpha = (idx - l) / (r - l)
+                out[idx] = (1 - alpha) * arr[l] + alpha * arr[r]
+            return out
+
+        def _extract_hand_coords(frame_data, hand_type):
+            hand_info = frame_data.get('hands', {}).get(hand_type, [])
+            if isinstance(hand_info, dict) and 'landmarks' in hand_info:
+                lms = hand_info['landmarks']
+            elif isinstance(hand_info, list):
+                lms = hand_info
+            else:
+                lms = []
+            if not lms:
+                return None
+            return np.array([[lm['x'], lm['y'], lm['z']] for lm in lms])
+
+        # interpolate each hand independently
+        for hand_type in ['left_hand', 'right_hand']:
+            # find n_landmarks from first valid frame
+            n_lm = None
+            for k in sorted_keys:
+                pts = _extract_hand_coords(self.frames_data[k], hand_type)
+                if pts is not None:
+                    n_lm = pts.shape[0]
+                    break
+            if n_lm is None:
+                continue  # no data at all for this hand
+
+            coords = np.zeros((n, n_lm, 3), dtype=np.float32)
+            valid = np.zeros(n, dtype=bool)
+            for k in sorted_keys:
+                i = key_to_idx[k]
+                pts = _extract_hand_coords(self.frames_data[k], hand_type)
+                if pts is not None and len(pts) == n_lm:
+                    coords[i] = pts
+                    valid[i] = True
+
+            # interpolate flat then reshape
+            flat = coords.reshape(n, -1)
+            flat_valid = np.repeat(valid[:, None], flat.shape[1], axis=1)
+            flat_valid_1d = valid  # used for index logic
+            interp_flat = _interp_array(flat, valid)
+            interp_coords = interp_flat.reshape(n, n_lm, 3)
+
+            # write back only into frames that were missing but got filled
+            for k in sorted_keys:
+                i = key_to_idx[k]
+                if valid[i]:
+                    continue  # already had real data
+                if np.any(interp_coords[i] != 0):
+                    lm_list = [{'x': float(interp_coords[i, j, 0]),
+                                'y': float(interp_coords[i, j, 1]),
+                                'z': float(interp_coords[i, j, 2])}
+                               for j in range(n_lm)]
+                    if 'hands' not in self.frames_data[k]:
+                        self.frames_data[k]['hands'] = {}
+                    self.frames_data[k]['hands'][hand_type] = lm_list
+                    self.interpolated_hand_keys[hand_type].add(k)
 
     def _setup_3d_plot(self):
         """Set up the 3D matplotlib plot"""
@@ -1060,6 +1163,177 @@ class LandmarksVisualizer3D:
         print("=" * 60)
 
 
+    # 2d overlay colors (BGR for cv2)
+    _CV_COLORS = {
+        'left_hand':  (0, 255, 0),    # green
+        'right_hand': (255, 80, 80),  # blue-ish
+        'face':       (0, 200, 255),  # yellow
+        'pose':       (0, 80, 255),   # red
+        'interp':     (180, 0, 255),  # purple - marks interpolated frames
+    }
+
+    # hand skeleton reused from _draw_hand_connections
+    _HAND_CONNECTIONS = [
+        (0,1),(1,2),(2,3),(3,4),
+        (0,5),(5,6),(6,7),(7,8),
+        (0,9),(9,10),(10,11),(11,12),
+        (0,13),(13,14),(14,15),(15,16),
+        (0,17),(17,18),(18,19),(19,20),
+        (5,9),(9,13),(13,17),
+    ]
+
+    # pose skeleton reused from _draw_pose_connections
+    _POSE_CONNECTIONS = [
+        ('LEFT_SHOULDER','RIGHT_SHOULDER'),
+        ('LEFT_SHOULDER','LEFT_HIP'),('RIGHT_SHOULDER','RIGHT_HIP'),
+        ('LEFT_HIP','RIGHT_HIP'),
+        ('LEFT_SHOULDER','LEFT_ELBOW'),('LEFT_ELBOW','LEFT_WRIST'),
+        ('RIGHT_SHOULDER','RIGHT_ELBOW'),('RIGHT_ELBOW','RIGHT_WRIST'),
+    ]
+
+    def _draw_2d_landmarks(self, frame: np.ndarray, frame_key: str) -> np.ndarray:
+        """Draw landmarks for one frame onto a cv2 BGR image."""
+        h, w = frame.shape[:2]
+        out = frame.copy()
+        frame_data = self.frames_data.get(frame_key, {})
+
+        def pt(lm):  # normalize -> pixel
+            return (int(lm['x'] * w), int(lm['y'] * h))
+
+        # hands
+        for hand_type in ['left_hand', 'right_hand']:
+            hand_info = frame_data.get('hands', {}).get(hand_type, [])
+            if isinstance(hand_info, dict) and 'landmarks' in hand_info:
+                lms = hand_info['landmarks']
+            elif isinstance(hand_info, list):
+                lms = hand_info
+            else:
+                lms = []
+            if not lms or len(lms) != 21:
+                continue
+            is_interp_hand = frame_key in self.interpolated_hand_keys[hand_type]
+            col = self._CV_COLORS['interp'] if is_interp_hand else self._CV_COLORS[hand_type]
+            for i, j in self._HAND_CONNECTIONS:
+                cv2.line(out, pt(lms[i]), pt(lms[j]), col, 1, cv2.LINE_AA)
+            for lm in lms:
+                cv2.circle(out, pt(lm), 3, col, -1, cv2.LINE_AA)
+
+        # pose
+        pose_data = frame_data.get('pose', {})
+        if pose_data:
+            is_interp_pose = frame_key in self.interpolated_pose_keys
+            col = self._CV_COLORS['interp'] if is_interp_pose else self._CV_COLORS['pose']
+            name_to_pt = {name: pt(lm) for name, lm in pose_data.items()}
+            for a, b in self._POSE_CONNECTIONS:
+                if a in name_to_pt and b in name_to_pt:
+                    cv2.line(out, name_to_pt[a], name_to_pt[b], col, 2, cv2.LINE_AA)
+            for p in name_to_pt.values():
+                cv2.circle(out, p, 4, col, -1, cv2.LINE_AA)
+
+        # face (dots only - too many for lines)
+        face_lms = frame_data.get('face', {}).get('all_landmarks', [])
+        if face_lms:
+            is_interp_face = frame_key in self.interpolated_face_keys
+            col = self._CV_COLORS['interp'] if is_interp_face else self._CV_COLORS['face']
+            for lm in face_lms[::4]:  # every 4th for perf
+                cv2.circle(out, pt(lm), 1, col, -1)
+
+        # frame label
+        any_interp = any([
+            frame_key in self.interpolated_hand_keys['left_hand'],
+            frame_key in self.interpolated_hand_keys['right_hand'],
+            frame_key in self.interpolated_pose_keys,
+            frame_key in self.interpolated_face_keys,
+        ])
+        label = f"frame {frame_key}"
+        if any_interp:
+            label += " [interp]"
+        cv2.putText(out, label, (8, 20), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (200, 200, 200), 1, cv2.LINE_AA)
+
+        return out
+
+    def render_2d_overlay(self, video_path: str, output_path: str = None,
+                          display: bool = True, speed: float = 1.0):
+        """Overlay landmarks from the JSON onto the original video frames.
+
+        Args:
+            video_path:   path to the source video (.mp4 etc)
+            output_path:  if given, saves annotated video here
+            display:      show live preview with cv2.imshow (press q to quit)
+        """
+        src = Path(video_path)
+        fps_vid = self.metadata.get('fps', 25)
+        sorted_keys = sorted(self.frames_data.keys(), key=int)
+        if src.is_dir():
+            # load sorted PNGs from directory
+            png_files = sorted(src.glob('*.png'), key=lambda p: p.stem)
+            if not png_files:
+                raise FileNotFoundError(f"No PNG files found in {src}")
+            frame_iter = (cv2.imread(str(p)) for p in png_files)
+            n_frames = len(png_files)
+            # infer frame size from first image
+            first = cv2.imread(str(png_files[0]))
+            vid_w, vid_h = first.shape[1], first.shape[0]
+        else:
+            cap = cv2.VideoCapture(str(src))
+            if not cap.isOpened():
+                raise FileNotFoundError(f"Cannot open video: {src}")
+            fps_vid = cap.get(cv2.CAP_PROP_FPS) or fps_vid
+
+            vid_w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            vid_h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            def _cap_iter(cap):
+                while True:
+                    ret, f = cap.read()
+                    if not ret:
+                        break
+                    yield f
+
+            frame_iter = _cap_iter(cap)
+
+        fps_out = fps_vid * speed  # playback/output fps
+        writer = None
+        if output_path:
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            writer = cv2.VideoWriter(output_path, fourcc, fps_out, (vid_w, vid_h))
+            print(f"Saving 2D overlay to {output_path}")
+
+        video_frame_idx = 0
+        try:
+            for frame in frame_iter:
+                if frame is None:
+                    continue
+
+                if video_frame_idx < len(sorted_keys):
+                    frame_key = sorted_keys[video_frame_idx]
+                    annotated = self._draw_2d_landmarks(frame, frame_key)
+                else:
+                    annotated = frame  # no json data for this frame
+
+                if writer:
+                    writer.write(annotated)
+
+                if display:
+                    cv2.imshow('2D Landmark Overlay', annotated)
+                    if cv2.waitKey(int(1000 / fps_out)) & 0xFF == ord('q'):
+                        break
+
+                video_frame_idx += 1
+
+        finally:
+            if not src.is_dir():
+                cap.release()
+            if writer:
+                writer.release()
+            if display:
+                cv2.destroyAllWindows()
+
+        print(f"Done. {video_frame_idx} frames processed.")
+
+
 class HandPathTracker:
     """Tracks and visualizes hand movement paths from JSON data with advanced consistency correction"""
 
@@ -1395,27 +1669,43 @@ class HandPathTracker:
 
 def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: Optional[int] = None,
                            save_path: Optional[str] = None, track_hands: bool = False,
-                           initial_view: str = 'z_axis'):
+                           initial_view: str = 'z_axis', interpolate: bool = False,
+                           max_missing_frames: int = 50, video_path: str = None,
+                           speed: float = 1.0):
     """
     Visualize landmarks from video_landmarks.json in 3D space
 
     Args:
         json_path: Path to the video_landmarks.json file
-        mode: 'static' for single frame, 'animated' for animation
+        mode: 'static' for single frame, 'animated' for animation, '2d' for video overlay
         frame_number: Specific frame to show (for static mode), None for first frame
-        save_path: Path to save animation (optional, for animated mode)
+        save_path: Path to save animation or 2d video (optional)
         track_hands: Whether to enable hand path tracking with consistency correction
         initial_view: Initial viewing angle ('z_axis', 'perspective', or tuple of (elev, azim))
+        interpolate: Fill missing frames using linear interpolation (same method as training pipeline)
+        max_missing_frames: Max gap length to interpolate across (matches PreprocessingConfig default)
+        video_path: Source video file for 2d overlay mode
     """
 
     try:
-        visualizer = LandmarksVisualizer3D(json_path, track_hands=track_hands)
+        visualizer = LandmarksVisualizer3D(json_path, track_hands=track_hands,
+                                           interpolate=interpolate,
+                                           max_missing_frames=max_missing_frames)
 
         # Show analysis if hand tracking is enabled
         if track_hands:
             visualizer.analyze_hand_paths()
 
-        if mode == 'static':
+        if mode == '2d':
+            if not video_path:
+                raise ValueError("--video is required for 2d mode")
+            visualizer.render_2d_overlay(
+                video_path=video_path,
+                output_path=save_path,
+                display=True,
+                speed=speed,
+            )
+        elif mode == 'static':
             visualizer.visualize_static(frame_number)
         elif mode == 'animated':
             if save_path:
@@ -1423,7 +1713,7 @@ def visualize_landmarks_3d(json_path: str, mode: str = 'static', frame_number: O
             else:
                 visualizer.visualize_animated()
         else:
-            raise ValueError("Mode must be 'static' or 'animated'")
+            raise ValueError("Mode must be 'static', 'animated', or '2d'")
 
     except Exception as e:
         print(f"Error in visualization: {e}")
@@ -1434,7 +1724,7 @@ def main():
     """Command line interface for 3D visualization"""
     parser = argparse.ArgumentParser(description='Visualize sign language landmarks in 3D')
     parser.add_argument('json_path', help='Path to video_landmarks.json file')
-    parser.add_argument('--mode', choices=['static', 'animated'], default='static',
+    parser.add_argument('--mode', choices=['static', 'animated', '2d'], default='static',
                         help='Visualization mode (default: static)')
     parser.add_argument('--frame', type=int, default=0,
                         help='Frame number to display (for static mode, default: 0)')
@@ -1442,17 +1732,30 @@ def main():
                         help='Save animation to file (for animated mode)')
     parser.add_argument('--track-hands', action='store_true',
                         help='Enable hand path visualization with left/right consistency correction')
+    parser.add_argument('--video', type=str,
+                        help='Source video file for 2d overlay mode')
+    parser.add_argument('--speed', type=float, default=1.0,
+                        help='Playback speed multiplier for 2d mode, e.g. 0.5 for half speed (default: 1.0)')
+    parser.add_argument('--interpolate', action='store_true',
+                        help='Fill missing frames using linear interpolation (same method as training pipeline)')
+    parser.add_argument('--max-missing-frames', type=int, default=50,
+                        help='Max consecutive missing frames to interpolate across (default: 50)')
 
     args = parser.parse_args()
 
     print(f"Loading landmarks from: {args.json_path}")
     print(f"Mode: {args.mode}")
     print(f"Hand tracking: {'ON' if args.track_hands else 'OFF'}")
+    print(f"Interpolation: {'ON' if args.interpolate else 'OFF'}")
 
     if args.mode == 'static':
         print(f"Displaying frame: {args.frame}")
 
-    visualize_landmarks_3d(args.json_path, args.mode, args.frame, args.save, args.track_hands)
+    visualize_landmarks_3d(args.json_path, args.mode, args.frame, args.save, args.track_hands,
+                           interpolate=args.interpolate,
+                           max_missing_frames=args.max_missing_frames,
+                           video_path=args.video,
+                           speed=args.speed)
 
 
 if __name__ == "__main__":

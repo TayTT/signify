@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Transfer Learning Script for Cross-Dataset Sign Language Training
-WITH COMPREHENSIVE WANDB TRACKING
 
 Use case: Pre-train on ASL Citizen, then fine-tune on Phoenix Weather
 

@@ -2,7 +2,7 @@
 """
 Inspect Model Checkpoint
 
-This script shows what's saved in your model checkpoint file.
+This script shows what's saved in model checkpoint file.
 Usage: python inspect_checkpoint.py ./loss14/lstm_sign2gloss.pth
 """
 

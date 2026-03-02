@@ -3,7 +3,7 @@
 Convert JSON landmark files to compressed NPZ format
 
 This script converts existing JSON landmark files to NPZ format,
-reducing file size by 75-85% while maintaining full data fidelity.
+reducing file size by a lot while maintaining full data fidelity.
 
 Usage:
     python convert_json_to_npz.py --input-dir ./output
