@@ -93,7 +93,7 @@ class PhoenixDataset(Dataset):
         return {}
 
     def save_vocabulary(self, vocab_path: str):
-        """Save vocabulary to file"""
+        Path(vocab_path).parent.mkdir(parents=True, exist_ok=True)
         with open(vocab_path, 'wb') as f:
             pickle.dump(self.vocab, f)
 

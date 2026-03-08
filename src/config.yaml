@@ -81,10 +81,10 @@ training:
 # ------------------
 data:
   # Paths (modify these for your setup)
-  data_dir: "./data/phoenix_jsons/phoenix_dev"
-  annotations_path: "./data/annotations_phoenix/dev_corpus.csv"
-  vocab_path: "./vocab.pkl"
-  model_save_path: "./models2/lstm_sign2gloss.pth"
+  data_dir: "./data/ASL_Citizentop50/jsons"
+  annotations_path: "./data/ASL_Citizentop50/splits_phx/train.csv"
+  vocab_path: "./models_stash/asl_top50/vocab.pkl"
+  model_save_path: "./models_stash/asl_top50"
 
   # Data format
   data_format: auto            # Options: auto, npz, json
@@ -148,8 +148,8 @@ processing:
 # ---------------------
 logging:
   # WandB settings
-  project_name: "sign-language-lstm-test"
-  experiment_name: "lstm-sign2gloss-test"
+  project_name: "sign-language-lstm-asl"
+  experiment_name: "asl_top50"
   tags:
     - lstm
     - sign-language

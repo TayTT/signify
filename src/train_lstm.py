@@ -35,7 +35,7 @@ import yaml
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import Config, load_config, save_config, config_from_args
-from preprocessJsons import SignLanguagePreprocessor, PhoenixDataset
+from preprocess_jsons  import SignLanguagePreprocessor, PhoenixDataset
 from lstm_model import SignLanguageLSTM, SignLanguageTrainer
 
 
@@ -319,7 +319,7 @@ def create_arg_parser() -> argparse.ArgumentParser:
     # Output arguments
     parser.add_argument('--model_save_path', type=str,
                         help='Path to save trained model')
-    parser.add_argument('--config_save_path', type=str, default='./loss14/config.yaml',
+    parser.add_argument('--config_save_path', type=str,
                         help='Path to save configuration')
 
     # WandB arguments

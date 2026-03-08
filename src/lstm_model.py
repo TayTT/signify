@@ -406,7 +406,7 @@ class SignLanguageTrainer:
             loss = outputs['loss']
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config.gradient_clip_norm)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config.training.gradient_clip_norm)
             self.optimizer.step()
 
             total_loss += loss.item()
@@ -539,8 +539,8 @@ class SignLanguageTrainer:
         print("Starting training...")
         torch.set_num_threads(4)
 
-        for epoch in range(self.config.num_epochs):
-            print(f"\nEpoch {epoch + 1}/{self.config.num_epochs}")
+        for epoch in range(self.config.training.num_epochs):
+            print(f"\nEpoch {epoch + 1}/{self.config.training.num_epochs}")
             self.current_epoch = epoch
 
             train_loss = self.train_epoch()
