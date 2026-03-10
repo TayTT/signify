@@ -7,7 +7,7 @@ curriculum_warmup_epochs: 5
 data_dir: ./data/phoenix_train
 device: cuda
 dropout: 0.1
-experiment_name: optuned-jsons
+experiment_name: optuned-npz
 gradient_clip_norm: 1.0
 hidden_size: 768
 input_size: 345

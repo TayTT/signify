@@ -384,7 +384,6 @@ class SignLanguageTrainer:
         return padding_ratio
 
     def train_epoch(self) -> float:
-        """Train for one epoch"""
         self.model.train()
         total_loss = 0
         num_batches = len(self.train_loader)
@@ -397,6 +396,13 @@ class SignLanguageTrainer:
             attention_mask = batch['attention_mask'].to(self.device)
             labels = batch['labels'].to(self.device)
 
+            if DEBUG and batch_idx == 0:
+                print(f"seq NaN: {torch.isnan(sequences).any()}, inf: {torch.isinf(sequences).any()}")
+                print(f"mask NaN: {torch.isnan(attention_mask.float()).any()}")
+                print(f"labels NaN: {torch.isnan(labels.float()).any()}")
+                print(f"seq range: [{sequences.min():.3f}, {sequences.max():.3f}]")
+                print(f"attention_mask all zeros: {(attention_mask.sum(dim=1) == 0).any()}")
+
             padding_ratio = self._calculate_padding_ratio(sequences, attention_mask)
             padding_ratios.append(padding_ratio)
 
@@ -405,8 +411,25 @@ class SignLanguageTrainer:
             outputs = self.model(sequences, attention_mask, labels)
             loss = outputs['loss']
 
+            if DEBUG and batch_idx == 0:
+                print(f"logits NaN: {torch.isnan(outputs['logits']).any()}")
+                print(f"loss value: {loss.item()}")
+
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"NaN loss at batch {batch_idx}!")
+                print(f"seq NaN: {torch.isnan(sequences).any()}, range: [{sequences.min():.3f}, {sequences.max():.3f}]")
+                print(f"logits NaN: {torch.isnan(outputs['logits']).any()}")
+                print(f"attention_mask all zeros: {(attention_mask.sum(dim=1) == 0).any()}")
+                self.optimizer.zero_grad()
+                continue
+
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config.training.gradient_clip_norm)
+
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(),
+                                                       max_norm=self.config.training.gradient_clip_norm)
+            if DEBUG and batch_idx < 3:
+                print(f"batch {batch_idx} grad norm (pre-clip): {grad_norm:.4f}")
+
             self.optimizer.step()
 
             total_loss += loss.item()
@@ -588,8 +611,8 @@ class SignLanguageTrainer:
             'best_val_loss': self.best_val_loss,
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
-            'gloss_to_idx': self.dataset.gloss_to_idx,
-            'idx_to_gloss': self.dataset.idx_to_gloss,
+            'gloss_to_idx': self.dataset.vocab,
+            'idx_to_gloss': {v: k for k, v in self.dataset.vocab.items()}
         }
         torch.save(checkpoint, self.config.data.model_save_path)
 

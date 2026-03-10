@@ -319,7 +319,7 @@ def create_arg_parser() -> argparse.ArgumentParser:
     # Output arguments
     parser.add_argument('--model_save_path', type=str,
                         help='Path to save trained model')
-    parser.add_argument('--config_save_path', type=str,
+    parser.add_argument('--config_save_path', type=str, default=None,
                         help='Path to save configuration')
 
     # WandB arguments
@@ -357,6 +357,8 @@ def apply_args_to_config(config: Config, args: argparse.Namespace) -> Config:
         config.data.vocab_path = args.vocab_path
     if args.model_save_path:
         config.data.model_save_path = args.model_save_path
+    if args.config_save_path:
+        config.data.config_save_path = args.config_save_path
 
     # Model overrides
     if args.hidden_size:
@@ -461,13 +463,14 @@ def main():
     print(f"Device: {config.device}")
     print()
 
-    # Create output directories
-    Path(config.data.model_save_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.config_save_path).parent.mkdir(parents=True, exist_ok=True)
-
-    # Save configuration
-    save_config(config, args.config_save_path)
-    print(f"Configuration saved to: {args.config_save_path}")
+    # Create output directories fi new config location was passed, else config will be saved alongside model
+    if not config.data.config_save_path:
+        config.data.config_save_path = str(
+            Path(config.data.model_save_path).parent / "config.yaml"
+        )
+    Path(config.data.config_save_path).parent.mkdir(parents=True, exist_ok=True)
+    save_config(config, config.data.config_save_path)
+    print(f"Configuration saved to: {config.data.config_save_path}")
 
     print("\n=== LSTM Sign Language Training ===")
     print(f"Data directory: {config.data.data_dir}")
@@ -554,7 +557,7 @@ def main():
     print(f"\nTraining complete!")
     print(f"Model saved to: {config.data.model_save_path}")
     print(f"Vocabulary saved to: {config.data.vocab_path}")
-    print(f"Configuration saved to: {args.config_save_path}")
+    print(f"Configuration saved to: {config.data.config_save_path}")
 
 
 if __name__ == "__main__":

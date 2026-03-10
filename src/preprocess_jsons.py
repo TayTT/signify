@@ -50,11 +50,24 @@ class PhoenixDataset(Dataset):
             preprocessor: Initialized preprocessor
             vocab_path: Path to vocabulary file (optional)
         """
-        self.json_paths = json_paths
-        self.annotations = annotations
-        self.preprocessor = preprocessor
 
-        # DEBUG: Test the first sample
+        self.preprocessor = preprocessor
+        valid_paths = []
+        valid_annotations = []
+        for path, ann in zip(json_paths, annotations):
+            try:
+                self.preprocessor.process_file_fast(path) if path.endswith('.npz') else self.preprocessor.process_file(
+                    path)
+                valid_paths.append(path)
+                valid_annotations.append(ann)
+            except ValueError as e:
+                print(f"dropping {path}: {e}")
+
+        self.json_paths = valid_paths
+        self.annotations = valid_annotations
+
+
+        # Test the first sample
         if DEBUG:
             if len(json_paths) > 0:
                 self.preprocessor.debug_single_sample(json_paths[0])
@@ -65,7 +78,7 @@ class PhoenixDataset(Dataset):
 
         # Create label mappings
         all_glosses = []
-        for annotation in annotations:
+        for annotation in valid_annotations:
             all_glosses.extend(annotation.split())
 
         unique_glosses = list(set(all_glosses))
@@ -1032,6 +1045,7 @@ class SignLanguagePreprocessor:
             sequence[:, idx:idx + pose_dim] = pose_flat[:, :pose_dim]
             idx += pose_dim
 
+        np.nan_to_num(sequence, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
         return sequence, data['frame_numbers']
 
     def process_file_fast(self, file_path: Union[str, Path]) -> Dict:
@@ -1047,6 +1061,8 @@ class SignLanguagePreprocessor:
 
             # Create attention mask
             attention_mask = self._create_proper_attention_mask(sequence)
+            if not attention_mask.any():
+                raise ValueError(f"all-zero attention mask, skipping sample")
 
             # Ensure mask length matches
             if len(attention_mask) != sequence.shape[0]:
@@ -1113,6 +1129,7 @@ class SignLanguagePreprocessor:
 
         # Convert to numpy array
         sequence = np.array(sequence_features, dtype=np.float32)
+        np.nan_to_num(sequence, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
         valid_mask = np.array(valid_frames, dtype=bool)
 
         # Interpolate missing frames
@@ -1261,7 +1278,6 @@ class SignLanguagePreprocessor:
         return sequence
 
     def _create_proper_attention_mask(self, sequence: np.ndarray) -> np.ndarray:
-        """Create attention mask based on actual sequence content, not frame count"""
 
         # Check which positions have meaningful data
         # A position is "valid" if it has non-zero values in at least some features
@@ -1269,12 +1285,20 @@ class SignLanguagePreprocessor:
 
         for i, frame_features in enumerate(sequence):
             # Check if this frame has any meaningful data
-            # Consider a frame valid if at least 10% of features are non-zero
+            # Consider a frame valid if at least 10% of features are non-zer
             non_zero_ratio = np.mean(frame_features != 0)
-            is_valid = non_zero_ratio > 0.1  # At least 10% non-zero features
+            is_valid = non_zero_ratio > 0.1 # At least 10% non-zero features
             valid_positions.append(is_valid)
 
-        return np.array(valid_positions, dtype=bool)
+        mask = np.array(valid_positions, dtype=bool)
+
+        # if mask is all False, fall back to marking non-padding frames valid
+        # padding frames are all-zero rows added after the real sequence
+        if not mask.any():
+            for i, frame_features in enumerate(sequence):
+                mask[i] = np.any(frame_features != 0)  # any non-zero = real frame
+
+        return mask
 
 
 def validate_feature_dimensions(self, frame_data: Dict) -> bool:

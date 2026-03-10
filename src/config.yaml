@@ -81,10 +81,11 @@ training:
 # ------------------
 data:
   # Paths (modify these for your setup)
-  data_dir: "./data/ASL_Citizentop50/jsons"
-  annotations_path: "./data/ASL_Citizentop50/splits_phx/train.csv"
+  data_dir: "data/ms_asl/ASL_Citizentop50/npz"
+  annotations_path: "data/ms_asl/ASL_Citizentop50/splits_phx/train.csv"
   vocab_path: "./models_stash/asl_top50/vocab.pkl"
-  model_save_path: "./models_stash/asl_top50"
+  model_save_path: "./models_stash/asl_top50/lstm_sign2gloss.pth"
+#  config_save_path: "None"
 
   # Data format
   data_format: auto            # Options: auto, npz, json

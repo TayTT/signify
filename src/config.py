@@ -132,6 +132,7 @@ class DataConfig:
     annotations_path: str = "./data/annotations_phoenix/train_corpus.csv"
     vocab_path: str = "./vocab.pkl"
     model_save_path: str = "./mode_stash/noNormNoFace/lstm_sign2gloss.pth"
+    config_save_path: Optional[str] = None  # if None, saved next to model
 
     # Data format
     data_format: str = "auto"  # auto, npz, json

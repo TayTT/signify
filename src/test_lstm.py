@@ -193,7 +193,7 @@ class ModelTester:
         from torch.utils.data import DataLoader
         test_loader = DataLoader(
             dataset,
-            batch_size=self.config.batch_size,
+            batch_size=self.config.training.batch_size,
             shuffle=False,
             num_workers=0,
             collate_fn=collate_fn  # Add custom collate function

@@ -220,7 +220,7 @@ def create_target_dataset(data_dir: str, annotations_path: str,
     print(f"\n=== preprocessing_info ===")
     print(preprocessing_info)
 
-
+    actual_input_size = preprocessor.feature_dims['total']
     pretrained_input_size = _cfg_get(pretrained_config, 'model.input_size', 0)
     if actual_input_size != pretrained_input_size:
         print(f"\nWARNING: Input size mismatch!")
@@ -604,8 +604,8 @@ def main():
         trainable_params = filter(lambda p: p.requires_grad, trainer.model.parameters())
         trainer.optimizer = torch.optim.AdamW(
             trainable_params,
-            lr=config.learning_rate,
-            weight_decay=config.weight_decay
+            lr=config.training.optimizer.learning_rate,
+            weight_decay=config.training.optimizer.weight_decay
         )
         print("Optimizer configured for classifier-only training")
     else:
@@ -614,9 +614,9 @@ def main():
 
     # Step 8: Start training with phase tracking
     print(f"\n=== Starting Fine-Tuning ===")
-    print(f"Epochs: {config.num_epochs}")
-    print(f"Learning rate: {config.learning_rate}")
-    print(f"Batch size: {config.batch_size}")
+    print(f"Epochs: {config.training.num_epochs}")
+    print(f"Learning rate: {config.training.optimizer.learning_rate}")
+    print(f"Batch size: {config.training.batch_size}")
     print(f"Freeze encoder: {args.freeze_encoder}")
 
     if args.freeze_encoder and args.unfreeze_after_epoch > 0:
@@ -625,18 +625,18 @@ def main():
     # Custom training loop with optional unfreezing
     if args.freeze_encoder and args.unfreeze_after_epoch > 0:
         # Phase 1: Train with frozen encoder
-        original_epochs = config.num_epochs
-        config.num_epochs = args.unfreeze_after_epoch
+        original_epochs = config.training.num_epochs
+        config.training.num_epochs = args.unfreeze_after_epoch
 
         log_training_phase(
             "phase_1_frozen",
             epoch_start=0,
-            epoch_end=config.num_epochs,
-            learning_rate=config.learning_rate,
+            epoch_end=config.training.num_epochs,
+            learning_rate=config.training.optimizer.learning_rate,
             frozen=True
         )
 
-        print(f"\nPhase 1: Training classifier only for {config.num_epochs} epochs")
+        print(f"\nPhase 1: Training classifier only for {config.training.num_epochs} epochs")
         trainer.train()
 
         # Unfreeze encoder
@@ -645,11 +645,11 @@ def main():
             param.requires_grad = True
 
         # Re-initialize optimizer with all parameters
-        new_lr = config.learning_rate * 0.1
+        new_lr = config.training.optimizer.learning_rate * 0.1
         trainer.optimizer = torch.optim.AdamW(
             trainer.model.parameters(),
             lr=new_lr,
-            weight_decay=config.weight_decay
+            weight_decay=config.training.optimizer.weight_decay
         )
         print(f"Reduced learning rate to {new_lr} for full fine-tuning")
 
@@ -661,7 +661,7 @@ def main():
 
         # Phase 2: Continue training
         remaining_epochs = original_epochs - args.unfreeze_after_epoch
-        config.num_epochs = remaining_epochs
+        config.training.num_epochs = remaining_epochs
 
         log_training_phase(
             "phase_2_unfrozen",
@@ -671,7 +671,7 @@ def main():
             frozen=False
         )
 
-        print(f"\nPhase 2: Fine-tuning full model for {config.num_epochs} more epochs")
+        print(f"\nPhase 2: Fine-tuning full model for {config.training.num_epochs} more epochs")
         trainer.best_val_loss = float('inf')  # Reset for phase 2
         trainer.train()
     else:
@@ -679,8 +679,8 @@ def main():
         log_training_phase(
             "single_phase",
             epoch_start=0,
-            epoch_end=config.num_epochs,
-            learning_rate=config.learning_rate,
+            epoch_end=config.training.num_epochs,
+            learning_rate=config.training.optimizer.learning_rate,
             frozen=args.freeze_encoder
         )
         trainer.train()
@@ -688,12 +688,12 @@ def main():
     # Step 9: Save results
     print(f"\n=== Saving Results ===")
     trainer.save_model()
-    target_dataset.save_vocabulary(config.vocab_path)
+    config.data.vocab_path
 
     # Save model as WandB artifact
     if wandb.run is not None:
         artifact = wandb.Artifact(
-            name=f"{config.experiment_name}-model",
+            name=f"{config.logging.experiment_name}-model",
             type="model",
             description=f"Transfer learning model: {args.pretrained_model} -> {args.data_dir}",
             metadata={
@@ -703,16 +703,16 @@ def main():
                 "final_val_loss": trainer.best_val_loss,
             }
         )
-        artifact.add_file(config.model_save_path)
-        artifact.add_file(config.vocab_path)
+        artifact.add_file(config.data.model_save_path)
+        artifact.add_file(config.data.vocab_path)
         artifact.add_file(config_path)
         wandb.log_artifact(artifact)
         print("Model saved as WandB artifact")
 
     print(f"\nTransfer learning complete!")
-    print(f"Model saved to: {config.model_save_path}")
-    print(f"Vocabulary saved to: {config.vocab_path}")
-    print(f"Config saved to: {config_path}")
+    print(f"Model saved to: { config.data.model_save_path}")
+    print(f"Vocabulary saved to: {config.data.vocab_path}")
+    print(f"Config saved to: {config.data.config_path}")
 
     # Final evaluation
     print(f"\n=== Final Evaluation ===")
@@ -723,7 +723,7 @@ def main():
         wandb.summary.update({
             "final/best_val_loss": trainer.best_val_loss,
             "final/total_epochs": len(trainer.train_losses),
-            "final/model_path": config.model_save_path,
+            "final/model_path": config.data.model_save_path,
             "final/pretrained_source": args.pretrained_model,
         })
 

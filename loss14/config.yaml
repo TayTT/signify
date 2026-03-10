@@ -39,7 +39,7 @@ training:
   curriculum_stages: 4
   curriculum_overlap_ratio: 0.3
 data:
-  data_dir: ./data/ASL_Citizentop50/jsons
+  data_dir: ./data/ASL_Citizentop50/npz
   annotations_path: ./data/ASL_Citizentop50/splits_phx/train.csv
   vocab_path: ./models_stash/asl_top50/vocab.pkl
   model_save_path: ./models_stash/asl_top50
