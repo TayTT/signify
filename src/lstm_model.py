@@ -105,7 +105,7 @@ class SignLanguageLSTM(nn.Module):
             nn.Linear(lstm_output_size // 2, vocab_size)
         )
 
-        self.use_ctc = False
+        self.use_ctc = config.model.use_ctc
 
     def forward(self, x, attention_mask=None, labels=None):
         """Forward pass"""
@@ -136,16 +136,24 @@ class SignLanguageLSTM(nn.Module):
         if labels is not None:
             if self.use_ctc:
                 log_probs = F.log_softmax(logits, dim=-1)
-                input_lengths = attention_mask.sum(dim=1) if attention_mask is not None else torch.full((batch_size,), seq_len)
-                target_lengths = (labels != 0).sum(dim=1)
+                if attention_mask is not None:
+                    input_lengths = attention_mask.sum(dim=1).long()
+                else:
+                    input_lengths = torch.full((batch_size,), seq_len, dtype=torch.long, device=logits.device)
+
+                # real gloss tokens are idx >= 4 (0=PAD, 1=UNK, 2=SOS, 3=EOS)
+                real_mask = labels >= 4
+                target_lengths = real_mask.sum(dim=1).long()
+                flat_targets = labels[real_mask]  # 1d, concat of all samples' real tokens
 
                 loss = F.ctc_loss(
                     log_probs.transpose(0, 1),
-                    labels,
+                    flat_targets,
                     input_lengths,
                     target_lengths,
                     blank=0,
-                    reduction='mean'
+                    reduction='mean',
+                    zero_infinity=True  # avoid inf on malformed samples
                 )
             else:
                 logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
@@ -197,7 +205,38 @@ class SignLanguageLSTM(nn.Module):
         self.eval()
         with torch.no_grad():
             output = self.forward(x, attention_mask)
+            if self.use_ctc:
+                logits = output['logits']
+                if attention_mask is not None:
+                    input_lengths = attention_mask.sum(dim=1).long()
+                else:
+                    input_lengths = torch.full((x.shape[0],), x.shape[1], dtype=torch.long, device=x.device)
+                return self.ctc_greedy_decode(logits, input_lengths)
             return output['predictions']
+
+    @staticmethod
+    def ctc_greedy_decode(logits, input_lengths, blank=0):
+        """CTC greedy decode: collapse repeats then strip blanks
+        logits: (B, T, C)
+        input_lengths: (B,) actual frame counts (rest is padding)
+        returns list of lists of token ids, one per batch item
+        """
+        frame_preds = torch.argmax(logits, dim=-1)  # (B, T)
+        decoded = []
+        for b in range(frame_preds.shape[0]):
+            length = input_lengths[b].item()
+            seq = frame_preds[b, :length].tolist()
+            # collapse consecutive repeats
+            collapsed = []
+            prev = None
+            for tok in seq:
+                if tok != prev:
+                    collapsed.append(tok)
+                prev = tok
+            # remove blank
+            glosses = [tok for tok in collapsed if tok != blank]
+            decoded.append(glosses)
+        return decoded
 
 
 class SignLanguageTrainer:
@@ -384,6 +423,7 @@ class SignLanguageTrainer:
         return padding_ratio
 
     def train_epoch(self) -> float:
+        """Train for one epoch"""
         self.model.train()
         total_loss = 0
         num_batches = len(self.train_loader)
@@ -396,13 +436,6 @@ class SignLanguageTrainer:
             attention_mask = batch['attention_mask'].to(self.device)
             labels = batch['labels'].to(self.device)
 
-            if DEBUG and batch_idx == 0:
-                print(f"seq NaN: {torch.isnan(sequences).any()}, inf: {torch.isinf(sequences).any()}")
-                print(f"mask NaN: {torch.isnan(attention_mask.float()).any()}")
-                print(f"labels NaN: {torch.isnan(labels.float()).any()}")
-                print(f"seq range: [{sequences.min():.3f}, {sequences.max():.3f}]")
-                print(f"attention_mask all zeros: {(attention_mask.sum(dim=1) == 0).any()}")
-
             padding_ratio = self._calculate_padding_ratio(sequences, attention_mask)
             padding_ratios.append(padding_ratio)
 
@@ -411,25 +444,8 @@ class SignLanguageTrainer:
             outputs = self.model(sequences, attention_mask, labels)
             loss = outputs['loss']
 
-            if DEBUG and batch_idx == 0:
-                print(f"logits NaN: {torch.isnan(outputs['logits']).any()}")
-                print(f"loss value: {loss.item()}")
-
-            if torch.isnan(loss) or torch.isinf(loss):
-                print(f"NaN loss at batch {batch_idx}!")
-                print(f"seq NaN: {torch.isnan(sequences).any()}, range: [{sequences.min():.3f}, {sequences.max():.3f}]")
-                print(f"logits NaN: {torch.isnan(outputs['logits']).any()}")
-                print(f"attention_mask all zeros: {(attention_mask.sum(dim=1) == 0).any()}")
-                self.optimizer.zero_grad()
-                continue
-
             loss.backward()
-
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(),
-                                                       max_norm=self.config.training.gradient_clip_norm)
-            if DEBUG and batch_idx < 3:
-                print(f"batch {batch_idx} grad norm (pre-clip): {grad_norm:.4f}")
-
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config.training.gradient_clip_norm)
             self.optimizer.step()
 
             total_loss += loss.item()
@@ -469,14 +485,20 @@ class SignLanguageTrainer:
 
                 outputs = self.model(sequences, attention_mask, labels)
                 loss = outputs['loss']
-
                 total_loss += loss.item()
 
-                predictions = outputs['predictions'].cpu().numpy()
-                labels_np = labels.cpu().numpy()
+                if self.model.use_ctc:
+                    input_lengths = attention_mask.sum(dim=1).long()
+                    decoded = SignLanguageLSTM.ctc_greedy_decode(outputs['logits'], input_lengths)
+                    all_predictions.extend(decoded)  # list of list of ints
 
-                all_predictions.extend(predictions)
-                all_labels.extend(labels_np)
+                    # reference: real gloss tokens (idx >= 4) per sample
+                    for b in range(labels.shape[0]):
+                        ref = labels[b][labels[b] >= 4].cpu().tolist()
+                        all_labels.append(ref)
+                else:
+                    all_predictions.extend(outputs['predictions'].cpu().numpy())
+                    all_labels.extend(labels.cpu().numpy())
 
                 pbar.set_postfix({'loss': loss.item()})
 
@@ -484,11 +506,51 @@ class SignLanguageTrainer:
         self.val_losses.append(avg_loss)
 
         metrics = self._calculate_metrics(all_predictions, all_labels)
-
         return avg_loss, metrics
 
+    @staticmethod
+    def _edit_distance(a: List, b: List) -> int:
+        """standard levenshtein distance"""
+        m, n = len(a), len(b)
+        dp = list(range(n + 1))
+        for i in range(1, m + 1):
+            prev = dp[0]
+            dp[0] = i
+            for j in range(1, n + 1):
+                temp = dp[j]
+                if a[i - 1] == b[j - 1]:
+                    dp[j] = prev
+                else:
+                    dp[j] = 1 + min(prev, dp[j], dp[j - 1])
+                prev = temp
+        return dp[n]
+
     def _calculate_metrics(self, predictions: List, labels: List) -> Dict:
-        """Calculate evaluation metrics"""
+        """Calculate evaluation metrics — WER for CTC, accuracy for cross-entropy"""
+        if self.model.use_ctc:
+            return self._calculate_wer_metrics(predictions, labels)
+        return self._calculate_accuracy_metrics(predictions, labels)
+
+    def _calculate_wer_metrics(self, predictions: List[List[int]], references: List[List[int]]) -> Dict:
+        """WER via edit distance on decoded gloss sequences"""
+        total_edits = 0
+        total_ref_len = 0
+        for pred, ref in zip(predictions, references):
+            total_edits += self._edit_distance(pred, ref)
+            total_ref_len += len(ref)
+        wer = total_edits / total_ref_len if total_ref_len > 0 else 1.0
+        return {
+            'wer': float(wer),
+            'accuracy': float(1.0 - min(wer, 1.0)),  # keep for compat with wandb logging
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1': 0.0,
+            'total_samples': len(predictions),
+            'prediction_diversity': 0.0
+        }
+
+    def _calculate_accuracy_metrics(self, predictions: List, labels: List) -> Dict:
+        """Per-token accuracy metrics for cross-entropy mode"""
         pred_flat = []
         label_flat = []
 
@@ -509,13 +571,13 @@ class SignLanguageTrainer:
                 pred_trimmed = pred[:min_len]
                 label_trimmed = label[:min_len]
                 mask = label_trimmed != 0
-
                 if mask.any():
                     pred_flat.extend(pred_trimmed[mask].tolist())
                     label_flat.extend(label_trimmed[mask].tolist())
 
         if not pred_flat or not label_flat:
             return {
+                'wer': 1.0,
                 'accuracy': 0.0,
                 'precision': 0.0,
                 'recall': 0.0,
@@ -527,17 +589,15 @@ class SignLanguageTrainer:
         try:
             pred_flat = np.array(pred_flat)
             label_flat = np.array(label_flat)
-
             accuracy = accuracy_score(label_flat, pred_flat)
             precision, recall, f1, _ = precision_recall_fscore_support(
                 label_flat, pred_flat, average='weighted', zero_division=0
             )
-
             total_samples = len(pred_flat)
             most_common_pred = np.bincount(pred_flat).max()
             prediction_diversity = 1.0 - (most_common_pred / total_samples)
-
             return {
+                'wer': float(1.0 - accuracy),
                 'accuracy': float(accuracy),
                 'precision': float(precision),
                 'recall': float(recall),
@@ -545,10 +605,10 @@ class SignLanguageTrainer:
                 'total_samples': total_samples,
                 'prediction_diversity': float(prediction_diversity)
             }
-
         except Exception as e:
             print(f"Error calculating metrics: {e}")
             return {
+                'wer': 1.0,
                 'accuracy': 0.0,
                 'precision': 0.0,
                 'recall': 0.0,
@@ -575,6 +635,7 @@ class SignLanguageTrainer:
                 'epoch': epoch + 1,
                 'train_loss': train_loss,
                 'val_loss': val_loss,
+                'val_wer': metrics['wer'],
                 'val_accuracy': metrics['accuracy'],
                 'val_precision': metrics['precision'],
                 'val_recall': metrics['recall'],
@@ -583,8 +644,11 @@ class SignLanguageTrainer:
 
             print(f"Train Loss: {train_loss:.4f}")
             print(f"Val Loss: {val_loss:.4f}")
-            print(f"Val Accuracy: {metrics['accuracy']:.4f}")
-            print(f"Val F1: {metrics['f1']:.4f}")
+            if self.model.use_ctc:
+                print(f"Val WER: {metrics['wer']:.4f}")
+            else:
+                print(f"Val Accuracy: {metrics['accuracy']:.4f}")
+                print(f"Val F1: {metrics['f1']:.4f}")
 
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
@@ -644,17 +708,25 @@ class SignLanguageTrainer:
 
             with torch.no_grad():
                 outputs = self.model(sequences, attention_mask)
-                predictions = outputs['predictions'][0].cpu().numpy()
 
             id_to_vocab = {v: k for k, v in self.dataset.vocab.items()}
 
-            pred_tokens = []
-            for token_id in predictions:
-                if token_id > 3:
-                    token = id_to_vocab.get(int(token_id), f'UNK_{token_id}')
-                    if not pred_tokens or pred_tokens[-1] != token:
-                        pred_tokens.append(token)
+            if self.model.use_ctc:
+                input_lengths = attention_mask.sum(dim=1).long()
+                decoded = SignLanguageLSTM.ctc_greedy_decode(outputs['logits'], input_lengths)
+                token_ids = decoded[0]
+            else:
+                token_ids = outputs['predictions'][0].cpu().tolist()
+                # collapse repeats for display, same as ctc-style
+                collapsed = []
+                prev = None
+                for tok in token_ids:
+                    if tok != prev:
+                        collapsed.append(tok)
+                    prev = tok
+                token_ids = [t for t in collapsed if t > 3]
 
+            pred_tokens = [id_to_vocab.get(tid, f'UNK_{tid}') for tid in token_ids]
             pred_text = ' '.join(pred_tokens)
             true_text = sample['annotation']
 
@@ -706,6 +778,7 @@ def main():
         trainer.load_model(args.resume)
 
     trainer.train()
+
 
     print("\nEvaluating sample:")
     trainer.evaluate_sample(0)

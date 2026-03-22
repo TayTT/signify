@@ -21,7 +21,7 @@ model:
   max_annotation_length: 25    # Maximum output annotation length
 
   # Loss function
-  use_ctc: false               # Use CTC loss instead of cross-entropy
+  use_ctc: true               # Use CTC loss instead of cross-entropy
 
 # Training Configuration
 # ----------------------
@@ -81,10 +81,10 @@ training:
 # ------------------
 data:
   # Paths (modify these for your setup)
-  data_dir: "data/ms_asl/ASL_Citizentop50/npz"
-  annotations_path: "data/ms_asl/ASL_Citizentop50/splits_phx/train.csv"
-  vocab_path: "./models_stash/asl_top50/vocab.pkl"
-  model_save_path: "./models_stash/asl_top50/lstm_sign2gloss.pth"
+  data_dir: "data/phoenix_jsons/phoenix_dev"
+  annotations_path: "data/annotations_phoenix/dev_corpus_trial.csv"
+  vocab_path: "./models_stash/ctc-phoenix/vocab.pkl"
+  model_save_path: "./models_stash/ctc-phoenix/lstm_sign2gloss.pth"
 #  config_save_path: "None"
 
   # Data format
@@ -149,8 +149,8 @@ processing:
 # ---------------------
 logging:
   # WandB settings
-  project_name: "sign-language-lstm-asl"
-  experiment_name: "asl_top50"
+  project_name: "sign-language-lstm-ctc"
+  experiment_name: "ctc-phoenix"
   tags:
     - lstm
     - sign-language

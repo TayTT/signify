@@ -319,35 +319,40 @@ class ModelTester:
         """Predict gloss sequence for a single video"""
         print(f"Processing: {landmarks_path}")
 
-        # Load and preprocess landmarks
-        preprocessor = SignLanguagePreprocessor(self.config.preprocessing)  # match training config
-
-        # Process the video
+        preprocessor = SignLanguagePreprocessor(self.config.preprocessing)
         result = preprocessor.process_video_file(landmarks_path)
 
         if result is None:
             raise ValueError(f"Failed to process video: {landmarks_path}")
 
-        # Prepare input
         sequence = result['sequence'].unsqueeze(0).to(self.device)
         attention_mask = result['attention_mask'].unsqueeze(0).to(self.device)
 
-        # Predict
         with torch.no_grad():
             outputs = self.model(sequence, attention_mask)
-            predictions = outputs['predictions'][0].cpu().numpy()
 
-        # Decode prediction
-        predicted_glosses = []
-        for token_id in predictions:
-            if token_id > 3 and self.idx_to_gloss is not None:  # Skip special tokens
-                gloss = self.idx_to_gloss.get(int(token_id), f"UNK_{token_id}")
-                predicted_glosses.append(gloss)
-
-        prediction_text = " ".join(predicted_glosses)
-
+        prediction_text = self._decode_output(outputs['logits'], attention_mask)
         print(f"Prediction: {prediction_text}")
         return prediction_text
+
+    def _decode_output(self, logits, attention_mask):
+        """CTC or argmax decode depending on model mode, returns gloss string"""
+        if self.model.use_ctc:
+            input_lengths = attention_mask.sum(dim=1).long()
+            token_ids = SignLanguageLSTM.ctc_greedy_decode(logits, input_lengths)[0]
+        else:
+            preds = torch.argmax(logits, dim=-1)[0].cpu().tolist()
+            # collapse repeats, strip specials
+            collapsed, prev = [], None
+            for t in preds:
+                if t != prev:
+                    collapsed.append(t)
+                prev = t
+            token_ids = [t for t in collapsed if t > 3]
+
+        if self.idx_to_gloss is None:
+            return ' '.join(str(t) for t in token_ids)
+        return ' '.join(self.idx_to_gloss.get(t, f'UNK_ID_{t}') for t in token_ids)
 
     def test_samples(self, dataset, num_samples: int = 10):
         """Test on random samples and show predictions"""
@@ -364,26 +369,19 @@ class ModelTester:
             sample = dataset[idx]
             true_text = sample['annotation']
 
-            # Predict
             sequence = sample['sequence'].unsqueeze(0).to(self.device)
             attention_mask = sample['attention_mask'].unsqueeze(0).to(self.device)
 
             with torch.no_grad():
                 outputs = self.model(sequence, attention_mask)
-                predictions = outputs['predictions'][0].cpu().numpy()
 
-            # Decode
-            try:
-                pred_text = dataset.decode_annotation(predictions)
-            except:
-                pred_text = "<DECODE_ERROR>"
+            pred_text = self._decode_output(outputs['logits'], attention_mask)
 
-            # Check if correct
             is_correct = (pred_text.strip() == true_text.strip())
             correct += int(is_correct)
             total += 1
 
-            status = "✓ CORRECT" if is_correct else "✗ INCORRECT"
+            status = "CORRECT" if is_correct else "INCORRECT"
             print(f"Sample {i + 1}/{num_samples} [{status}]")
             print(f"  True: {true_text}")
             print(f"  Pred: {pred_text}")
@@ -474,8 +472,8 @@ def main():
 
         # Apply vocabulary
         if tester.gloss_to_idx is not None:
-            dataset.gloss_to_idx = tester.gloss_to_idx
-            dataset.idx_to_gloss = tester.idx_to_gloss
+            dataset.vocab = tester.gloss_to_idx
+            dataset.vocab_size = len(tester.gloss_to_idx)
 
         tester.test_samples(dataset, args.test_samples)
 

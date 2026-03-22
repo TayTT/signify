@@ -79,7 +79,7 @@ class OptunaOptimizer:
 
         # Training Parameters
         batch_size = trial.suggest_categorical('batch_size', [4, 8, 16, 32])
-        learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
+        learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
         weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
 
         # Optimizer Choice
@@ -302,6 +302,7 @@ class OptunaOptimizer:
         trial_config.model.num_layers = params['num_layers']
         trial_config.model.dropout = params['dropout']
         trial_config.model.bidirectional = params['bidirectional']
+        trial_config.model.use_ctc = self.base_config.model.use_ctc
         trial_config.preprocessing.max_sequence_length = self.base_config.preprocessing.max_sequence_length
         trial_config.device = str(self.device)
 
@@ -503,6 +504,7 @@ class OptunaOptimizer:
         config.model.num_layers = params['num_layers']
         config.model.dropout = params['dropout']
         config.model.bidirectional = params['bidirectional']
+        config.model.use_ctc = self.base_config.model.use_ctc
         config.preprocessing.max_sequence_length = self.base_config.preprocessing.max_sequence_length
 
         # Training config
