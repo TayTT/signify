@@ -1,0 +1,19 @@
+quality:
+  max_interior_hand_missing_pct: 30.0
+  max_face_missing_pct: 50.0
+  min_sequence_length: 10
+  ```
+
+  ---
+
+### Phase 7 — CLI in `analyze_missing_data.py`
+
+Extend the `main()` arg parser:
+  ```
+  python analyze_missing_data.py
+  --data_dir ./data/phoenix_jsons/train
+  --annotations_path ./data/annotations_phoenix/train_corpus.csv
+  --output quality_report.json
+  [--export_filtered filtered_train.csv]
+  [--max_hand_pct 30.0]
+  [--max_face_pct 50.0]
