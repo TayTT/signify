@@ -1,6 +1,6 @@
-matplotlib==3.10.5
+matplotlib==3.10.1
 mediapipe==0.10.21
-numpy==2.3.2
+numpy==1.26.4
 opencv_contrib_python==4.11.0.86
 opencv_python==4.11.0.86
 pandas==2.3.1

@@ -77,6 +77,13 @@ training:
   curriculum_stages: 4
   curriculum_overlap_ratio: 0.3
 
+# Data Quality
+# ------------------------
+quality:
+  max_interior_hand_missing_pct: 30.0
+  max_face_missing_pct: 50.0
+  min_sequence_length: 10
+
 # Data Configuration
 # ------------------
 data:
