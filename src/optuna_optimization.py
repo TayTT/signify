@@ -498,6 +498,14 @@ class OptunaOptimizer:
         """Create Config from best parameters"""
         config = Config()
 
+        params = {**params}
+        if 'optimizer' in params and 'optimizer_name' not in params:
+            params['optimizer_name'] = params['optimizer']
+
+        for key in ['beta1', 'beta2', 'momentum', 'nesterov',
+                    'scheduler_factor', 'scheduler_patience', 'step_size', 'gamma']:
+            params.setdefault(key, None)
+
         # Model config
         config.model.input_size = self.input_size
         config.model.hidden_size = params['hidden_size']
