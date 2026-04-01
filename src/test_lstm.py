@@ -228,13 +228,53 @@ class ModelTester:
 
         return metrics
 
+    @staticmethod
+    def _levenshtein(a: List, b: List) -> int:
+        """edit distance between two token lists"""
+        m, n = len(a), len(b)
+        dp = list(range(n + 1))
+        for i in range(1, m + 1):
+            prev = dp[:]
+            dp[0] = i
+            for j in range(1, n + 1):
+                if a[i - 1] == b[j - 1]:
+                    dp[j] = prev[j - 1]
+                else:
+                    dp[j] = 1 + min(prev[j], dp[j - 1], prev[j - 1])
+        return dp[n]
+
+    def _decode_sequence(self, token_ids: np.ndarray, idx_to_gloss: Dict) -> List[str]:
+        """decode token ids to gloss list, skipping special tokens (ids 0-3)"""
+        seen = None  # for CTC duplicate removal
+        glosses = []
+        for tid in token_ids:
+            tid = int(tid)
+            if tid <= 3:  # PAD UNK SOS EOS
+                continue
+            if tid == seen:  # collapse CTC repeats
+                continue
+            seen = tid
+            glosses.append(idx_to_gloss.get(tid, f"UNK_{tid}"))
+        return glosses
+
+    def _compute_wer(self, pred_sequences: List[List[str]], ref_sequences: List[List[str]]) -> float:
+        """corpus-level WER: total edits / total reference tokens"""
+        total_edits = 0
+        total_ref = 0
+        for pred, ref in zip(pred_sequences, ref_sequences):
+            total_edits += self._levenshtein(pred, ref)
+            total_ref += len(ref)
+        return total_edits / total_ref if total_ref > 0 else 1.0
+
     def _calculate_metrics(self, predictions: List, labels: List,
                            dataset: PhoenixDataset) -> Dict:
-        """Calculate evaluation metrics"""
-
-
+        """Calculate evaluation metrics including WER"""
         pred_flat = []
         label_flat = []
+        pred_sequences = []
+        ref_sequences = []
+
+        idx_to_gloss = getattr(self, 'idx_to_gloss', None) or getattr(dataset, 'idx_to_gloss', {})
 
         for pred, label in zip(predictions, labels):
             pred = np.atleast_1d(pred)
@@ -244,12 +284,13 @@ class ModelTester:
             pred_trimmed = pred[:min_len]
             label_trimmed = label[:min_len]
 
-            # Mask for non-padding tokens
-            mask = label_trimmed != 0
-
+            mask = label_trimmed != 0  # non-padding tokens
             if mask.any():
                 pred_flat.extend(pred_trimmed[mask])
                 label_flat.extend(label_trimmed[mask])
+
+            pred_sequences.append(self._decode_sequence(pred, idx_to_gloss))
+            ref_sequences.append(self._decode_sequence(label, idx_to_gloss))
 
         if not pred_flat or not label_flat:
             return {
@@ -257,25 +298,24 @@ class ModelTester:
                 'precision': 0.0,
                 'recall': 0.0,
                 'f1': 0.0,
+                'wer': 1.0,
                 'total_samples': len(predictions),
                 'total_tokens': 0
             }
 
-        # Calculate metrics
         accuracy = accuracy_score(label_flat, pred_flat)
         precision, recall, f1, _ = precision_recall_fscore_support(
             label_flat, pred_flat, average='weighted', zero_division=0
         )
+        wer = self._compute_wer(pred_sequences, ref_sequences)
 
-        # Calculate per-class metrics
         unique_labels = np.unique(label_flat)
         per_class_acc = {}
-
-        for label_id in unique_labels[:20]:  # Top 20 classes
+        for label_id in unique_labels[:20]:
             mask = np.array(label_flat) == label_id
             if mask.sum() > 0:
                 class_acc = np.mean(np.array(pred_flat)[mask] == label_id)
-                gloss = dataset.idx_to_gloss.get(int(label_id), f"ID_{label_id}")
+                gloss = idx_to_gloss.get(int(label_id), f"ID_{label_id}")
                 per_class_acc[gloss] = class_acc
 
         return {
@@ -283,6 +323,7 @@ class ModelTester:
             'precision': precision,
             'recall': recall,
             'f1': f1,
+            'wer': wer,
             'total_samples': len(predictions),
             'total_tokens': len(pred_flat),
             'per_class_accuracy': per_class_acc
@@ -297,6 +338,7 @@ class ModelTester:
         print(f"\nOverall Metrics:")
         print(f"  Average Loss:      {metrics.get('avg_loss', 0):.4f}")
         print(f"  Accuracy:          {metrics['accuracy']:.4f} ({metrics['accuracy'] * 100:.2f}%)")
+        print(f"  WER:               {metrics['wer']:.4f} ({metrics['wer'] * 100:.2f}%)")
         print(f"  Precision:         {metrics['precision']:.4f}")
         print(f"  Recall:            {metrics['recall']:.4f}")
         print(f"  F1 Score:          {metrics['f1']:.4f}")
@@ -319,40 +361,35 @@ class ModelTester:
         """Predict gloss sequence for a single video"""
         print(f"Processing: {landmarks_path}")
 
-        preprocessor = SignLanguagePreprocessor(self.config.preprocessing)
+        # Load and preprocess landmarks
+        preprocessor = SignLanguagePreprocessor(self.config.preprocessing)  # match training config
+
+        # Process the video
         result = preprocessor.process_video_file(landmarks_path)
 
         if result is None:
             raise ValueError(f"Failed to process video: {landmarks_path}")
 
+        # Prepare input
         sequence = result['sequence'].unsqueeze(0).to(self.device)
         attention_mask = result['attention_mask'].unsqueeze(0).to(self.device)
 
+        # Predict
         with torch.no_grad():
             outputs = self.model(sequence, attention_mask)
+            predictions = outputs['predictions'][0].cpu().numpy()
 
-        prediction_text = self._decode_output(outputs['logits'], attention_mask)
+        # Decode prediction
+        predicted_glosses = []
+        for token_id in predictions:
+            if token_id > 3 and self.idx_to_gloss is not None:  # Skip special tokens
+                gloss = self.idx_to_gloss.get(int(token_id), f"UNK_{token_id}")
+                predicted_glosses.append(gloss)
+
+        prediction_text = " ".join(predicted_glosses)
+
         print(f"Prediction: {prediction_text}")
         return prediction_text
-
-    def _decode_output(self, logits, attention_mask):
-        """CTC or argmax decode depending on model mode, returns gloss string"""
-        if self.model.use_ctc:
-            input_lengths = attention_mask.sum(dim=1).long()
-            token_ids = SignLanguageLSTM.ctc_greedy_decode(logits, input_lengths)[0]
-        else:
-            preds = torch.argmax(logits, dim=-1)[0].cpu().tolist()
-            # collapse repeats, strip specials
-            collapsed, prev = [], None
-            for t in preds:
-                if t != prev:
-                    collapsed.append(t)
-                prev = t
-            token_ids = [t for t in collapsed if t > 3]
-
-        if self.idx_to_gloss is None:
-            return ' '.join(str(t) for t in token_ids)
-        return ' '.join(self.idx_to_gloss.get(t, f'UNK_ID_{t}') for t in token_ids)
 
     def test_samples(self, dataset, num_samples: int = 10):
         """Test on random samples and show predictions"""
@@ -369,19 +406,26 @@ class ModelTester:
             sample = dataset[idx]
             true_text = sample['annotation']
 
+            # Predict
             sequence = sample['sequence'].unsqueeze(0).to(self.device)
             attention_mask = sample['attention_mask'].unsqueeze(0).to(self.device)
 
             with torch.no_grad():
                 outputs = self.model(sequence, attention_mask)
+                predictions = outputs['predictions'][0].cpu().numpy()
 
-            pred_text = self._decode_output(outputs['logits'], attention_mask)
+            # Decode
+            try:
+                pred_text = dataset.decode_annotation(predictions)
+            except:
+                pred_text = "<DECODE_ERROR>"
 
+            # Check if correct
             is_correct = (pred_text.strip() == true_text.strip())
             correct += int(is_correct)
             total += 1
 
-            status = "CORRECT" if is_correct else "INCORRECT"
+            status = "✓ CORRECT" if is_correct else "✗ INCORRECT"
             print(f"Sample {i + 1}/{num_samples} [{status}]")
             print(f"  True: {true_text}")
             print(f"  Pred: {pred_text}")
@@ -442,7 +486,7 @@ def main():
 
             # Remove non-serializable items
             save_metrics = {k: v for k, v in metrics.items()
-                            if k != 'per_class_accuracy'}
+                            if k != 'per_class_accuracy' and not isinstance(v, np.ndarray)}
 
             with open(output_path, 'w') as f:
                 json.dump(save_metrics, f, indent=2)
@@ -472,8 +516,8 @@ def main():
 
         # Apply vocabulary
         if tester.gloss_to_idx is not None:
-            dataset.vocab = tester.gloss_to_idx
-            dataset.vocab_size = len(tester.gloss_to_idx)
+            dataset.gloss_to_idx = tester.gloss_to_idx
+            dataset.idx_to_gloss = tester.idx_to_gloss
 
         tester.test_samples(dataset, args.test_samples)
 

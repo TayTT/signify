@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 """
 Unified Configuration System for Sign Language Recognition
 
@@ -458,7 +458,7 @@ def config_from_args(args) -> Config:
         config.device = args.device
 
     return config
-=======
+
 from dataclasses import dataclass
 
 
@@ -467,4 +467,4 @@ class QualityConfig:
     max_interior_hand_missing_pct: float = 30.0   # hand threshold, interior frames only
     max_face_missing_pct: float = 50.0             # face threshold, whole sequence
     min_sequence_length: int = 10                  # also filter very short seqs
->>>>>>> origin/data-quality
+

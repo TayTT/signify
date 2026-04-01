@@ -219,8 +219,11 @@ class PhoenixDataset(Dataset):
                 pose_features = sequence[:, -self.preprocessor.feature_dims['pose']:]
 
                 print(f"  Hands non-zero: {(hands_features != 0).float().mean():.3f}")
-                print(f"  Face non-zero: {(face_features != 0).float().mean():.3f}")
                 print(f"  Pose non-zero: {(pose_features != 0).float().mean():.3f}")
+                if self.preprocessor.feature_dims['face'] > 0:
+                    print(f"  Face non-zero: {(face_features != 0).float().mean():.3f}")
+                else:
+                    print(f"  Face non-zero: disabled")
 
             # Encode annotation
             encoded_annotation = self.encode_annotation(self.annotations[idx])

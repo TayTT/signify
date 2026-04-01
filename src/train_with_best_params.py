@@ -274,7 +274,6 @@ def main():
     trainer.dataset = dataset
     trainer.train_loader, trainer.val_loader = trainer._create_data_loaders()
 
-    # Replace optimizer and scheduler with configured versions
     trainer.optimizer = create_optimizer_from_config(trainer.model, config)
     trainer.scheduler = create_scheduler_from_config(trainer.optimizer, config)
 
