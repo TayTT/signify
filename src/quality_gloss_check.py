@@ -68,6 +68,15 @@ def get_gloss_counts(df: pd.DataFrame) -> Counter:
     return Counter(get_gloss_tokens(df))
 
 
+def get_gloss_video_counts(df: pd.DataFrame) -> Counter:
+    """count how many distinct videos (rows) contain each gloss at least once"""
+    counts = Counter()
+    for ann in df['annotation']:
+        for gloss in set(ann.split()):  # set -> each gloss counted once per video
+            counts[gloss] += 1
+    return counts
+
+
 def get_sequence_lengths(df: pd.DataFrame) -> List[int]:
     return [len(ann.split()) for ann in df['annotation']]
 
@@ -93,13 +102,15 @@ def plot_gloss_frequency(
     top_n:         Optional[int] = None,   # show only top N glosses; None = all
     min_count:     int           = 1,      # hide glosses with fewer samples
     csv_out:       Optional[str] = None,
+    per_video:     bool          = False,
 ):
     """
-    Bar chart of per-gloss sample counts, sorted descending.
-    Header shows vocabulary size, hapax count, and singleton rate.
+    Bar chart of per-gloss counts, sorted descending.
+    per_video=False: total token occurrences across all annotations.
+    per_video=True:  number of distinct videos containing each gloss >= 1 time.
     """
     df     = load_annotations(csv_path)
-    counts = get_gloss_counts(df)
+    counts = get_gloss_video_counts(df) if per_video else get_gloss_counts(df)
 
     items = sorted(counts.items(), key=lambda x: x[1], reverse=True)
     items = [(g, c) for g, c in items if c >= min_count]
@@ -110,9 +121,10 @@ def plot_gloss_frequency(
     freqs   = [c for _, c in items]
     n_shown = len(glosses)
 
-    vocab_size  = len(counts)
-    hapax_count = sum(1 for c in counts.values() if c == 1)
+    vocab_size   = len(counts)
+    hapax_count  = sum(1 for c in counts.values() if c == 1)
     total_tokens = sum(counts.values())
+    count_label  = 'video count' if per_video else 'token count'
 
     fig_w = max(12.0, n_shown / 5 * figsize_scale)
     fig_h = max(5.0, 5.0 * figsize_scale)
@@ -121,7 +133,7 @@ def plot_gloss_frequency(
     bars = ax.bar(range(n_shown), freqs, color='#2c5f8a', zorder=2)
     ax.set_xticks(range(n_shown))
     ax.set_xticklabels(glosses, rotation=90, fontsize=max(4, 8 - n_shown // 50))
-    ax.set_ylabel('sample count', fontsize=10)
+    ax.set_ylabel('video count' if per_video else 'occurrence count', fontsize=10)
     ax.set_xlabel('gloss', fontsize=10)
     ax.grid(axis='y', linestyle='--', linewidth=0.4, alpha=0.4, zorder=0)
     ax.set_xlim(-0.5, n_shown - 0.5)
@@ -132,9 +144,10 @@ def plot_gloss_frequency(
                label=f'mean: {mean_count:.1f}')
     ax.legend(fontsize=9)
 
+    mode_str = 'per video (distinct)' if per_video else 'per token occurrence'
     lines = [
-        f'samples: {len(df)}  |  vocab: {vocab_size}  |  total tokens: {total_tokens}',
-        f'hapax legomena (count=1): {hapax_count} ({hapax_count/vocab_size*100:.1f}% of vocab)',
+        f'samples: {len(df)}  |  vocab: {vocab_size}  |  counting: {mode_str}',
+        f'glosses appearing in only 1 video: {hapax_count} ({hapax_count/vocab_size*100:.1f}% of vocab)',
         f'showing: {n_shown} glosses' + (f' (top {top_n})' if top_n else '') +
         (f'  min_count={min_count}' if min_count > 1 else ''),
     ]
@@ -144,7 +157,8 @@ def plot_gloss_frequency(
     if csv_out:
         with open(csv_out, 'w', newline='', encoding='utf-8') as f:
             w = csv.writer(f)
-            w.writerow(['gloss', 'count', 'pct_of_tokens'])
+            col = 'video_count' if per_video else 'token_count'
+            w.writerow(['gloss', col, 'pct_of_total'])
             for g, c in sorted(counts.items(), key=lambda x: x[1], reverse=True):
                 w.writerow([g, c, round(c / total_tokens * 100, 4)])
         print(f'saved csv to {csv_out}')
@@ -498,6 +512,8 @@ def _build_parser() -> argparse.ArgumentParser:
                      help='show only top N glosses (default: all)')
     pgf.add_argument('--min-count', type=int, default=1, dest='min_count',
                      help='hide glosses with fewer than N samples (default: 1)')
+    pgf.add_argument('--per-video', action='store_true', default=False, dest='per_video',
+                     help='count distinct videos containing each gloss instead of total occurrences')
     _add_common_args(pgf)
 
     # -- plot-sequence-lengths --
@@ -505,18 +521,18 @@ def _build_parser() -> argparse.ArgumentParser:
                          help='histogram of gloss count per annotation sequence')
     psl.add_argument('csv_path', help='path to annotations CSV')
     _add_common_args(psl)
-    #
-    # # -- plot-rank-frequency --
-    # prf = sub.add_parser('plot-rank-frequency',
-    #                      help='log-log rank vs frequency (Zipf) plot')
-    # prf.add_argument('csv_path', help='path to annotations CSV')
-    # _add_common_args(prf)
-    #
-    # # -- plot-coverage --
-    # pc = sub.add_parser('plot-coverage',
-    #                     help='cumulative token coverage curve by gloss frequency rank')
-    # pc.add_argument('csv_path', help='path to annotations CSV')
-    # _add_common_args(pc)
+
+    # -- plot-rank-frequency --
+    prf = sub.add_parser('plot-rank-frequency',
+                         help='log-log rank vs frequency (Zipf) plot')
+    prf.add_argument('csv_path', help='path to annotations CSV')
+    _add_common_args(prf)
+
+    # -- plot-coverage --
+    pc = sub.add_parser('plot-coverage',
+                        help='cumulative token coverage curve by gloss frequency rank')
+    pc.add_argument('csv_path', help='path to annotations CSV')
+    _add_common_args(pc)
 
     # -- plot-signer-distribution --
     psd = sub.add_parser('plot-signer-distribution',
@@ -538,13 +554,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 _COMMAND_HANDLERS = {
     'plot-gloss-frequency':     lambda a: plot_gloss_frequency(
-        a.csv_path, a.output, a.figsize_scale, a.top_n, a.min_count, a.csv_out),
+        a.csv_path, a.output, a.figsize_scale, a.top_n, a.min_count, a.csv_out, a.per_video),
     'plot-sequence-lengths':    lambda a: plot_sequence_lengths(
         a.csv_path, a.output, a.figsize_scale, a.csv_out),
-    # 'plot-rank-frequency':      lambda a: plot_rank_frequency(
-    #     a.csv_path, a.output, a.figsize_scale),
-    # 'plot-coverage':            lambda a: plot_coverage(
-    #     a.csv_path, a.output, a.figsize_scale, a.csv_out),
+    'plot-rank-frequency':      lambda a: plot_rank_frequency(
+        a.csv_path, a.output, a.figsize_scale),
+    'plot-coverage':            lambda a: plot_coverage(
+        a.csv_path, a.output, a.figsize_scale, a.csv_out),
     'plot-signer-distribution': lambda a: plot_signer_distribution(
         a.csv_path, a.output, a.figsize_scale, a.csv_out),
     'plot-split-comparison':    lambda a: plot_split_comparison(

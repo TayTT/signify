@@ -1197,8 +1197,8 @@ class LandmarksVisualizer3D:
         out = frame.copy()
         frame_data = self.frames_data.get(frame_key, {})
 
-        def pt(lm):  # normalize -> pixel
-            return (int(lm['x'] * w), int(lm['y'] * h))
+        def pt(lm):  # normalize -> pixel, flip x to match unmirrored video frames
+            return (int((1.0 - lm['x']) * w), int(lm['y'] * h))
 
         # hands
         for hand_type in ['left_hand', 'right_hand']:

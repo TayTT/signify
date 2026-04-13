@@ -54,13 +54,19 @@ class AugmentationConfig:
     rotate_max:   float = 10.0           # degrees, applied uniformly in [-max, +max]
 
     def tag(self) -> str:
-        """short filename suffix encoding which augmentations are active"""
+        """short filename suffix encoding active augmentations and their parameters"""
+        def _fmt(val: float) -> str:
+            # 0.01 -> 001, 0.85 -> 085, 10.0 -> 10, 1.15 -> 115
+            s = f'{val:.10f}'.rstrip('0').rstrip('.')  # remove trailing zeros
+            return s.replace('.', '')
+
         parts = []
-        if self.jitter: parts.append('jit')
+        if self.jitter: parts.append(f'jit{_fmt(self.jitter_sigma)}')
         if self.flip:   parts.append('flp')
-        if self.scale:  parts.append('scl')
-        if self.rotate: parts.append('rot')
+        if self.scale:  parts.append(f'scl{_fmt(self.scale_min)}-{_fmt(self.scale_max)}')
+        if self.rotate: parts.append(f'rot{_fmt(self.rotate_max)}')
         return '_'.join(parts) if parts else 'noaug'
+
 
     def any_active(self) -> bool:
         return any([self.jitter, self.flip, self.scale, self.rotate])
@@ -200,10 +206,27 @@ def _augment_frame(frame: Dict, cfg: AugmentationConfig,
     if pose:
         frame['pose'] = {name: transform(lm) for name, lm in pose.items()}
 
-    # flip swaps handedness — swap hand entries so left/right remain anatomically correct
-    if cfg.flip and 'hands' in frame:
-        h = frame['hands']
-        h['left_hand'], h['right_hand'] = h.get('right_hand'), h.get('left_hand')
+    # flip swaps handedness — swap hand entries and pose paired landmarks
+    if cfg.flip:
+        if 'hands' in frame:
+            h = frame['hands']
+            h['left_hand'], h['right_hand'] = h.get('right_hand'), h.get('left_hand')
+
+        if 'pose' in frame:
+            pose = frame['pose']
+            _POSE_FLIP_PAIRS = [
+                ('LEFT_SHOULDER',  'RIGHT_SHOULDER'),
+                ('LEFT_ELBOW',     'RIGHT_ELBOW'),
+                ('LEFT_WRIST',     'RIGHT_WRIST'),
+                ('LEFT_HIP',       'RIGHT_HIP'),
+            ]
+            for left_name, right_name in _POSE_FLIP_PAIRS:
+                if left_name in pose and right_name in pose:
+                    pose[left_name], pose[right_name] = pose[right_name], pose[left_name]
+                elif left_name in pose:   # only one side present — rename it
+                    pose[right_name] = pose.pop(left_name)
+                elif right_name in pose:
+                    pose[left_name] = pose.pop(right_name)
 
     return frame
 
