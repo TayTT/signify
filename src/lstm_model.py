@@ -229,7 +229,11 @@ class SignLanguageTrainer:
             print(f"Updating input_size from {self.config.model.input_size} to {actual_input_size}")
             self.config.model.input_size = actual_input_size
 
-        self.train_loader, self.val_loader = self._create_data_loaders()
+        # load separate val dataset if configured
+        _val_dataset = None
+        if self.config.data.val_data_dir and self.config.data.val_annotations_path:
+            _val_dataset = self._load_val_dataset()
+        self.train_loader, self.val_loader = self._create_data_loaders(_val_dataset)
 
         self.model = SignLanguageLSTM(self.config, self.dataset.vocab_size).to(self.device)
 
@@ -261,6 +265,23 @@ class SignLanguageTrainer:
         except Exception as e:
             print(f"Error loading dataset: {e}")
             raise
+
+    def _load_val_dataset(self) -> PhoenixDataset:
+        """Load separate val dataset using the same vocab as train"""
+        val_data_dir        = self.config.data.val_data_dir
+        val_annotations_path = self.config.data.val_annotations_path
+
+        if not val_data_dir or not val_annotations_path:
+            raise ValueError("val_data_dir and val_annotations_path must both be set")
+
+        print(f"Loading val dataset from {val_data_dir}")
+        dataset = self.preprocessor.create_phoenix_dataset(
+            data_dir=val_data_dir,
+            annotations_path=val_annotations_path,
+            vocab_path=str(Path(self.config.data.vocab_path))  # reuse train vocab
+        )
+        print(f"Loaded val dataset with {len(dataset)} samples")
+        return dataset
 
     def _create_optimizer(self) -> torch.optim.Optimizer:
         opt = self.config.training.optimizer
@@ -326,16 +347,23 @@ class SignLanguageTrainer:
 
             return torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda_func)
 
-    def _create_data_loaders(self) -> Tuple[DataLoader, DataLoader]:
-        """Create data loaders"""
-        train_size = int(self.config.training.train_split * len(self.dataset))
-        val_size = len(self.dataset) - train_size
-
-        train_dataset, val_dataset = random_split(
-            self.dataset,
-            [train_size, val_size],
-            generator=torch.Generator().manual_seed(self.config.training.random_seed)
-        )
+    def _create_data_loaders(self, val_dataset=None) -> Tuple[DataLoader, DataLoader]:
+        """Create data loaders.
+        If val_dataset is provided, use it directly as the val split.
+        Otherwise fall back to random_split on the train dataset.
+        """
+        if val_dataset is not None:
+            train_dataset = self.dataset
+            print(f"Using separate val dataset ({len(val_dataset)} samples)")
+        else:
+            train_size = int(self.config.training.train_split * len(self.dataset))
+            val_size   = len(self.dataset) - train_size
+            train_dataset, val_dataset = random_split(
+                self.dataset,
+                [train_size, val_size],
+                generator=torch.Generator().manual_seed(self.config.training.random_seed)
+            )
+            print("No separate val dataset provided, using random_split")
 
         train_loader = DataLoader(
             train_dataset,

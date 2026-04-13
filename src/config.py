@@ -1,4 +1,3 @@
-
 """
 Unified Configuration System for Sign Language Recognition
 
@@ -134,6 +133,10 @@ class DataConfig:
     vocab_path: str = "./vocab.pkl"
     model_save_path: str = "./mode_stash/noNormNoFace/lstm_sign2gloss.pth"
     config_save_path: Optional[str] = None  # if None, saved next to model
+
+    # separate val split - if set, overrides random_split during training
+    val_data_dir: Optional[str] = None
+    val_annotations_path: Optional[str] = None
 
     # Data format
     data_format: str = "auto"  # auto, npz, json
@@ -467,4 +470,3 @@ class QualityConfig:
     max_interior_hand_missing_pct: float = 30.0   # hand threshold, interior frames only
     max_face_missing_pct: float = 50.0             # face threshold, whole sequence
     min_sequence_length: int = 10                  # also filter very short seqs
-

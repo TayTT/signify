@@ -287,6 +287,10 @@ def create_arg_parser() -> argparse.ArgumentParser:
                         help='Path to annotations CSV/Excel file')
     parser.add_argument('--vocab_path', type=str,
                         help='Path to vocabulary file')
+    parser.add_argument('--val_data_dir', type=str,
+                        help='Directory containing val landmark files (uses Phoenix dev split)')
+    parser.add_argument('--val_annotations_path', type=str,
+                        help='Path to val annotations CSV (uses Phoenix dev corpus)')
 
     # Model arguments
     parser.add_argument('--hidden_size', type=int,
@@ -355,6 +359,10 @@ def apply_args_to_config(config: Config, args: argparse.Namespace) -> Config:
         config.data.annotations_path = args.annotations_path
     if args.vocab_path:
         config.data.vocab_path = args.vocab_path
+    if args.val_data_dir:
+        config.data.val_data_dir = args.val_data_dir
+    if args.val_annotations_path:
+        config.data.val_annotations_path = args.val_annotations_path
     if args.model_save_path:
         config.data.model_save_path = args.model_save_path
     if args.config_save_path:

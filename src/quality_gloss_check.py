@@ -162,7 +162,10 @@ def plot_sequence_lengths(
 ):
     """
     Histogram of gloss count per annotation sequence.
-    Percentile markers help set max_sequence_length in config.
+    Percentile markers show the gloss count distribution across samples.
+    Useful for checking whether model.max_annotation_length is cutting off samples
+    (if p95 exceeds it, you are silently losing data), and for spotting samples
+    that may violate the CTC constraint (input frames must be >= gloss count).
     """
     df      = load_annotations(csv_path)
     lengths = get_sequence_lengths(df)
@@ -502,18 +505,18 @@ def _build_parser() -> argparse.ArgumentParser:
                          help='histogram of gloss count per annotation sequence')
     psl.add_argument('csv_path', help='path to annotations CSV')
     _add_common_args(psl)
-
-    # -- plot-rank-frequency --
-    prf = sub.add_parser('plot-rank-frequency',
-                         help='log-log rank vs frequency (Zipf) plot')
-    prf.add_argument('csv_path', help='path to annotations CSV')
-    _add_common_args(prf)
-
-    # -- plot-coverage --
-    pc = sub.add_parser('plot-coverage',
-                        help='cumulative token coverage curve by gloss frequency rank')
-    pc.add_argument('csv_path', help='path to annotations CSV')
-    _add_common_args(pc)
+    #
+    # # -- plot-rank-frequency --
+    # prf = sub.add_parser('plot-rank-frequency',
+    #                      help='log-log rank vs frequency (Zipf) plot')
+    # prf.add_argument('csv_path', help='path to annotations CSV')
+    # _add_common_args(prf)
+    #
+    # # -- plot-coverage --
+    # pc = sub.add_parser('plot-coverage',
+    #                     help='cumulative token coverage curve by gloss frequency rank')
+    # pc.add_argument('csv_path', help='path to annotations CSV')
+    # _add_common_args(pc)
 
     # -- plot-signer-distribution --
     psd = sub.add_parser('plot-signer-distribution',
@@ -538,10 +541,10 @@ _COMMAND_HANDLERS = {
         a.csv_path, a.output, a.figsize_scale, a.top_n, a.min_count, a.csv_out),
     'plot-sequence-lengths':    lambda a: plot_sequence_lengths(
         a.csv_path, a.output, a.figsize_scale, a.csv_out),
-    'plot-rank-frequency':      lambda a: plot_rank_frequency(
-        a.csv_path, a.output, a.figsize_scale),
-    'plot-coverage':            lambda a: plot_coverage(
-        a.csv_path, a.output, a.figsize_scale, a.csv_out),
+    # 'plot-rank-frequency':      lambda a: plot_rank_frequency(
+    #     a.csv_path, a.output, a.figsize_scale),
+    # 'plot-coverage':            lambda a: plot_coverage(
+    #     a.csv_path, a.output, a.figsize_scale, a.csv_out),
     'plot-signer-distribution': lambda a: plot_signer_distribution(
         a.csv_path, a.output, a.figsize_scale, a.csv_out),
     'plot-split-comparison':    lambda a: plot_split_comparison(
