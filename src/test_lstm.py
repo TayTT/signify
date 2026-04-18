@@ -64,7 +64,6 @@ class ModelTester:
         if isinstance(config_data, Config):
             self.config = config_data
         else:
-            # old flat checkpoint - reconstruct a Config from whatever attrs exist
             print("Old checkpoint format, rebuilding config...")
             self.config = Config()
             self.config.model.input_size = getattr(config_data, 'input_size', 345)
@@ -75,7 +74,10 @@ class ModelTester:
             self.config.model.max_annotation_length = getattr(config_data, 'max_annotation_length', 25)
             self.config.preprocessing.max_sequence_length = getattr(config_data, 'max_sequence_length', 224)
             self.config.training.batch_size = getattr(config_data, 'batch_size', 4)
-            self.config.device = str(self.device)
+
+        # override saved device with runtime device
+        self.config.device = str(self.device)
+        self.config.preprocessing.device = str(self.device)
 
         self.vocab_size = checkpoint['model_state_dict']['classifier.3.weight'].shape[0]
 

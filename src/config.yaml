@@ -88,10 +88,10 @@ quality:
 # ------------------
 data:
   # Paths (modify these for your setup)
-  data_dir: "data/phoenix_jsons/phoenix_train"
-  annotations_path: "data/annotations_phoenix/train_corpus.csv"
-  vocab_path: "./models_stash/ctc-phoenix/vocab.pkl"
-  model_save_path: "./models_stash/ctc-phoenix/lstm_sign2gloss.pth"
+  data_dir: "data/phoenix_jsons/phoenix_train_aug"
+  annotations_path: "data/annotations_phoenix/train_corpus_aug.csv"
+  vocab_path: "./models_stash/ctc-phoenix-aug/vocab.pkl"
+  model_save_path: "./models_stash/ctc-phoenix-aug/lstm_sign2gloss.pth"
 #  config_save_path: "None"
 
   # Data format
@@ -157,7 +157,7 @@ processing:
 logging:
   # WandB settings
   project_name: "sign-language-lstm-ctc"
-  experiment_name: "ctc-phoenix"
+  experiment_name: "ctc-phoenix-aug"
   tags:
     - lstm
     - sign-language

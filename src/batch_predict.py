@@ -116,12 +116,12 @@ class BatchPredictor:
         checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
 
         config_data = checkpoint['config']
+        config_data = checkpoint['config']
         if isinstance(config_data, Config):
             self.config = config_data
         elif isinstance(config_data, dict):
             self.config = Config.from_dict(config_data)
         else:
-            # old flat checkpoint - reconstruct best effort
             self.config = Config()
             self.config.model.input_size = getattr(config_data, 'input_size', 164)
             self.config.model.hidden_size = getattr(config_data, 'hidden_size', 768)
@@ -129,8 +129,11 @@ class BatchPredictor:
             self.config.model.dropout = getattr(config_data, 'dropout', 0.1)
             self.config.model.bidirectional = getattr(config_data, 'bidirectional', False)
             self.config.preprocessing.max_sequence_length = getattr(config_data, 'max_sequence_length', 224)
-            self.config.preprocessing.normalize_coordinates = False  # safe default
-            self.config.device = str(self.device)
+            self.config.preprocessing.normalize_coordinates = False
+
+        # override saved device with runtime device
+        self.config.device = str(self.device)
+        self.config.preprocessing.device = str(self.device)
 
         self.vocab_size = checkpoint['vocab_size']
 

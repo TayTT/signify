@@ -17,13 +17,7 @@ The output directory contains:
     - a combined annotations CSV covering every file in the directory
 
 Usage:
-    python src/build_augmented_dataset.py
-        --json_dir   ./data/phoenix_jsons/phoenix_train
-        --csv_path   ./data/annotations_phoenix/train_corpus.csv
-        --output_dir ./data/phoenix_jsons/phoenix_train_aug
-        --output_csv ./data/annotations_phoenix/train_corpus_aug.csv
-        --rare-threshold 5
-        --seed 42
+    python src/build_augmented_dataset.py --json_dir   ./data/phoenix_jsons/phoenix_train --csv_path   ./data/annotations_phoenix/train_corpus.csv --output_dir ./data/phoenix_jsons/phoenix_train_aug --output_csv ./data/annotations_phoenix/train_corpus_aug.csv --rare-threshold 5 --seed 42
 """
 
 import json
