@@ -92,6 +92,8 @@ data:
   annotations_path: "data/annotations_phoenix/train_corpus_aug.csv"
   vocab_path: "./models_stash/ctc-phoenix-aug/vocab.pkl"
   model_save_path: "./models_stash/ctc-phoenix-aug/lstm_sign2gloss.pth"
+  val_data_dir: "data/phoenix_jsons/phoenix_dev"
+  val_annotations_path: "data/annotations_phoenix/dev_corpus.csv"
 #  config_save_path: "None"
 
   # Data format

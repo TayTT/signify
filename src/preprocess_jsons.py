@@ -118,24 +118,28 @@ class PhoenixDataset(Dataset):
 
     def decode_annotation(self, token_ids: List[int]) -> str:
         """Decode token IDs back to annotation string"""
-        id_to_vocab = {v: k for k, v in self.vocab.items()}
+        # prefer model vocab injected at test time over dataset-local vocab
+        if hasattr(self, 'idx_to_gloss') and self.idx_to_gloss is not None:
+            id_to_vocab = self.idx_to_gloss
+        else:
+            id_to_vocab = {v: k for k, v in self.vocab.items()}
+
+        eos_id = self.vocab.get('<EOS>', -1)
         tokens = []
 
         for token_id in token_ids:
-            if token_id == 0:  # Skip padding tokens
+            token_id = int(token_id)
+            if token_id == 0:  # skip pad
                 continue
-            elif token_id == self.vocab.get('<EOS>', -1):  # Stop at end-of-sequence
+            elif token_id == eos_id:
                 break
-            elif token_id == self.vocab.get('< SOS >', -1):  # Skip start-of-sequence
-                continue
             else:
                 token_text = id_to_vocab.get(token_id, f'<UNK_ID_{token_id}>')
-                if token_text not in ['<PAD>', '<UNK>', '< SOS >', '<EOS>']:
+                if token_text not in ('<PAD>', '<UNK>', '<SOS>', '<EOS>'):
                     tokens.append(token_text)
 
         result = ' '.join(tokens)
 
-        # Debug output
         if not result.strip():
             print(f"Debug: decode_annotation got empty result from {len(token_ids)} tokens")
             print(f"First 10 token IDs: {token_ids[:10]}")

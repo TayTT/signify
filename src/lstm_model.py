@@ -106,7 +106,7 @@ class SignLanguageLSTM(nn.Module):
             nn.Linear(lstm_output_size // 2, vocab_size)
         )
 
-        self.use_ctc = False
+        self.use_ctc = config.model.use_ctc
 
     def forward(self, x, attention_mask=None, labels=None):
         """Forward pass"""
@@ -131,14 +131,20 @@ class SignLanguageLSTM(nn.Module):
         x = self.dropout(x)
 
         logits = self.classifier(x)
-        predictions = torch.argmax(logits, dim=-1)
+
+        if self.use_ctc:
+            predictions = self._ctc_greedy_decode(logits, batch_size)
+        else:
+            predictions = torch.argmax(logits, dim=-1)
 
         loss = None
         if labels is not None:
             if self.use_ctc:
                 log_probs = F.log_softmax(logits, dim=-1)
-                input_lengths = attention_mask.sum(dim=1) if attention_mask is not None else torch.full((batch_size,), seq_len)
-                target_lengths = (labels != 0).sum(dim=1)
+                input_lengths = (attention_mask.sum(dim=1).long()
+                                 if attention_mask is not None
+                                 else torch.full((batch_size,), seq_len, dtype=torch.long))
+                target_lengths = (labels != 0).sum(dim=1).long()
 
                 loss = F.ctc_loss(
                     log_probs.transpose(0, 1),
@@ -146,7 +152,8 @@ class SignLanguageLSTM(nn.Module):
                     input_lengths,
                     target_lengths,
                     blank=0,
-                    reduction='mean'
+                    reduction='mean',
+                    zero_infinity=True,  # avoids nan on impossible alignments
                 )
             else:
                 logits_flat = logits[:, :labels.shape[1], :].reshape(-1, self.vocab_size)
@@ -199,6 +206,26 @@ class SignLanguageLSTM(nn.Module):
         with torch.no_grad():
             output = self.forward(x, attention_mask)
             return output['predictions']
+
+    def _ctc_greedy_decode(self, logits: torch.Tensor, batch_size: int) -> torch.Tensor:
+        """greedy ctc decode: collapse consecutive dupes, strip blank (id 0)"""
+        raw = torch.argmax(logits, dim=-1)  # (B, T)
+        decoded = []
+        for seq in raw:
+            out = []
+            prev = -1
+            for tok in seq.tolist():
+                if tok != prev:
+                    if tok != 0:  # 0 is blank
+                        out.append(tok)
+                    prev = tok
+            decoded.append(out)
+        max_len = max(len(d) for d in decoded) if decoded else 1
+        result = torch.zeros(batch_size, max_len, dtype=torch.long, device=logits.device)
+        for i, d in enumerate(decoded):
+            if d:
+                result[i, :len(d)] = torch.tensor(d, dtype=torch.long, device=logits.device)
+        return result
 
 
 class SignLanguageTrainer:
@@ -538,74 +565,64 @@ class SignLanguageTrainer:
 
         return avg_loss, metrics
 
+    @staticmethod
+    def _edit_distance(a: List[int], b: List[int]) -> int:
+        """levenshtein distance"""
+        m, n = len(a), len(b)
+        dp = list(range(n + 1))
+        for i in range(1, m + 1):
+            prev, dp[0] = dp[0], i
+            for j in range(1, n + 1):
+                prev, dp[j] = dp[j], (prev if a[i - 1] == b[j - 1]
+                                      else 1 + min(prev, dp[j], dp[j - 1]))
+        return dp[n]
+
     def _calculate_metrics(self, predictions: List, labels: List) -> Dict:
-        """Calculate evaluation metrics"""
+        use_ctc = self.config.model.use_ctc
+
+        total_edits = 0
+        total_ref_tokens = 0
         pred_flat = []
         label_flat = []
 
         for pred, label in zip(predictions, labels):
-            if hasattr(pred, 'cpu'):
-                pred = pred.cpu().numpy()
-            if hasattr(label, 'cpu'):
-                label = label.cpu().numpy()
+            pred = np.atleast_1d(pred if not hasattr(pred, 'cpu') else pred.cpu().numpy())
+            label = np.atleast_1d(label if not hasattr(label, 'cpu') else label.cpu().numpy())
 
-            if np.isscalar(pred) and np.isscalar(label):
-                if label != 0:
-                    pred_flat.append(int(pred))
-                    label_flat.append(int(label))
+            pred_seq = [int(t) for t in pred if int(t) != 0]
+            ref_seq = [int(t) for t in label if int(t) != 0]
+
+            if not ref_seq:
+                continue
+
+            if use_ctc:
+                total_edits += self._edit_distance(pred_seq, ref_seq)
+                total_ref_tokens += len(ref_seq)
             else:
-                pred = np.atleast_1d(pred)
-                label = np.atleast_1d(label)
+                # frame-level token accuracy for cross-entropy mode
                 min_len = min(len(pred), len(label))
-                pred_trimmed = pred[:min_len]
-                label_trimmed = label[:min_len]
-                mask = label_trimmed != 0
-
+                mask = label[:min_len] != 0
                 if mask.any():
-                    pred_flat.extend(pred_trimmed[mask].tolist())
-                    label_flat.extend(label_trimmed[mask].tolist())
+                    pred_flat.extend(pred[:min_len][mask].tolist())
+                    label_flat.extend(label[:min_len][mask].tolist())
 
-        if not pred_flat or not label_flat:
+        if use_ctc:
+            wer = total_edits / total_ref_tokens if total_ref_tokens > 0 else 1.0
             return {
-                'accuracy': 0.0,
-                'precision': 0.0,
-                'recall': 0.0,
-                'f1': 0.0,
-                'total_samples': 0,
-                'prediction_diversity': 0.0
+                'wer': float(wer),
+                'accuracy': float(1.0 - wer),
+                'total_ref_tokens': total_ref_tokens,
             }
-
-        try:
-            pred_flat = np.array(pred_flat)
-            label_flat = np.array(label_flat)
-
-            accuracy = accuracy_score(label_flat, pred_flat)
-            precision, recall, f1, _ = precision_recall_fscore_support(
-                label_flat, pred_flat, average='weighted', zero_division=0
-            )
-
-            total_samples = len(pred_flat)
-            most_common_pred = np.bincount(pred_flat).max()
-            prediction_diversity = 1.0 - (most_common_pred / total_samples)
-
+        else:
+            if not pred_flat:
+                return {'wer': 1.0, 'accuracy': 0.0, 'total_ref_tokens': 0}
+            pred_arr = np.array(pred_flat)
+            label_arr = np.array(label_flat)
+            acc = float(accuracy_score(label_arr, pred_arr))
             return {
-                'accuracy': float(accuracy),
-                'precision': float(precision),
-                'recall': float(recall),
-                'f1': float(f1),
-                'total_samples': total_samples,
-                'prediction_diversity': float(prediction_diversity)
-            }
-
-        except Exception as e:
-            print(f"Error calculating metrics: {e}")
-            return {
-                'accuracy': 0.0,
-                'precision': 0.0,
-                'recall': 0.0,
-                'f1': 0.0,
-                'total_samples': 0,
-                'prediction_diversity': 0.0
+                'wer': float(1.0 - acc),  # proxy wer for ce mode
+                'accuracy': acc,
+                'total_ref_tokens': len(label_flat),
             }
 
     def train(self):
@@ -626,16 +643,14 @@ class SignLanguageTrainer:
                 'epoch': epoch + 1,
                 'train_loss': train_loss,
                 'val_loss': val_loss,
+                'val_wer': metrics['wer'],
                 'val_accuracy': metrics['accuracy'],
-                'val_precision': metrics['precision'],
-                'val_recall': metrics['recall'],
-                'val_f1': metrics['f1']
             })
 
             print(f"Train Loss: {train_loss:.4f}")
-            print(f"Val Loss: {val_loss:.4f}")
-            print(f"Val Accuracy: {metrics['accuracy']:.4f}")
-            print(f"Val F1: {metrics['f1']:.4f}")
+            print(f"Val Loss:   {val_loss:.4f}")
+            print(f"Val WER:    {metrics['wer']:.4f}")
+            print(f"Val Acc:    {metrics['accuracy']:.4f}")
 
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
