@@ -46,14 +46,15 @@ training:
 data:
   data_dir: "data/phoenix_jsons/phoenix_train_aug"
   annotations_path: "data/annotations_phoenix/train_corpus_aug.csv"
-  vocab_path: "./models_stash/ctc-phoenix-aug/vocab.pkl"
-  model_save_path: "./models_stash/ctc-phoenix-aug/lstm_sign2gloss.pth"
-  val_data_dir: "data/phoenix_jsons/phoenix_dev"
-  val_annotations_path: "data/annotations_phoenix/dev_corpus.csv"
+  vocab_path: "./models_stash/ctc-phoenix-aug-fix/vocab.pkl"
+  model_save_path: "./models_stash/ctc-phoenix-aug-fix/lstm_sign2gloss.pth"
+#  val_data_dir: "data/phoenix_jsons/phoenix_dev"
+#  val_annotations_path: "data/annotations_phoenix/dev_corpus.csv"
   data_format: auto
 
 preprocessing:
   max_sequence_length: 224
+  min_sequence_length: 5
   min_sequence_length: 5
   padding_strategy: post
   include_hands: true

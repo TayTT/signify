@@ -96,6 +96,8 @@ class PhoenixDataset(Dataset):
                 self.vocab[gloss] = len(self.vocab)
 
         self.vocab_size = len(self.vocab)
+        self.gloss_to_idx = self.vocab
+        self.idx_to_gloss = {v: k for k, v in self.vocab.items()}
 
 
     def _build_vocabulary(self, vocab_path: Optional[str] = None) -> Dict[str, int]:
