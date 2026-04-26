@@ -630,7 +630,7 @@ class SignLanguageTrainer:
         print("Starting training...")
         torch.set_num_threads(4)
 
-        for epoch in range(self.config.training.num_epochs):
+        for epoch in range(self.current_epoch, self.config.training.num_epochs):
             print(f"\nEpoch {epoch + 1}/{self.config.training.num_epochs}")
             self.current_epoch = epoch
 
@@ -672,6 +672,8 @@ class SignLanguageTrainer:
         checkpoint = {
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'epoch': self.current_epoch,
             'config': self.config,
             'vocab_size': self.dataset.vocab_size,
             'best_val_loss': self.best_val_loss,
@@ -688,16 +690,14 @@ class SignLanguageTrainer:
 
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        self.current_epoch = checkpoint.get('epoch', 0) + 1  # resume from next epoch
         self.best_val_loss = checkpoint['best_val_loss']
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
 
-        # Note: config is now a dictionary, not an object
-        # If you need to use it, convert back to Config object:
-        # from config import Config
-        # loaded_config = Config.from_dict(checkpoint['config'])
-
-        print(f"Model loaded from {checkpoint_path}")
+        print(f"Model loaded from {checkpoint_path}, resuming from epoch {self.current_epoch + 1}")
 
     def evaluate_sample(self, sample_idx: int) -> Tuple[str, str]:
         """Evaluate a single sample"""

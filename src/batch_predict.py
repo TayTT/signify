@@ -230,7 +230,8 @@ class BatchPredictor:
             Ground truth annotation string if available, None otherwise
         """
         if self.annotations_df is not None:
-            file_id = file_path.stem
+            stem = file_path.stem
+            file_id = stem[7:] if stem.startswith('images_') else stem  # strip images_ prefix if present
 
             matching_rows = self.annotations_df[self.annotations_df['id'] == file_id]
             if not matching_rows.empty:

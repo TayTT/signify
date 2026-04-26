@@ -85,6 +85,17 @@ class PhoenixDatasetManager:
             print(f"Initial shape: {df.shape}")
             print(f"Columns found: {list(df.columns)}")
 
+            # I accidently used the T dataset fro train, need to re-map the columns in this case
+            PHOENIX_T_COLS = {'name', 'video', 'start', 'end', 'speaker', 'orth', 'translation'}
+            if PHOENIX_T_COLS.issubset(set(df.columns)):
+                df = df.rename(columns={
+                    'name': 'id',
+                    'video': 'folder',
+                    'speaker': 'signer',
+                    'orth': 'annotation',
+                })
+                print("Detected Phoenix-2014T format, remapped columns")
+
             required_columns = ['id', 'folder', 'signer', 'annotation']
 
             if all(col in df.columns for col in required_columns):
@@ -143,14 +154,16 @@ class PhoenixDatasetManager:
         if npz_files:
             print(f"Found {len(npz_files)} NPZ files (using NPZ format)")
             for npz_file in npz_files:
-                identifier = npz_file.stem
+                stem = npz_file.stem
+                identifier = stem[7:] if stem.startswith('images_') else stem
                 landmark_files[identifier] = str(npz_file)
         else:
             print("No NPZ files found, searching for JSON files...")
             json_files = list(self.data_dir.rglob("*.json"))
             print(f"Found {len(json_files)} JSON files")
             for json_file in json_files:
-                identifier = json_file.stem
+                stem = json_file.stem
+                identifier = stem[7:] if stem.startswith('images_') else stem  # strip images_ prefix
                 landmark_files[identifier] = str(json_file)
 
         return landmark_files

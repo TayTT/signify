@@ -1,5 +1,5 @@
 model:
-  input_size: 356
+  input_size: 153
   hidden_size: 768
   num_layers: 3
   dropout: 0.4
@@ -8,7 +8,6 @@ model:
   use_attention: true
   max_annotation_length: 25
   use_ctc: true
-
 training:
   batch_size: 4
   num_epochs: 100
@@ -17,44 +16,38 @@ training:
   train_split: 0.8
   random_seed: 42
   gradient_accumulation_steps: 1
-
   optimizer:
     name: rmsprop
-    learning_rate: 0.00012146569724336334
+    learning_rate: 0.001
     weight_decay: 5.197141152171896e-05
     beta1: 0.9
     beta2: 0.98
     eps: 1.0e-8
     momentum: 0.9
     nesterov: false
-
   scheduler:
     name: step
     factor: 0.7
-    patience: 8
+    patience: 8 # not used by lambda
     min_lr: 1.0e-6
     step_size: 17
     gamma: 0.7528391483240343
     warmup_steps: 20
     total_steps: 200
-
   use_curriculum_learning: false
   curriculum_warmup_epochs: 5
   curriculum_stages: 4
   curriculum_overlap_ratio: 0.3
-
 data:
-  data_dir: "data/phoenix_jsons/phoenix_train_aug"
-  annotations_path: "data/annotations_phoenix/train_corpus_aug.csv"
-  vocab_path: "./models_stash/ctc-phoenix-aug-fix-old/vocab.pkl"
-  model_save_path: "./models_stash/ctc-phoenix-aug-fix-old/lstm_sign2gloss.pth"
-#  val_data_dir: "data/phoenix_jsons/phoenix_dev"
-#  val_annotations_path: "data/annotations_phoenix/dev_corpus.csv"
+  data_dir: data/phoenix_jsons/phoenix_train_aug
+  annotations_path: data/annotations_phoenix/train_corpus_aug.csv
+  vocab_path: ./models_stash/ctc-phoenix-aug-lr1e3/vocab.pkl
+  model_save_path: ./models_stash/ctc-phoenix-aug-lr1e3/lstm_sign2gloss.pth
+#  val_data_dir: data/phoenix_jsons/phoenix_dev
+#  val_annotations_path: data/annotations_phoenix/dev_corpus.csv
   data_format: auto
-
 preprocessing:
   max_sequence_length: 224
-  min_sequence_length: 5
   min_sequence_length: 5
   padding_strategy: post
   include_hands: true
@@ -77,7 +70,6 @@ preprocessing:
   max_missing_frames: 50
   output_format: tensor
   device: cuda
-
 processing:
   hand_min_detection_confidence: 0.7
   hand_min_tracking_confidence: 0.5
@@ -86,21 +78,19 @@ processing:
   pose_min_detection_confidence: 0.7
   hand_min_size: 0.05
   hand_max_size: 0.5
-
 logging:
-  project_name: "sign-language-lstm"
-  experiment_name: "ctc_best_final_aug_fix"
+  project_name: sign-language-lstm
+  experiment_name: ctc_aug_lr1e3
   tags:
     - lstm
     - sign-language
     - ctc
     - optuna-best
-  notes: "best params from ctc_search optuna study"
+  notes: ctc fix with lr=1e-3 and real dev val split
   offline: false
   disabled: false
   log_every_n_steps: 10
   save_every_n_epochs: 1
   verbose: true
   debug: false
-
 device: cuda
