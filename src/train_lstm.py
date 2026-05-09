@@ -85,17 +85,6 @@ class PhoenixDatasetManager:
             print(f"Initial shape: {df.shape}")
             print(f"Columns found: {list(df.columns)}")
 
-            # I accidently used the T dataset fro train, need to re-map the columns in this case
-            PHOENIX_T_COLS = {'name', 'video', 'start', 'end', 'speaker', 'orth', 'translation'}
-            if PHOENIX_T_COLS.issubset(set(df.columns)):
-                df = df.rename(columns={
-                    'name': 'id',
-                    'video': 'folder',
-                    'speaker': 'signer',
-                    'orth': 'annotation',
-                })
-                print("Detected Phoenix-2014T format, remapped columns")
-
             required_columns = ['id', 'folder', 'signer', 'annotation']
 
             if all(col in df.columns for col in required_columns):
@@ -154,16 +143,14 @@ class PhoenixDatasetManager:
         if npz_files:
             print(f"Found {len(npz_files)} NPZ files (using NPZ format)")
             for npz_file in npz_files:
-                stem = npz_file.stem
-                identifier = stem[7:] if stem.startswith('images_') else stem
+                identifier = npz_file.stem
                 landmark_files[identifier] = str(npz_file)
         else:
             print("No NPZ files found, searching for JSON files...")
             json_files = list(self.data_dir.rglob("*.json"))
             print(f"Found {len(json_files)} JSON files")
             for json_file in json_files:
-                stem = json_file.stem
-                identifier = stem[7:] if stem.startswith('images_') else stem  # strip images_ prefix
+                identifier = json_file.stem
                 landmark_files[identifier] = str(json_file)
 
         return landmark_files
@@ -459,15 +446,15 @@ def main():
         checkpoint_vocab = checkpoint.get('vocab_size')
 
         print("Loaded checkpoint configuration:")
-        print(f"  Input size: {checkpoint_config.input_size}")
-        print(f"  Hidden size: {checkpoint_config.hidden_size}")
+        print(f"  Input size: {checkpoint_config.model.input_size}")
+        print(f"  Hidden size: {checkpoint_config.model.hidden_size}")
         print(f"  Vocabulary size: {checkpoint_vocab}")
 
-        # Use checkpoint's model architecture
-        config.model.input_size = checkpoint_config.input_size
-        config.model.hidden_size = checkpoint_config.hidden_size
-        config.model.num_layers = checkpoint_config.num_layers
-        config.model.dropout = checkpoint_config.dropout
+        # use checkpoint's model architecture
+        config.model.input_size = checkpoint_config.model.input_size
+        config.model.hidden_size = checkpoint_config.model.hidden_size
+        config.model.num_layers = checkpoint_config.model.num_layers
+        config.model.dropout = checkpoint_config.model.dropout
 
         print("\nWARNING: When resuming training, the model architecture and vocabulary")
         print("         are fixed from the checkpoint. The new dataset must be compatible.")

@@ -271,6 +271,7 @@ class SignLanguageTrainer:
         self.patience_counter = 0
         self.train_losses = []
         self.val_losses = []
+        self.scheduler_name = self.config.training.scheduler.name.lower()
 
     def _load_dataset(self) -> PhoenixDataset:
         """Load and create Phoenix dataset"""
@@ -509,6 +510,8 @@ class SignLanguageTrainer:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.config.training.gradient_clip_norm)
             self.optimizer.step()
+            if self.scheduler_name == 'lambda':
+                self.scheduler.step()  # step-based, must be per batch
 
             total_loss += loss.item()
 
@@ -637,7 +640,10 @@ class SignLanguageTrainer:
             train_loss = self.train_epoch()
             val_loss, metrics = self.validate_epoch()
 
-            self.scheduler.step()
+            if self.scheduler_name == 'plateau':
+                self.scheduler.step(val_loss)  # needs metric
+            elif self.scheduler_name != 'lambda':
+                self.scheduler.step()  # epoch-based schedulers
 
             wandb.log({
                 'epoch': epoch + 1,
