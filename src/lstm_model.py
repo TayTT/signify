@@ -268,6 +268,7 @@ class SignLanguageTrainer:
         self.scheduler = self._create_scheduler()
 
         self.best_val_loss = float('inf')
+        self.best_val_wer = float('inf')
         self.patience_counter = 0
         self.train_losses = []
         self.val_losses = []
@@ -592,8 +593,8 @@ class SignLanguageTrainer:
             pred = np.atleast_1d(pred if not hasattr(pred, 'cpu') else pred.cpu().numpy())
             label = np.atleast_1d(label if not hasattr(label, 'cpu') else label.cpu().numpy())
 
-            pred_seq = [int(t) for t in pred if int(t) != 0]
-            ref_seq = [int(t) for t in label if int(t) != 0]
+            pred_seq = [int(t) for t in pred if int(t) not in (0, 2, 3)]
+            ref_seq = [int(t) for t in label if int(t) not in (0, 2, 3)]
 
             if not ref_seq:
                 continue
@@ -658,8 +659,10 @@ class SignLanguageTrainer:
             print(f"Val WER:    {metrics['wer']:.4f}")
             print(f"Val Acc:    {metrics['accuracy']:.4f}")
 
-            if val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
+            val_wer = metrics['wer']
+            if val_wer < self.best_val_wer:
+                self.best_val_wer = val_wer
+                self.best_val_loss = val_loss  # keep in sync for reference
                 self.patience_counter = 0
                 self.save_model()
                 print("New best model saved!")
@@ -683,6 +686,7 @@ class SignLanguageTrainer:
             'config': self.config,
             'vocab_size': self.dataset.vocab_size,
             'best_val_loss': self.best_val_loss,
+            'best_val_wer': self.best_val_wer,
             'train_losses': self.train_losses,
             'val_losses': self.val_losses,
             'gloss_to_idx': self.dataset.gloss_to_idx,
@@ -700,6 +704,7 @@ class SignLanguageTrainer:
             self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         self.current_epoch = checkpoint.get('epoch', 0) + 1  # resume from next epoch
         self.best_val_loss = checkpoint['best_val_loss']
+        self.best_val_wer = checkpoint.get('best_val_wer', float('inf'))
         self.train_losses = checkpoint['train_losses']
         self.val_losses = checkpoint['val_losses']
 

@@ -393,7 +393,7 @@ class ModelTester:
         print(f"Prediction: {prediction_text}")
         return prediction_text
 
-    def test_samples(self, dataset, num_samples: int = 10):
+    def test_samples(self, dataset, num_samples: int = 10, show_wer: bool = False):
         """Test on random samples and show predictions"""
         print(f"\n{'=' * 60}")
         print(f"Testing on {num_samples} Random Samples")
@@ -401,14 +401,16 @@ class ModelTester:
 
         indices = np.random.choice(len(dataset), min(num_samples, len(dataset)), replace=False)
 
+        idx_to_gloss = getattr(self, 'idx_to_gloss', None) or getattr(dataset, 'idx_to_gloss', {})
+
         correct = 0
         total = 0
+        wer_scores = []
 
         for i, idx in enumerate(indices):
             sample = dataset[idx]
             true_text = sample['annotation']
 
-            # Predict
             sequence = sample['sequence'].unsqueeze(0).to(self.device)
             attention_mask = sample['attention_mask'].unsqueeze(0).to(self.device)
 
@@ -416,13 +418,11 @@ class ModelTester:
                 outputs = self.model(sequence, attention_mask)
                 predictions = outputs['predictions'][0].cpu().numpy()
 
-            # Decode
             try:
                 pred_text = dataset.decode_annotation(predictions)
             except:
                 pred_text = "<DECODE_ERROR>"
 
-            # Check if correct
             is_correct = (pred_text.strip() == true_text.strip())
             correct += int(is_correct)
             total += 1
@@ -431,10 +431,49 @@ class ModelTester:
             print(f"Sample {i + 1}/{num_samples} [{status}]")
             print(f"  True: {true_text}")
             print(f"  Pred: {pred_text}")
+
+            if show_wer:
+                ref_glosses = true_text.strip().split()
+                pred_glosses = self._decode_sequence(predictions, idx_to_gloss)
+                sample_wer = (self._levenshtein(pred_glosses, ref_glosses) / len(ref_glosses)
+                              if ref_glosses else 1.0)
+                wer_scores.append(sample_wer)
+                print(f"  WER: {sample_wer:.4f}")
+
             print()
 
         accuracy = correct / total if total > 0 else 0
-        print(f"Sample Accuracy: {correct}/{total} ({accuracy * 100:.1f}%)\n")
+        print(f"Sample Accuracy: {correct}/{total} ({accuracy * 100:.1f}%)")
+
+        if show_wer and wer_scores:
+            self._print_wer_summary(wer_scores)
+
+    def _print_wer_summary(self, wer_scores: List[float]):
+        """print per-run wer stats and bracket distribution"""
+        mean_wer = np.mean(wer_scores)
+        min_wer = np.min(wer_scores)
+        max_wer = np.max(wer_scores)
+        n = len(wer_scores)
+
+        brackets = {
+            "0.00 - 0.25": sum(1 for w in wer_scores if w <= 0.25),
+            "0.26 - 0.50": sum(1 for w in wer_scores if 0.25 < w <= 0.50),
+            "0.51 - 0.75": sum(1 for w in wer_scores if 0.50 < w <= 0.75),
+            "0.76 - 1.00": sum(1 for w in wer_scores if 0.75 < w <= 1.00),
+            "1.00+": sum(1 for w in wer_scores if w > 1.00),
+        }
+
+        print(f"\n{'=' * 60}")
+        print(f"WER SUMMARY  ({n} samples)")
+        print(f"{'=' * 60}")
+        print(f"  Mean WER:    {mean_wer:.4f}  ({mean_wer * 100:.2f}%)")
+        print(f"  Lowest WER:  {min_wer:.4f}  ({min_wer * 100:.2f}%)")
+        print(f"  Highest WER: {max_wer:.4f}  ({max_wer * 100:.2f}%)")
+        print(f"\n  Distribution:")
+        for bracket, count in brackets.items():
+            bar = "#" * count
+            print(f"    {bracket}  {count:>4} / {n}  {bar}")
+        print(f"{'=' * 60}\n")
 
 
 def main():
@@ -464,6 +503,8 @@ def main():
                         help='Device to use (cuda/cpu)')
     parser.add_argument('--output', type=str,
                         help='Path to save results (JSON)')
+    parser.add_argument('--wer', action='store_true',
+                        help='Show per-sample WER and summary (only with --test_samples)')
 
     args = parser.parse_args()
 
@@ -521,7 +562,7 @@ def main():
             dataset.gloss_to_idx = tester.gloss_to_idx
             dataset.idx_to_gloss = tester.idx_to_gloss
 
-        tester.test_samples(dataset, args.test_samples)
+        tester.test_samples(dataset, args.test_samples, show_wer=args.wer)
 
 
 if __name__ == "__main__":

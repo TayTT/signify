@@ -1,150 +1,145 @@
-# Sign Language Recognition - Configuration File
-# ================================================
-# This file contains all configuration settings for training the LSTM model.
-# Copy this file and modify values as needed for your experiments.
-
-# Model Architecture
-# ------------------
 model:
-  # Input/Output dimensions
-  input_size: 356              # Feature dimension (auto-calculated from preprocessing)
-  hidden_size: 768             # LSTM hidden state size
-  num_layers: 1                # Number of LSTM layers
-  dropout: 0.1                 # Dropout rate
-  bidirectional: false         # Use bidirectional LSTM
-
-  # Attention mechanism
-  num_attention_heads: 1       # Number of attention heads
-  use_attention: true          # Enable attention layer
-
-  # Sequence parameters
-  max_annotation_length: 25    # Maximum output annotation length
-
-  # Loss function
-  use_ctc: true               # Use CTC loss instead of cross-entropy
-
-# Training Configuration
-# ----------------------
+  input_size: 153
+  hidden_size: 768
+  num_layers: 3
+  dropout: 0.4
+  bidirectional: false
+  num_attention_heads: 1
+  use_attention: true
+  max_annotation_length: 25
+  use_ctc: true
 training:
-  # Basic parameters
-  batch_size: 4                # Training batch size
-  num_epochs: 50               # Number of training epochs
-  patience: 8                  # Early stopping patience
-  gradient_clip_norm: 1.0      # Gradient clipping threshold
-
-  # Train/validation split
-  train_split: 0.8             # Fraction of data for training
-  random_seed: 42              # Random seed for reproducibility
-
-  # Gradient accumulation (for larger effective batch sizes on limited GPU memory)
+  batch_size: 4
+  num_epochs: 300
+  patience: 10
+  gradient_clip_norm: 1.0
+  train_split: 0.8
+  random_seed: 42
   gradient_accumulation_steps: 1
-
-  # Optimizer settings
   optimizer:
-    name: adamw                # Options: adam, adamw, sgd, rmsprop
-    learning_rate: 6.039e-5    # Initial learning rate
-    weight_decay: 3.877e-5     # L2 regularization
-
-    # Adam/AdamW specific
+    name: rmsprop
+    learning_rate: 0.00012
+    weight_decay: 5.197141152171896e-05
     beta1: 0.9
     beta2: 0.98
-    eps: 1.0e-8
-
-    # SGD specific (only used when optimizer.name is 'sgd')
+    eps: 1.0e-08
     momentum: 0.9
     nesterov: false
-
-  # Learning rate scheduler
   scheduler:
-    name: lambda               # Options: plateau, cosine, step, exponential, lambda
-
-    # ReduceLROnPlateau settings
-    factor: 0.7                # LR reduction factor
-    patience: 8                # Epochs to wait before reducing LR
-    min_lr: 1.0e-6             # Minimum learning rate
-
-    # StepLR settings
-    step_size: 10              # Epochs between LR reductions
-    gamma: 0.7                 # LR reduction factor
-
-    # LambdaLR (warmup + cosine decay) settings
-    warmup_steps: 20           # Number of warmup steps
-    total_steps: 200           # Total steps for cosine decay
-
-  # Curriculum Learning
+    name: lambda
+    factor: 0.7
+    patience: 8
+    min_lr: 1.0e-06
+    step_size: 17
+    gamma: 0.7528391483240343
+    warmup_steps: 14180
+    total_steps: 4254000
   use_curriculum_learning: false
   curriculum_warmup_epochs: 5
   curriculum_stages: 4
   curriculum_overlap_ratio: 0.3
-
-# Data Quality
-# ------------------------
-quality:
-  max_interior_hand_missing_pct: 30.0
-  max_face_missing_pct: 50.0
-  min_sequence_length: 10
-
-# Data Configuration
-# ------------------
 data:
-  # Paths (modify these for your setup)
-  data_dir: "data/phoenix_jsons/phoenix_train_aug"
-  annotations_path: "data/annotations_phoenix/train_corpus_aug.csv"
-  vocab_path: "./models_stash/ctc-phoenix-aug/vocab.pkl"
-  model_save_path: "./models_stash/ctc-phoenix-aug/lstm_sign2gloss.pth"
-  val_data_dir: "data/phoenix_npz/phoenix_test"
-  val_annotations_path: "data/annotations_phoenix/test_corpus.csv"
-#  config_save_path: "None"
-
-  # Data format
-  data_format: auto            # Options: auto, npz, json
-
-# Preprocessing Configuration
-# ---------------------------
+  data_dir: data/phoenix_npz/phoenix_train_aug_rndm
+  annotations_path: data/annotations_phoenix/train_corpus_aug_rndm.csv
+  vocab_path: ./models_stash/ctc-aug-stabilising-v3_rndm-fix/vocab.pkl
+  model_save_path: ./models_stash/ctc-aug-stabilising-v3_rndm-fix/lstm_sign2gloss.pth
+  config_save_path: models_stash\ctc-aug-stabilising-v3_rndm-fix\config.yaml
+  val_data_dir: data/phoenix_npz/phoenix_dev
+  val_annotations_path: data/annotations_phoenix/dev_corpus.csv
+  data_format: auto
 preprocessing:
-  # Sequence processing
-  max_sequence_length: 224     # owned here, not in model
+  max_sequence_length: 224
   min_sequence_length: 5
-  padding_strategy: post       # Options: pre, post, center
-
-  # Feature selection
+  padding_strategy: post
   include_hands: true
   include_face: false
   include_pose: true
-
-  # Hand features
   hand_landmarks_count: 21
-  include_hand_confidence: false   # NPZ files typically don't contain this
-
-  # Face features
+  include_hand_confidence: false
   face_landmarks_count: 468
-  use_face_subset: true           # Use subset for efficiency
-
-  # Pose features
+  use_face_subset: true
+  face_subset_indices:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 14
+  - 17
+  - 21
+  - 33
+  - 46
+  - 48
+  - 49
+  - 51
+  - 52
+  - 53
+  - 54
+  - 58
+  - 61
+  - 67
+  - 78
+  - 84
+  - 87
+  - 88
+  - 91
+  - 93
+  - 95
+  - 102
+  - 103
+  - 109
+  - 115
+  - 127
+  - 131
+  - 132
+  - 133
+  - 134
+  - 136
+  - 144
+  - 145
+  - 146
+  - 148
+  - 149
+  - 150
+  - 151
+  - 152
+  - 153
+  - 154
+  - 155
+  - 157
+  - 158
+  - 159
+  - 160
+  - 161
+  - 162
+  - 163
+  - 168
+  - 172
+  - 173
+  - 176
+  - 178
   pose_landmarks_count: 25
-  include_pose_visibility: false  # NPZ files typically don't contain this
-
-  # Normalization
+  include_pose_visibility: false
   normalize_coordinates: false
-  coordinate_range: [-1.0, 1.0]
-
-  # Data augmentation (experimental)
+  coordinate_range:
+  - -1.0
+  - 1.0
   apply_augmentation: false
   rotation_range: 0.1
-  scale_range: [0.9, 1.1]
+  scale_range:
+  - 0.9
+  - 1.1
   noise_std: 0.01
-
-  # Missing data handling
   interpolate_missing: true
-  interpolation_method: linear   # Options: linear, cubic, nearest
+  interpolation_method: linear
   max_missing_frames: 50
-
-  # Output format
   output_format: tensor
-  device: cpu
-
-# MediaPipe Processing Configuration
-# ------------------------------------
+  device: cuda
 processing:
   hand_min_detection_confidence: 0.7
   hand_min_tracking_confidence: 0.5
@@ -153,30 +148,22 @@ processing:
   pose_min_detection_confidence: 0.7
   hand_min_size: 0.05
   hand_max_size: 0.5
-
-# Logging Configuration
-# ---------------------
 logging:
-  # WandB settings
-  project_name: "sign-language-lstm-ctc"
-  experiment_name: "ctc-phoenix-aug"
+  project_name: sign-language-lstm
+  experiment_name: ctc_aug_stabilizing_v3-fix
   tags:
-    - lstm
-    - sign-language
-  notes: ""
-
-  # WandB mode
-  offline: false               # Run in offline mode
-  disabled: false              # Disable WandB entirely
-
-  # Logging frequency
+  - lstm
+  - sign-language
+  - ctc
+  - optuna-best
+  notes: ctc fix with lr=1e-3 hed exploding gradients and training isntability, trying
+    to curb with lower lr, proper lambda scheduler, next step could be to increase
+    gradclip too -> model is still converging, adding more epochs -> more augmented
+    data, 9 rnadomly augmented files per sample -> early stopping was watching loss not wer and wrong total steps, fixing
+  offline: false
+  disabled: false
   log_every_n_steps: 10
   save_every_n_epochs: 1
-
-  # Verbosity
   verbose: true
   debug: false
-
-# Runtime Settings
-# ----------------
-device: cpu                   # Options: cuda, cpu (auto-detected if not specified)
+device: cuda
