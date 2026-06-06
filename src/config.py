@@ -169,6 +169,9 @@ class PreprocessingConfig:
     pose_landmarks_count: int = 25
     include_pose_visibility: bool = False
 
+    # Delta features: appends frame-to-frame diff to raw coords
+    use_delta_features: bool = False
+
     # Normalization
     normalize_coordinates: bool = False
     coordinate_range: Tuple[float, float] = (-1.0, 1.0)

@@ -316,6 +316,7 @@ class SignLanguagePreprocessor:
         print(f"  - Hand features: {self.feature_dims['hands']}")
         print(f"  - Face features: {self.feature_dims['face']}")
         print(f"  - Pose features: {self.feature_dims['pose']}")
+        print(f"  - Delta features: {'enabled (x2)' if self.config.use_delta_features else 'disabled'}")
 
     def _get_default_face_subset(self) -> List[int]:
         """Get default subset of face landmarks for efficiency"""
@@ -366,7 +367,9 @@ class SignLanguagePreprocessor:
                 pose_dim += len(CORE_POSE_LANDMARKS)  # Visibility scores
             dims['pose'] = pose_dim
 
-        dims['total'] = dims['hands'] + dims['face'] + dims['pose']
+        raw = dims['hands'] + dims['face'] + dims['pose']
+        dims['raw'] = raw  # pre-delta dim, used for internal array allocation
+        dims['total'] = raw * 2 if self.config.use_delta_features else raw
         return dims
 
     def load_phoenix_annotations(self, excel_path: str) -> pd.DataFrame:
@@ -1015,10 +1018,10 @@ class SignLanguagePreprocessor:
         data = np.load(npz_path, allow_pickle=True)
 
         num_frames = data['hands'].shape[0]
-        feature_dim = self.feature_dims['total']
+        raw_dim = self.feature_dims['raw']  # allocate without delta
 
         # Pre-allocate output array
-        sequence = np.zeros((num_frames, feature_dim), dtype=np.float32)
+        sequence = np.zeros((num_frames, raw_dim), dtype=np.float32)
 
         idx = 0
 
@@ -1055,6 +1058,11 @@ class SignLanguagePreprocessor:
             idx += pose_dim
 
         np.nan_to_num(sequence, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+
+        if self.config.use_delta_features:
+            delta = np.diff(sequence, axis=0, prepend=sequence[:1])  # [T, raw_dim], first row zeros
+            sequence = np.concatenate([sequence, delta], axis=1)     # [T, raw_dim*2]
+
         return sequence, data['frame_numbers']
 
     def process_file_fast(self, file_path: Union[str, Path]) -> Dict:
@@ -1143,6 +1151,10 @@ class SignLanguagePreprocessor:
 
         # Interpolate missing frames
         sequence = self.interpolate_missing_frames(sequence, valid_mask)
+
+        if self.config.use_delta_features:
+            delta = np.diff(sequence, axis=0, prepend=sequence[:1])  # first row zeros
+            sequence = np.concatenate([sequence, delta], axis=1)
 
         # Pad sequence
         sequence = self.pad_sequence(sequence)

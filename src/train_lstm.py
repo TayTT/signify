@@ -264,6 +264,7 @@ def calculate_input_size(config: Config) -> int:
     print(f"  - Hands: {preprocessor.feature_dims['hands']}")
     print(f"  - Face: {preprocessor.feature_dims['face']}")
     print(f"  - Pose: {preprocessor.feature_dims['pose']}")
+    print(f"  - Delta features: {'enabled (x2)' if config.preprocessing.use_delta_features else 'disabled'}")
     print(f"  - Total: {actual_input_size}")
 
     return actual_input_size
@@ -434,6 +435,7 @@ def main():
 
     # Handle resume training
     checkpoint_vocab = None
+    checkpoint_input_size = None
     if args.resume:
         print("\n=== Loading Checkpoint for Resume ===")
         print(f"Checkpoint path: {args.resume}")
@@ -455,6 +457,7 @@ def main():
         config.model.hidden_size = checkpoint_config.model.hidden_size
         config.model.num_layers = checkpoint_config.model.num_layers
         config.model.dropout = checkpoint_config.model.dropout
+        checkpoint_input_size = checkpoint_config.model.input_size  # stash before overwrite
 
         print("\nWARNING: When resuming training, the model architecture and vocabulary")
         print("         are fixed from the checkpoint. The new dataset must be compatible.")
@@ -462,6 +465,14 @@ def main():
     # Calculate actual input size
     actual_input_size = calculate_input_size(config)
     config.model.input_size = actual_input_size
+
+    # resume: compare against stashed checkpoint size, not recalculated size
+    if args.resume and checkpoint_input_size != actual_input_size:
+        raise ValueError(
+            f"input size mismatch: checkpoint has {checkpoint_input_size}, "
+            f"current config produces {actual_input_size} "
+            f"(check use_delta_features in yaml)"
+        )
 
     print("\n=== Model Configuration ===")
     print(f"Input size: {config.model.input_size}")
@@ -493,14 +504,6 @@ def main():
     )
 
     preprocessor = SignLanguagePreprocessor(config.preprocessing)
-
-    # Verify input size for resume
-    if args.resume:
-        if preprocessor.feature_dims['total'] != config.model.input_size:
-            print("\nERROR: Input size mismatch!")
-            print(f"  Checkpoint expects: {config.model.input_size} features")
-            print(f"  Current preprocessor produces: {preprocessor.feature_dims['total']} features")
-            raise ValueError("Input size mismatch")
 
     print("Creating dataset...")
     dataset = dataset_manager.create_dataset(preprocessor)
