@@ -271,8 +271,8 @@ def main():
     print("\nInitializing trainer...")
     feature_config = {'include_face': config.preprocessing.include_face}
     trainer = SignLanguageTrainer(config, feature_config)
-    trainer.dataset = dataset
-    trainer.train_loader, trainer.val_loader = trainer._create_data_loaders()
+    # trainer.dataset = dataset
+    # trainer.train_loader, trainer.val_loader = trainer._create_data_loaders() commenting out so dev/val split is kept insteadof random
 
     trainer.optimizer = create_optimizer_from_config(trainer.model, config)
     trainer.scheduler = create_scheduler_from_config(trainer.optimizer, config)

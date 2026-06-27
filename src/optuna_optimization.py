@@ -20,6 +20,7 @@ import os
 import sys
 import argparse
 import torch
+import copy
 import optuna
 from optuna.trial import TrialState
 import wandb
@@ -297,13 +298,14 @@ class OptunaOptimizer:
 
         # Create config for this trial
         trial_config = Config()
+        trial_config.preprocessing = copy.deepcopy(
+            self.base_config.preprocessing)  # carry over use_delta_features etc, not just defaults
         trial_config.model.input_size = self.input_size
         trial_config.model.hidden_size = params['hidden_size']
         trial_config.model.num_layers = params['num_layers']
         trial_config.model.dropout = params['dropout']
         trial_config.model.bidirectional = params['bidirectional']
         trial_config.model.use_ctc = self.base_config.model.use_ctc
-        trial_config.preprocessing.max_sequence_length = self.base_config.preprocessing.max_sequence_length
         trial_config.device = str(self.device)
 
         # Initialize WandB for this trial
@@ -507,13 +509,14 @@ class OptunaOptimizer:
             params.setdefault(key, None)
 
         # Model config
+        config.preprocessing = copy.deepcopy(
+            self.base_config.preprocessing)  # critical: gets saved to yaml and reloaded by train_with_best_params.py
         config.model.input_size = self.input_size
         config.model.hidden_size = params['hidden_size']
         config.model.num_layers = params['num_layers']
         config.model.dropout = params['dropout']
         config.model.bidirectional = params['bidirectional']
         config.model.use_ctc = self.base_config.model.use_ctc
-        config.preprocessing.max_sequence_length = self.base_config.preprocessing.max_sequence_length
 
         # Training config
         config.training.batch_size = params['batch_size']

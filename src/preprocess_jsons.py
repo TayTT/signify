@@ -208,21 +208,21 @@ class PhoenixDataset(Dataset):
             sequence = result['sequence']
 
             # DEBUG: Check feature content
-            non_zero_ratio = (sequence != 0).float().mean()
-            non_zero_count = (sequence != 0).sum()
-            total_elements = sequence.numel()
+            if DEBUG and idx < 5:
+                non_zero_ratio = (sequence != 0).float().mean()
+                non_zero_count = (sequence != 0).sum()
+                total_elements = sequence.numel()
 
-            # Print first 5 samples
-            if idx < 5:
                 print(f"Sample {idx}: shape={sequence.shape}, "
                       f"non_zero={non_zero_count}/{total_elements} ({non_zero_ratio:.3f})")
 
-                # Check individual feature types
+                # raw feature block only, delta block (if enabled) not sliced here
                 hands_features = sequence[:, :self.preprocessor.feature_dims['hands']]
                 face_features = sequence[:, self.preprocessor.feature_dims['hands']:
                                             self.preprocessor.feature_dims['hands'] +
                                             self.preprocessor.feature_dims['face']]
-                pose_features = sequence[:, -self.preprocessor.feature_dims['pose']:]
+                raw_dim = self.preprocessor.feature_dims.get('raw', self.preprocessor.feature_dims['total'])
+                pose_features = sequence[:, raw_dim - self.preprocessor.feature_dims['pose']:raw_dim]
 
                 print(f"  Hands non-zero: {(hands_features != 0).float().mean():.3f}")
                 print(f"  Pose non-zero: {(pose_features != 0).float().mean():.3f}")
