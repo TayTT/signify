@@ -14,3 +14,4 @@ models/
 *.xml
 wandb/
 models_stash/
+evans-bckp/
