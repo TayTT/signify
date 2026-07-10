@@ -547,8 +547,8 @@ def main():
     print("Initializing trainer...")
     feature_config = {'include_face': config.preprocessing.include_face}
     trainer = SignLanguageTrainer(config, feature_config)
-    trainer.dataset = dataset
-    trainer.train_loader, trainer.val_loader = trainer._create_data_loaders()
+    # trainer.dataset = dataset
+    # trainer.train_loader, trainer.val_loader = trainer._create_data_loaders()
 
     if args.resume:
         print(f"Resuming training from {args.resume}")
