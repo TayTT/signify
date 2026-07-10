@@ -1,5 +1,60 @@
-Sure. Let me build up from scratch because CTC has a few moving parts that need to click together.
+Let me look at the actual code to give you a precise answer rather than guessing.Now I have the exact picture. Let me check the CTC setup too.Now I have everything. I need to correct my earlier analysis — I was wrong about what tokens 2 and 3 are. Let me give you the precise explanation.
 
+---
+
+### Correction first
+
+I said tokens 2 and 3 were "almost certainly `__ON__` and `__OFF__`". That was wrong. Looking at the actual vocab construction in `preprocess_jsons.py` lines 88–91:
+
+```python
+self.vocab['<PAD>'] = 0
+self.vocab['<UNK>'] = 1
+self.vocab['<SOS>'] = 2
+self.vocab['<EOS>'] = 3
+```
+
+Tokens 2 and 3 are `<SOS>` and `<EOS>`. Glosses including `__ON__` and `__OFF__` get indices 4+. This actually makes the situation more interesting.
+
+---
+
+### What's actually happening, step by step
+
+**1. Targets are wrapped with SOS/EOS before going into CTC**
+
+In `encode_annotation` (line 119):
+```python
+return [self.vocab['<SOS>']] + encoded + [self.vocab['<EOS>']]
+```
+
+So every target sequence fed to `F.ctc_loss` looks like `[2, gloss_a, gloss_b, ..., 3]`. CTC is not a seq2seq model — it doesn't conceptually need start/end tokens, but they're baked into every target here regardless. The model therefore has to learn to emit 2 and 3 as part of every valid alignment.
+
+**2. CTC blank = 0, same as `<PAD>`**
+
+In `_ctc_greedy_decode` (line 219) and `F.ctc_loss` (line 154), blank is hardcoded to 0, which is also `<PAD>`. The model output at any given frame timestep is one of: blank/PAD (0), or a gloss token (2+). When the model is collapsing to blank, it's outputting 0 for the vast majority of timesteps.
+
+**3. What CTC greedy decoding produces for the aug model**
+
+After collapsing consecutive duplicates and stripping blanks, only `[2, 3]` survive. The model is emitting token 0 (blank) almost everywhere, with maybe a single emission of 2 and 3 somewhere in the sequence — enough to "satisfy" the alignment loosely, but nothing else.
+
+**4. Why `decode_annotation` then produces empty string**
+
+In `decode_annotation` (line 140):
+```python
+if token_text not in ('<PAD>', '<UNK>', '<SOS>', '<EOS>'):
+    tokens.append(token_text)
+```
+
+SOS and EOS are explicitly filtered out. So `[2, 3]` → empty list → empty string → the debug print fires.
+
+**5. Why the original model doesn't have this problem as badly**
+
+The original model (no aug, lower lr=1.2e-4) had a more stable training run. It learned to emit gloss tokens 4+ within the CTC alignment in addition to the forced SOS/EOS boundaries. The aug model with lr=1e-3 never stabilized enough to commit to interior gloss tokens — the repeated gradient explosions you saw in the loss curve kept resetting whatever interior-gloss patterns it was starting to learn.
+
+---
+
+### The underlying design issue worth noting
+
+Having SOS/EOS inside CTC targets is redundant at best and slightly harmful at worst — CTC's job is purely to align frames to a flat label sequence, and the SOS/EOS tokens add two mandatory emissions to every alignment without conveying sign language content. They take up "alignment budget" from actual glosses, especially on short sequences. It doesn't break anything since both models use the same setup, but it's worth cleaning up before Stage 2 (mBART) anyway, since the gloss→text translation shouldn't receive SOS/EOS artifacts from Stage 1.
 ---
 
 ### What CTC is doing during inference

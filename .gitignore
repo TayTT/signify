@@ -13,3 +13,4 @@ models/
 *.json
 *.xml
 wandb/
+models_stash/
