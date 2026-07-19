@@ -1298,27 +1298,35 @@ class SignLanguagePreprocessor:
 
         return sequence
 
-    def _create_proper_attention_mask(self, sequence: np.ndarray) -> np.ndarray:
+    # def _create_proper_attention_mask(self, sequence: np.ndarray) -> np.ndarray:
+    #
+    #     # Check which positions have meaningful data
+    #     # A position is "valid" if it has non-zero values in at least some features
+    #     valid_positions = []
+    #
+    #     for i, frame_features in enumerate(sequence):
+    #         # Check if this frame has any meaningful data
+    #         # Consider a frame valid if at least 10% of features are non-zer
+    #         non_zero_ratio = np.mean(frame_features != 0)
+    #         is_valid = non_zero_ratio > 0.1 # At least 10% non-zero features
+    #         valid_positions.append(is_valid)
+    #
+    #     mask = np.array(valid_positions, dtype=bool)
+    #
+    #     # if mask is all False, fall back to marking non-padding frames valid
+    #     # padding frames are all-zero rows added after the real sequence
+    #     if not mask.any():
+    #         for i, frame_features in enumerate(sequence):
+    #             mask[i] = np.any(frame_features != 0)  # any non-zero = real frame
+    #
+    #     return mask
 
-        # Check which positions have meaningful data
-        # A position is "valid" if it has non-zero values in at least some features
-        valid_positions = []
-
-        for i, frame_features in enumerate(sequence):
-            # Check if this frame has any meaningful data
-            # Consider a frame valid if at least 10% of features are non-zer
-            non_zero_ratio = np.mean(frame_features != 0)
-            is_valid = non_zero_ratio > 0.1 # At least 10% non-zero features
-            valid_positions.append(is_valid)
-
-        mask = np.array(valid_positions, dtype=bool)
-
-        # if mask is all False, fall back to marking non-padding frames valid
-        # padding frames are all-zero rows added after the real sequence
-        if not mask.any():
-            for i, frame_features in enumerate(sequence):
-                mask[i] = np.any(frame_features != 0)  # any non-zero = real frame
-
+    def _create_proper_attention_mask(self, sequence: np.ndarray, original_length: int) -> np.ndarray:
+        # prefix mask, ctc reads lengths as "first N steps valid" so holes are poison
+        if self.config.padding_strategy != "post":
+            raise ValueError("length mask assumes post padding")
+        mask = np.zeros(sequence.shape[0], dtype=bool)
+        mask[:min(original_length, sequence.shape[0])] = True
         return mask
 
 
